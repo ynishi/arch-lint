@@ -26,7 +26,8 @@
 //! - `#[allow(sync_io)]` attribute
 //! - `// arch-lint: allow(no-sync-io)` comment
 
-use arch_lint_core::utils::{check_allow_comment, has_allow_attr, path_to_string};
+use arch_lint_core::utils::allowance::check_allow_with_reason;
+use arch_lint_core::utils::{has_allow_attr, path_to_string};
 use arch_lint_core::{FileContext, Location, Rule, Severity, Suggestion, Violation};
 use syn::visit::Visit;
 use syn::{Expr, ExprCall, ExprMethodCall, ExprPath, ItemFn};
@@ -189,7 +190,28 @@ impl<'ast> Visit<'ast> for SyncIoVisitor<'_> {
                 let start = span.start();
 
                 // Check for inline allow comment
-                if check_allow_comment(self.ctx.content, start.line, NAME).is_allowed() {
+                let allow_check = check_allow_with_reason(self.ctx.content, start.line, NAME);
+                if allow_check.is_allowed() {
+                    // If reason is required but not provided, create a separate violation
+                    if self.rule.requires_allow_reason() && allow_check.reason().is_none() {
+                        let location = Location::new(
+                            self.ctx.relative_path.clone(),
+                            start.line,
+                            start.column + 1,
+                        );
+                        self.violations.push(
+                            Violation::new(
+                                CODE,
+                                NAME,
+                                Severity::Warning,
+                                location,
+                                format!("Allow directive for '{NAME}' is missing required reason"),
+                            )
+                            .with_suggestion(Suggestion::new(
+                                "Add reason=\"...\" to explain why this exception is necessary",
+                            )),
+                        );
+                    }
                     syn::visit::visit_expr_call(self, node);
                     return;
                 }
@@ -229,7 +251,25 @@ impl<'ast> Visit<'ast> for SyncIoVisitor<'_> {
             let start = span.start();
 
             // Check for inline allow comment
-            if check_allow_comment(self.ctx.content, start.line, NAME).is_allowed() {
+            let allow_check = check_allow_with_reason(self.ctx.content, start.line, NAME);
+            if allow_check.is_allowed() {
+                // If reason is required but not provided, create a separate violation
+                if self.rule.requires_allow_reason() && allow_check.reason().is_none() {
+                    let location =
+                        Location::new(self.ctx.relative_path.clone(), start.line, start.column + 1);
+                    self.violations.push(
+                        Violation::new(
+                            CODE,
+                            NAME,
+                            Severity::Warning,
+                            location,
+                            format!("Allow directive for '{NAME}' is missing required reason"),
+                        )
+                        .with_suggestion(Suggestion::new(
+                            "Add reason=\"...\" to explain why this exception is necessary",
+                        )),
+                    );
+                }
                 syn::visit::visit_expr_method_call(self, node);
                 return;
             }
@@ -336,12 +376,28 @@ fn startup() {
     }
 
     #[test]
-    fn test_allows_with_comment() {
+    fn test_allows_with_comment_but_warns_missing_reason() {
         let violations = check_code(
             r#"
 fn foo() {
     // arch-lint: allow(no-sync-io)
     let content = std::fs::read_to_string("file.txt");
+}
+"#,
+        );
+        // Allow directive without reason generates a warning
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("missing required reason"));
+        assert_eq!(violations[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn test_allows_with_reason() {
+        let violations = check_code(
+            r#"
+fn foo() {
+    // arch-lint: allow(no-sync-io) reason="Startup initialization only"
+    let content = std::fs::read_to_string("config.toml");
 }
 "#,
         );
