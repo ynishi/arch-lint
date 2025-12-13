@@ -1,0 +1,49 @@
+//! # arch-lint-rules
+//!
+//! Built-in lint rules for arch-lint.
+//!
+//! This crate provides a collection of general-purpose architecture lint rules
+//! that can be used across different Rust projects.
+//!
+//! ## Available Rules
+//!
+//! | Code | Name | Description |
+//! |------|------|-------------|
+//! | AL001 | `no-unwrap-expect` | Forbids `.unwrap()` and `.expect()` in production code |
+//! | AL002 | `no-sync-io` | Forbids blocking I/O in async contexts |
+//! | AL003 | `no-error-swallowing` | Forbids catching errors without propagation |
+//! | AL004 | `handler-complexity` | Limits complexity of handler functions |
+//! | AL005 | `require-thiserror` | Requires `thiserror` derive for error types |
+//!
+//! ## Usage
+//!
+//! ```ignore
+//! use arch_lint_core::Analyzer;
+//! use arch_lint_rules::{NoUnwrapExpect, NoSyncIo};
+//!
+//! let analyzer = Analyzer::builder()
+//!     .root("./src")
+//!     .rule(NoUnwrapExpect::new())
+//!     .rule(NoSyncIo::new())
+//!     .build()?;
+//! ```
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+mod handler_complexity;
+mod no_error_swallowing;
+mod no_sync_io;
+mod no_unwrap_expect;
+mod presets;
+mod require_thiserror;
+
+pub use handler_complexity::{HandlerComplexity, HandlerComplexityConfig};
+pub use no_error_swallowing::NoErrorSwallowing;
+pub use no_sync_io::NoSyncIo;
+pub use no_unwrap_expect::NoUnwrapExpect;
+pub use presets::{all_rules, recommended_rules, strict_rules, Preset};
+pub use require_thiserror::RequireThiserror;
+
+/// Re-export core types for convenience.
+pub use arch_lint_core::{Rule, Severity, Violation};

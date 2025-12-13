@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/arch-lint-core",
+    "crates/arch-lint-rules",
+    "crates/arch-lint-cli",
+    "crates/arch-lint-macros",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ynishi/arch-lint"
+keywords = ["lint", "architecture", "static-analysis", "syn"]
+categories = ["development-tools", "command-line-utilities"]
+
+[workspace.dependencies]
+# Core parsing
+syn = { version = "2", features = ["full", "visit", "parsing", "extra-traits"] }
+quote = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+miette = { version = "7", features = ["fancy"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# File operations
+glob = "0.3"
+walkdir = "2"
+ignore = "0.4"
+
+# Async (optional, for future extensions)
+tokio = { version = "1", features = ["full"] }
+
+# Testing
+insta = { version = "1", features = ["yaml"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Internal crates
+arch-lint-core = { path = "crates/arch-lint-core", version = "0.1.0" }
+arch-lint-rules = { path = "crates/arch-lint-rules", version = "0.1.0" }
+arch-lint-cli = { path = "crates/arch-lint-cli", version = "0.1.0" }
+arch-lint-macros = { path = "crates/arch-lint-macros", version = "0.1.0" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
