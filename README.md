@@ -17,6 +17,13 @@ In the age of AI-assisted coding, both humans and AI tend to miss consistent arc
 
 **arch-lint catches what code review misses.** It provides machine-enforceable rules for patterns that are easy to overlook but critical for code quality.
 
+### Key Features
+
+- **AST-based analysis** - Deep understanding of your code structure
+- **Mandatory reasoning** - Critical violations require documented reasons when suppressed
+- **Extensible rules** - Easy to add custom architectural constraints
+- **CI-friendly** - JSON output, exit codes, and clear violation reporting
+
 ## Installation
 
 ```bash
@@ -54,9 +61,9 @@ arch-lint check --format json
 |------|------|-------------|---------|
 | AL001 | `no-unwrap-expect` | Forbids `.unwrap()` and `.expect()` in production code | Error |
 | AL002 | `no-sync-io` | Forbids blocking I/O operations | Error |
-| AL003 | `no-error-swallowing` | Forbids catching errors with only logging | Warning |
+| AL003 | `no-error-swallowing` | Forbids catching errors with only logging | Error |
 | AL004 | `handler-complexity` | Limits handler function complexity | Warning |
-| AL005 | `require-thiserror` | Requires `thiserror` derive for error types | Warning |
+| AL005 | `require-thiserror` | Requires `thiserror` derive for error types | Error |
 
 ### Rule Details
 
@@ -121,6 +128,12 @@ do_something().map_err(|e| {
 })?;
 ```
 
+**Configuration:**
+```toml
+[rules.no-error-swallowing]
+severity = "error"
+```
+
 #### AL004: handler-complexity
 
 Limits complexity in handler functions (TEA/Elm architecture).
@@ -176,6 +189,12 @@ pub enum MyError {
 }
 ```
 
+**Configuration:**
+```toml
+[rules.require-thiserror]
+severity = "error"
+```
+
 ## Configuration
 
 Create `arch-lint.toml` in your project root:
@@ -210,7 +229,37 @@ severity = "warning"
 
 ## Suppression
 
+arch-lint provides multiple ways to suppress violations when necessary.
+
+### Inline Comments (Recommended)
+
+Use inline comments for fine-grained control:
+
+```rust
+// arch-lint: allow(no-sync-io) reason="Startup initialization only"
+let config = std::fs::read_to_string("config.toml")?;
+
+// arch-lint: allow(no-unwrap-expect) reason="Guaranteed by loop invariant"
+let value = some_option.unwrap();
+```
+
+**Mandatory Reasoning:** For `Severity::Error` rules (AL001, AL002, AL003, AL005), the `reason` parameter is **required**. Omitting it will generate a `Severity::Warning` violation:
+
+```rust
+// ❌ Warning: Allow directive missing required reason
+// arch-lint: allow(no-unwrap-expect)
+value.unwrap()
+
+// ✅ OK: Reason provided
+// arch-lint: allow(no-unwrap-expect) reason="Config validated at startup"
+value.unwrap()
+```
+
+This ensures that critical suppressions are always documented and justified.
+
 ### Rust Attributes
+
+Standard Rust attributes are also supported:
 
 ```rust
 #[allow(clippy::unwrap_used)]
@@ -219,18 +268,16 @@ fn allowed_unwrap() {
 }
 ```
 
-### Inline Comments
-
-```rust
-// arch-lint: allow(no-sync-io) reason="startup initialization"
-let config = std::fs::read_to_string("config.toml")?;
-```
-
 ### Configuration File
 
+Disable rules globally or per-file:
+
 ```toml
-[rules.no-unwrap-expect.exceptions]
-files = ["src/startup.rs"]
+[rules.no-unwrap-expect]
+enabled = false  # Disable entirely
+
+[rules.no-sync-io]
+exclude_files = ["src/startup.rs"]  # Per-file exclusion
 ```
 
 ## Presets
