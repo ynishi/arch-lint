@@ -237,8 +237,8 @@ arch-lint provides multiple ways to suppress violations at different scopes.
 |-------|--------|----------|
 | Line | Comment | Single expression |
 | Block | `#[arch_lint::allow(...)]` | Function, impl, module |
-| File | `#![arch_lint::allow(...)]` | Entire file |
-| Global | Configuration | Project-wide exclusion |
+| File | Configuration (`exclude_files`) | Entire file |
+| Global | Configuration (`enabled = false`) | Project-wide exclusion |
 
 ### Line-level (Comment)
 
@@ -267,21 +267,6 @@ fn parse_validated_config(input: &str) -> Config {
 #[arch_lint::allow(no_sync_io, reason = "CLI startup, not in async context")]
 mod startup {
     // All sync I/O allowed in this module
-}
-```
-
-### File-level (Inner Attribute)
-
-Use inner attributes at the top of the file:
-
-```rust
-//! CLI entry point - synchronous I/O is acceptable here.
-
-#![arch_lint::allow(no_sync_io, reason = "CLI tool, no async runtime")]
-
-fn main() {
-    let config = std::fs::read_to_string("config.toml").unwrap();
-    // ...
 }
 ```
 
