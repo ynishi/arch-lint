@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use arch_lint_core::{Analyzer, Config, LintResult, Severity};
 use arch_lint_rules::{
     recommended_rules, HandlerComplexity, NoErrorSwallowing, NoSyncIo, NoUnwrapExpect,
-    RequireThiserror,
+    RequireThiserror, RequireTracing, TracingEnvInit,
 };
 use std::path::{Path, PathBuf};
 
@@ -91,6 +91,8 @@ fn filter_rules(names: &[&str]) -> Vec<arch_lint_core::RuleBox> {
             "no-error-swallowing" | "AL003" => rules.push(Box::new(NoErrorSwallowing::new())),
             "handler-complexity" | "AL004" => rules.push(Box::new(HandlerComplexity::new())),
             "require-thiserror" | "AL005" => rules.push(Box::new(RequireThiserror::new())),
+            "require-tracing" | "AL006" => rules.push(Box::new(RequireTracing::new())),
+            "tracing-env-init" | "AL007" => rules.push(Box::new(TracingEnvInit::new())),
             _ => tracing::warn!("Unknown rule: {}", name),
         }
     }

@@ -14,6 +14,8 @@
 //! | AL003 | `no-error-swallowing` | Forbids catching errors without propagation |
 //! | AL004 | `handler-complexity` | Limits complexity of handler functions |
 //! | AL005 | `require-thiserror` | Requires `thiserror` derive for error types |
+//! | AL006 | `require-tracing` | Requires `tracing` crate instead of `log` crate |
+//! | AL007 | `tracing-env-init` | Prevents hardcoded log levels in tracing initialization |
 //!
 //! ## Usage
 //!
@@ -37,6 +39,8 @@ mod no_sync_io;
 mod no_unwrap_expect;
 mod presets;
 mod require_thiserror;
+mod require_tracing;
+mod tracing_env_init;
 
 pub use handler_complexity::{HandlerComplexity, HandlerComplexityConfig};
 pub use no_error_swallowing::NoErrorSwallowing;
@@ -44,6 +48,8 @@ pub use no_sync_io::NoSyncIo;
 pub use no_unwrap_expect::NoUnwrapExpect;
 pub use presets::{all_rules, recommended_rules, strict_rules, Preset};
 pub use require_thiserror::RequireThiserror;
+pub use require_tracing::RequireTracing;
+pub use tracing_env_init::TracingEnvInit;
 
 /// Re-export core types for convenience.
 pub use arch_lint_core::{Rule, Severity, Violation};

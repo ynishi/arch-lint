@@ -3,6 +3,7 @@
 //! This crate contains intentional violations to test arch-lint detection.
 
 pub mod startup;
+pub mod tracing_test;
 
 // ============================================================================
 // CASE 1: Violations WITHOUT suppression (should be reported)

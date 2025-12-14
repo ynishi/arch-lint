@@ -15,3 +15,11 @@ severity = "error"
 [rules.no-error-swallowing]
 enabled = true
 severity = "error"
+
+[rules.require-tracing]
+enabled = true
+severity = "warning"
+
+[rules.tracing-env-init]
+enabled = true
+severity = "warning"

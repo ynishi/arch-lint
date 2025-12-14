@@ -64,6 +64,8 @@ arch-lint check --format json
 | AL003 | `no-error-swallowing` | Forbids catching errors with only logging | Error |
 | AL004 | `handler-complexity` | Limits handler function complexity | Warning |
 | AL005 | `require-thiserror` | Requires `thiserror` derive for error types | Error |
+| AL006 | `require-tracing` | Requires `tracing` crate instead of `log` crate | Warning |
+| AL007 | `tracing-env-init` | Prevents hardcoded log levels in tracing initialization | Warning |
 
 ### Rule Details
 
@@ -195,6 +197,62 @@ pub enum MyError {
 severity = "error"
 ```
 
+#### AL006: require-tracing
+
+Requires `tracing` crate instead of `log` crate for structured logging.
+
+```rust
+// BAD
+log::info!("Processing request");
+log::error!("Error: {}", e);
+
+// GOOD
+tracing::info!("Processing request");
+tracing::error!("Error: {}", e);
+```
+
+**Rationale:**
+- `tracing` provides structured, contextual logging
+- Better performance and async-aware design
+- Consistent logging across workspace crates
+
+**Configuration:**
+```toml
+[rules.require-tracing]
+severity = "warning"
+```
+
+#### AL007: tracing-env-init
+
+Prevents hardcoded log levels in tracing initialization.
+
+```rust
+// BAD - Hardcoded level
+tracing_subscriber::fmt()
+    .with_env_filter(EnvFilter::new("debug"))
+    .init();
+
+// GOOD - Use environment variable
+tracing_subscriber::fmt()
+    .with_env_filter(EnvFilter::from_default_env())
+    .init();
+
+// GOOD - With fallback
+let filter = EnvFilter::try_from_default_env()
+    .unwrap_or_else(|_| EnvFilter::new("info"));
+```
+
+**Rationale:**
+- Allows runtime log level configuration via `RUST_LOG`
+- Prevents accidentally shipping debug logs to production
+- Flexibility for different deployment environments
+
+**Configuration:**
+```toml
+[rules.tracing-env-init]
+severity = "warning"
+```
+
 ## Configuration
 
 Create `arch-lint.toml` in your project root:
@@ -223,6 +281,14 @@ max_handler_lines = 150
 max_match_arms = 20
 
 [rules.require-thiserror]
+enabled = true
+severity = "warning"
+
+[rules.require-tracing]
+enabled = true
+severity = "warning"
+
+[rules.tracing-env-init]
 enabled = true
 severity = "warning"
 ```
@@ -315,7 +381,7 @@ Use presets for quick configuration:
 
 | Preset | Rules | Description |
 |--------|-------|-------------|
-| `recommended` | AL001, AL002, AL003, AL005 | Sensible defaults |
+| `recommended` | AL001, AL002, AL003, AL005, AL006, AL007 | Sensible defaults |
 | `strict` | All rules | Maximum safety |
 | `minimal` | AL001 (relaxed) | Gradual adoption |
 
@@ -323,13 +389,15 @@ Use presets for quick configuration:
 
 ```rust
 use arch_lint_core::Analyzer;
-use arch_lint_rules::{NoUnwrapExpect, NoSyncIo, HandlerComplexity};
+use arch_lint_rules::{NoUnwrapExpect, NoSyncIo, HandlerComplexity, RequireTracing, TracingEnvInit};
 
 let analyzer = Analyzer::builder()
     .root("./src")
     .rule(NoUnwrapExpect::new().allow_in_tests(true))
     .rule(NoSyncIo::new())
     .rule(HandlerComplexity::new().max_match_arms(15))
+    .rule(RequireTracing::new())
+    .rule(TracingEnvInit::new())
     .exclude("**/generated/**")
     .build()?;
 

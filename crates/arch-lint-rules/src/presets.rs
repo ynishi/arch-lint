@@ -1,6 +1,9 @@
 //! Rule presets for common configurations.
 
-use crate::{HandlerComplexity, NoErrorSwallowing, NoSyncIo, NoUnwrapExpect, RequireThiserror};
+use crate::{
+    HandlerComplexity, NoErrorSwallowing, NoSyncIo, NoUnwrapExpect, RequireThiserror,
+    RequireTracing, TracingEnvInit,
+};
 use arch_lint_core::RuleBox;
 
 /// Preset configurations for arch-lint.
@@ -33,6 +36,8 @@ impl Preset {
 /// - `no-sync-io` (AL002) - Forbids blocking I/O
 /// - `no-error-swallowing` (AL003) - Forbids silent error handling
 /// - `require-thiserror` (AL005) - Requires thiserror for error types
+/// - `require-tracing` (AL006) - Requires tracing instead of log
+/// - `tracing-env-init` (AL007) - Prevents hardcoded log levels
 #[must_use]
 pub fn recommended_rules() -> Vec<RuleBox> {
     vec![
@@ -40,6 +45,8 @@ pub fn recommended_rules() -> Vec<RuleBox> {
         Box::new(NoSyncIo::new()),
         Box::new(NoErrorSwallowing::new()),
         Box::new(RequireThiserror::new()),
+        Box::new(RequireTracing::new()),
+        Box::new(TracingEnvInit::new()),
     ]
 }
 
@@ -59,6 +66,8 @@ pub fn strict_rules() -> Vec<RuleBox> {
         Box::new(NoSyncIo::new()),
         Box::new(NoErrorSwallowing::new()),
         Box::new(RequireThiserror::new()),
+        Box::new(RequireTracing::new()),
+        Box::new(TracingEnvInit::new()),
         Box::new(HandlerComplexity::new()),
     ]
 }
@@ -81,6 +90,8 @@ pub fn all_rules() -> Vec<RuleBox> {
         Box::new(NoErrorSwallowing::new()),
         Box::new(HandlerComplexity::new()),
         Box::new(RequireThiserror::new()),
+        Box::new(RequireTracing::new()),
+        Box::new(TracingEnvInit::new()),
     ]
 }
 
