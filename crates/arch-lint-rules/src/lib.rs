@@ -19,6 +19,7 @@
 //! | AL009 | `async-trait-send-check` | Checks proper usage of `async_trait` Send bounds |
 //! | AL010 | `prefer-from-over-into` | Prefers `From` trait implementation over `Into` |
 //! | AL011 | `no-panic-in-lib` | Forbids panic macros in library code |
+//! | AL012 | `require-doc-comments` | Requires documentation comments on public items |
 //!
 //! ## Usage
 //!
@@ -45,6 +46,7 @@ mod no_unwrap_expect;
 mod prefer_from_over_into;
 mod prefer_utoipa;
 mod presets;
+mod require_doc_comments;
 mod require_thiserror;
 mod require_tracing;
 mod require_tracing_v2;
@@ -58,6 +60,7 @@ pub use no_sync_io::NoSyncIo;
 pub use no_unwrap_expect::NoUnwrapExpect;
 pub use prefer_from_over_into::PreferFromOverInto;
 pub use presets::{all_rules, recommended_rules, strict_rules, Preset};
+pub use require_doc_comments::RequireDocComments;
 pub use require_thiserror::RequireThiserror;
 pub use require_tracing::RequireTracing;
 pub use tracing_env_init::TracingEnvInit;

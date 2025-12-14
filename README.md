@@ -69,6 +69,7 @@ arch-lint check --format json
 | AL009 | `async-trait-send-check` | Checks proper usage of `async_trait` Send bounds | Warning |
 | AL010 | `prefer-from-over-into` | Prefers `From` trait implementation over `Into` | Warning |
 | AL011 | `no-panic-in-lib` | Forbids panic macros in library code | Error |
+| AL012 | `require-doc-comments` | Requires documentation comments on public items | Warning |
 
 ### Rule Details
 
@@ -358,6 +359,51 @@ severity = "error"
 allow_in_tests = true  # Allow panic macros in test code
 ```
 
+#### AL012: require-doc-comments
+
+Requires documentation comments (`///`) on public functions, structs, and enums.
+
+```rust
+// BAD - No documentation
+pub fn process_data(input: &[u8]) -> Result<Output> {
+    // ...
+}
+
+pub struct Config {
+    name: String,
+}
+
+// GOOD - Documented
+/// Processes the input data and returns the result.
+///
+/// # Errors
+/// Returns `ProcessError` if the input is invalid.
+pub fn process_data(input: &[u8]) -> Result<Output> {
+    // ...
+}
+
+/// Configuration data for the application.
+pub struct Config {
+    /// Name of the configuration.
+    name: String,
+}
+```
+
+**Rationale:**
+- Improves API discoverability and usability
+- Makes `cargo doc` output valuable for users
+- Forces developers to think about public API design
+- Enhances team collaboration and code review quality
+
+**Configuration:**
+```toml
+[rules.require-doc-comments]
+severity = "warning"
+require_fn_docs = true     # Require docs for public functions
+require_struct_docs = true # Require docs for public structs
+require_enum_docs = true   # Require docs for public enums
+```
+
 ## Configuration
 
 Create `arch-lint.toml` in your project root:
@@ -497,7 +543,7 @@ use arch_lint_core::Analyzer;
 use arch_lint_rules::{
     NoUnwrapExpect, NoSyncIo, HandlerComplexity, RequireTracing,
     TracingEnvInit, AsyncTraitSendCheck, RuntimeMode, PreferFromOverInto,
-    NoPanicInLib,
+    NoPanicInLib, RequireDocComments,
 };
 
 let analyzer = Analyzer::builder()
@@ -510,6 +556,7 @@ let analyzer = Analyzer::builder()
     .rule(AsyncTraitSendCheck::new().runtime_mode(RuntimeMode::SingleThread))
     .rule(PreferFromOverInto::new())
     .rule(NoPanicInLib::new())
+    .rule(RequireDocComments::new())
     .exclude("**/generated/**")
     .build()?;
 
