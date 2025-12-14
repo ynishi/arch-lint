@@ -1,0 +1,17 @@
+[package]
+name = "arch-lint"
+description = "AST-based architecture linter for Rust - catches what code review misses"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+arch-lint-core.workspace = true
+arch-lint-macros.workspace = true
+
+[lints]
+workspace = true

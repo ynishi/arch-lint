@@ -1,20 +1,62 @@
 //! # arch-lint-macros
 //!
-//! Procedural macros for simplifying arch-lint rule definitions.
+//! Procedural macros for arch-lint.
 //!
-//! This crate provides derive macros and attribute macros to reduce
-//! boilerplate when implementing lint rules.
+//! ## Suppression Attributes
 //!
-//! ## Future Features
+//! - `#[arch_lint::allow(...)]` - Suppress rules for a function, impl, or module
+//! - `#![arch_lint::allow(...)]` - Suppress rules for an entire file
 //!
-//! - `#[derive(Rule)]` - Auto-implement Rule trait boilerplate
-//! - `#[rule_test]` - Generate test helpers for rules
+//! ## Examples
 //!
-//! Currently a placeholder for future development.
+//! ```rust,ignore
+//! // Block-level suppression
+//! #[arch_lint::allow(no_unwrap_expect, reason = "validated input")]
+//! fn parse_config() {
+//!     value.unwrap();
+//! }
+//!
+//! // File-level suppression (at top of file)
+//! #![arch_lint::allow(no_sync_io, reason = "CLI startup")]
+//! ```
 
 #![forbid(unsafe_code)]
 
 use proc_macro::TokenStream;
+
+/// Suppresses specified arch-lint rules for the annotated item.
+///
+/// This is an identity macro - it returns the item unchanged.
+/// arch-lint detects this attribute during AST analysis.
+///
+/// # Arguments
+///
+/// * `rules` - Comma-separated rule names to allow (e.g., `no_unwrap_expect`)
+/// * `reason` - Required for error-severity rules; explains why suppression is acceptable
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // Function-level
+/// #[arch_lint::allow(no_unwrap_expect, reason = "Startup config, validated externally")]
+/// fn load_config() -> Config {
+///     CONFIG.get().unwrap().clone()
+/// }
+///
+/// // Module-level
+/// #[arch_lint::allow(no_sync_io, reason = "Synchronous CLI commands")]
+/// mod cli {
+///     // ...
+/// }
+///
+/// // File-level (inner attribute)
+/// #![arch_lint::allow(no_sync_io, reason = "Build script")]
+/// ```
+#[proc_macro_attribute]
+pub fn allow(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Identity transform - arch-lint detects this attribute during AST analysis
+    item
+}
 
 /// Placeholder for future Rule derive macro.
 ///
