@@ -18,6 +18,7 @@
 //! | AL007 | `tracing-env-init` | Prevents hardcoded log levels in tracing initialization |
 //! | AL009 | `async-trait-send-check` | Checks proper usage of `async_trait` Send bounds |
 //! | AL010 | `prefer-from-over-into` | Prefers `From` trait implementation over `Into` |
+//! | AL011 | `no-panic-in-lib` | Forbids panic macros in library code |
 //!
 //! ## Usage
 //!
@@ -38,6 +39,7 @@
 mod async_trait_send_check;
 mod handler_complexity;
 mod no_error_swallowing;
+mod no_panic_in_lib;
 mod no_sync_io;
 mod no_unwrap_expect;
 mod prefer_from_over_into;
@@ -51,6 +53,7 @@ mod tracing_env_init;
 pub use async_trait_send_check::{AsyncTraitSendCheck, RuntimeMode};
 pub use handler_complexity::{HandlerComplexity, HandlerComplexityConfig};
 pub use no_error_swallowing::NoErrorSwallowing;
+pub use no_panic_in_lib::NoPanicInLib;
 pub use no_sync_io::NoSyncIo;
 pub use no_unwrap_expect::NoUnwrapExpect;
 pub use prefer_from_over_into::PreferFromOverInto;

@@ -68,6 +68,7 @@ arch-lint check --format json
 | AL007 | `tracing-env-init` | Prevents hardcoded log levels in tracing initialization | Warning |
 | AL009 | `async-trait-send-check` | Checks proper usage of `async_trait` Send bounds | Warning |
 | AL010 | `prefer-from-over-into` | Prefers `From` trait implementation over `Into` | Warning |
+| AL011 | `no-panic-in-lib` | Forbids panic macros in library code | Error |
 
 ### Rule Details
 
@@ -324,6 +325,39 @@ impl From<MyType> for String {
 severity = "warning"
 ```
 
+#### AL011: no-panic-in-lib
+
+Forbids panic macros (`panic!`, `todo!`, `unimplemented!`, `unreachable!`) in library code.
+
+```rust
+// BAD - Panicking in library code
+pub fn parse_config(input: &str) -> Config {
+    let value = input.parse().unwrap();
+    todo!("implement parsing");
+    unimplemented!();
+}
+
+// GOOD - Return Result instead
+pub fn parse_config(input: &str) -> Result<Config, ParseError> {
+    let value = input.parse()
+        .map_err(|_| ParseError::InvalidInput)?;
+    Ok(Config { value })
+}
+```
+
+**Rationale:**
+- Library code should never panic - return `Result` instead
+- Panics in libraries lead to poor user experience and unexpected crashes
+- Forces proper error handling and makes errors recoverable
+- Test code is excluded by default (can be configured)
+
+**Configuration:**
+```toml
+[rules.no-panic-in-lib]
+severity = "error"
+allow_in_tests = true  # Allow panic macros in test code
+```
+
 ## Configuration
 
 Create `arch-lint.toml` in your project root:
@@ -463,6 +497,7 @@ use arch_lint_core::Analyzer;
 use arch_lint_rules::{
     NoUnwrapExpect, NoSyncIo, HandlerComplexity, RequireTracing,
     TracingEnvInit, AsyncTraitSendCheck, RuntimeMode, PreferFromOverInto,
+    NoPanicInLib,
 };
 
 let analyzer = Analyzer::builder()
@@ -474,6 +509,7 @@ let analyzer = Analyzer::builder()
     .rule(TracingEnvInit::new())
     .rule(AsyncTraitSendCheck::new().runtime_mode(RuntimeMode::SingleThread))
     .rule(PreferFromOverInto::new())
+    .rule(NoPanicInLib::new())
     .exclude("**/generated/**")
     .build()?;
 
