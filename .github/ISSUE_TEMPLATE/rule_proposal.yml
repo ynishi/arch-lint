@@ -1,0 +1,107 @@
+name: Rule Proposal
+description: Propose a new lint rule for arch-lint
+title: "[Rule Proposal] "
+labels: ["enhancement", "rule-proposal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a new rule! Please fill out the information below to help us understand your proposal.
+
+  - type: input
+    id: rule-name
+    attributes:
+      label: Rule Name
+      description: What should this rule be called?
+      placeholder: "e.g., no-large-structs, require-builder-pattern"
+    validations:
+      required: true
+
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Rationale
+      description: Why should this rule exist? What architecture/best practice issue does it address?
+      placeholder: |
+        Example:
+        Large structs can lead to performance issues and make code harder to maintain.
+        This rule enforces a maximum struct size to encourage better design patterns.
+    validations:
+      required: true
+
+  - type: textarea
+    id: detected-patterns
+    attributes:
+      label: Detected Patterns
+      description: What code patterns should this rule detect as violations?
+      placeholder: |
+        Example:
+        - Structs with more than 10 fields
+        - Structs larger than 1KB in size
+    validations:
+      required: true
+
+  - type: textarea
+    id: good-patterns
+    attributes:
+      label: Good Patterns (Examples)
+      description: Provide code examples that follow the rule
+      render: rust
+      placeholder: |
+        // Good - Small, focused struct
+        pub struct User {
+            pub id: u64,
+            pub name: String,
+        }
+
+  - type: textarea
+    id: bad-patterns
+    attributes:
+      label: Bad Patterns (Examples)
+      description: Provide code examples that violate the rule
+      render: rust
+      placeholder: |
+        // Bad - Too many fields
+        pub struct GodStruct {
+            pub field1: String,
+            pub field2: String,
+            // ... 20+ more fields
+        }
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Suggested Severity
+      description: What should the default severity be?
+      options:
+        - Warning
+        - Error
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      description: Which category does this rule belong to?
+      options:
+        - Architecture
+        - Best Practices
+        - Performance
+        - Security
+        - Documentation
+        - Error Handling
+        - Async/Concurrency
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Any other information that might be helpful (references, related rules, etc.)
+      placeholder: |
+        - Similar to Clippy's rule X
+        - Reference: https://...
+        - Related to issue #123

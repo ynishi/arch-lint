@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -52,11 +52,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Internal crates
-arch-lint = { path = "crates/arch-lint", version = "0.1.0" }
-arch-lint-core = { path = "crates/arch-lint-core", version = "0.1.0" }
-arch-lint-rules = { path = "crates/arch-lint-rules", version = "0.1.0" }
-arch-lint-cli = { path = "crates/arch-lint-cli", version = "0.1.0" }
-arch-lint-macros = { path = "crates/arch-lint-macros", version = "0.1.0" }
+arch-lint = { path = "crates/arch-lint", version = "0.2.0" }
+arch-lint-core = { path = "crates/arch-lint-core", version = "0.2.0" }
+arch-lint-rules = { path = "crates/arch-lint-rules", version = "0.2.0" }
+arch-lint-cli = { path = "crates/arch-lint-cli", version = "0.2.0" }
+arch-lint-macros = { path = "crates/arch-lint-macros", version = "0.2.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
