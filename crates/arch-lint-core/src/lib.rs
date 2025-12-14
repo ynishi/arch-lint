@@ -30,6 +30,7 @@
 mod analyzer;
 mod config;
 mod context;
+mod preferred_crate;
 mod rule;
 mod types;
 
@@ -39,6 +40,7 @@ pub mod utils;
 pub use analyzer::{Analyzer, AnalyzerBuilder};
 pub use config::Config;
 pub use context::{FileContext, ProjectContext};
+pub use preferred_crate::{DetectionPattern, PreferredCrateRule};
 pub use rule::{ProjectRule, ProjectRuleBox, Rule, RuleBox};
 pub use types::{Label, LintResult, Location, Replacement, Severity, Suggestion, Violation};
 pub use utils::allowance::{AllowCheck, AllowState};

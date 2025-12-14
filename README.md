@@ -411,6 +411,48 @@ if result.has_errors() {
 
 ## Writing Custom Rules
 
+### Quick Start: PreferredCrateRule
+
+For enforcing preferred crate usage, use the built-in `PreferredCrateRule` builder:
+
+```rust
+use arch_lint_core::PreferredCrateRule;
+
+// Prefer utoipa over other OpenAPI crates
+let rule = PreferredCrateRule::new("PROJ001", "prefer-utoipa")
+    .prefer("utoipa")
+    .over(&["paperclip", "okapi", "rweb"])
+    .detect_macro_path()  // Detects macro calls
+    .severity(Severity::Warning);
+
+// Prefer tracing over log
+let rule = PreferredCrateRule::new("PROJ002", "prefer-tracing")
+    .prefer("tracing")
+    .over(&["log"])
+    .detect_macro_path();
+```
+
+This automatically detects patterns like:
+```rust
+// BAD
+paperclip::path!("/api");
+log::info!("message");
+
+// GOOD
+utoipa::path!("/api");
+tracing::info!("message");
+```
+
+**Benefits:**
+- ~4x less code than manual implementation
+- Built-in suppression support (`#[arch_lint::allow(...)]`)
+- Consistent error messages
+- Easy to extend for workspace-specific preferences
+
+### Advanced: Custom Rules
+
+For complex logic, implement the `Rule` trait directly:
+
 ```rust
 use arch_lint_core::{Rule, FileContext, Violation, Severity, Location};
 use syn::visit::Visit;

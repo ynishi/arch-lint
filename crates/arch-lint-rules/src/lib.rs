@@ -37,9 +37,11 @@ mod handler_complexity;
 mod no_error_swallowing;
 mod no_sync_io;
 mod no_unwrap_expect;
+mod prefer_utoipa;
 mod presets;
 mod require_thiserror;
 mod require_tracing;
+mod require_tracing_v2;
 mod tracing_env_init;
 
 pub use handler_complexity::{HandlerComplexity, HandlerComplexityConfig};
