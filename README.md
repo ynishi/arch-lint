@@ -411,22 +411,22 @@ if result.has_errors() {
 
 ## Writing Custom Rules
 
-### Quick Start: PreferredCrateRule
+### Quick Start: RequiredCrateRule
 
-For enforcing preferred crate usage, use the built-in `PreferredCrateRule` builder:
+For enforcing required crate usage, use the built-in `RequiredCrateRule` builder:
 
 ```rust
-use arch_lint_core::PreferredCrateRule;
+use arch_lint_core::RequiredCrateRule;
 
-// Prefer utoipa over other OpenAPI crates
-let rule = PreferredCrateRule::new("PROJ001", "prefer-utoipa")
+// Require utoipa over other OpenAPI crates
+let rule = RequiredCrateRule::new("PROJ001", "require-utoipa")
     .prefer("utoipa")
     .over(&["paperclip", "okapi", "rweb"])
     .detect_macro_path()  // Detects macro calls
     .severity(Severity::Warning);
 
-// Prefer tracing over log
-let rule = PreferredCrateRule::new("PROJ002", "prefer-tracing")
+// Require tracing over log
+let rule = RequiredCrateRule::new("PROJ002", "require-tracing")
     .prefer("tracing")
     .over(&["log"])
     .detect_macro_path();

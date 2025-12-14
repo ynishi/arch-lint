@@ -1,4 +1,4 @@
-//! Preferred crate enforcement utilities.
+//! Required crate enforcement utilities.
 //!
 //! This module provides a builder API for creating rules that enforce
 //! consistent crate usage across a workspace.
@@ -6,9 +6,9 @@
 //! # Example
 //!
 //! ```ignore
-//! use arch_lint_core::PreferredCrateRule;
+//! use arch_lint_core::RequiredCrateRule;
 //!
-//! let rule = PreferredCrateRule::new("PROJ001", "prefer-utoipa")
+//! let rule = RequiredCrateRule::new("PROJ001", "prefer-utoipa")
 //!     .prefer("utoipa")
 //!     .over(&["paperclip", "okapi"])
 //!     .detect_macro_path()
@@ -21,12 +21,12 @@ use crate::{FileContext, Location, Rule, Severity, Suggestion, Violation};
 use syn::visit::Visit;
 use syn::{ItemFn, ItemImpl, ItemMod};
 
-/// Detection pattern for preferred crate checks.
+/// Detection pattern for required crate checks.
 #[derive(Debug, Clone)]
 pub enum DetectionPattern {
     /// Detects macro calls with alternative prefixes.
     ///
-    /// Example: Detect `log::info!` when preferring `tracing::info!`
+    /// Example: Detect `log::info!` when requiring `tracing::info!`
     MacroPath,
 
     /// Detects type suffixes with derive requirements.
@@ -43,12 +43,12 @@ pub enum DetectionPattern {
     CargoToml,
 }
 
-/// Builder for creating preferred crate rules.
+/// Builder for creating required crate rules.
 ///
 /// This provides a fluent API for defining rules that enforce
 /// consistent crate usage patterns.
 #[derive(Debug, Clone)]
-pub struct PreferredCrateRule {
+pub struct RequiredCrateRule {
     code: &'static str,
     name: &'static str,
     description: String,
@@ -58,8 +58,8 @@ pub struct PreferredCrateRule {
     severity: Severity,
 }
 
-impl PreferredCrateRule {
-    /// Creates a new preferred crate rule builder.
+impl RequiredCrateRule {
+    /// Creates a new required crate rule builder.
     ///
     /// # Arguments
     ///
@@ -78,7 +78,7 @@ impl PreferredCrateRule {
         }
     }
 
-    /// Sets the preferred crate name.
+    /// Sets the required crate name.
     #[must_use]
     pub fn prefer(mut self, crate_name: impl Into<String>) -> Self {
         self.preferred = crate_name.into();
@@ -149,7 +149,7 @@ impl PreferredCrateRule {
     }
 }
 
-impl Rule for PreferredCrateRule {
+impl Rule for RequiredCrateRule {
     fn name(&self) -> &'static str {
         self.name
     }
@@ -161,7 +161,7 @@ impl Rule for PreferredCrateRule {
     fn description(&self) -> &'static str {
         // For now, return a static description
         // TODO: Support dynamic descriptions in the future
-        "Enforces preferred crate usage"
+        "Enforces required crate usage"
     }
 
     fn default_severity(&self) -> Severity {
@@ -194,7 +194,7 @@ impl Rule for PreferredCrateRule {
 
 struct MacroPathVisitor<'a> {
     ctx: &'a FileContext<'a>,
-    rule: &'a PreferredCrateRule,
+    rule: &'a RequiredCrateRule,
     violations: Vec<Violation>,
     in_allowed_context: bool,
 }
@@ -306,7 +306,7 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn check_code(rule: &PreferredCrateRule, code: &str) -> Vec<Violation> {
+    fn check_code(rule: &RequiredCrateRule, code: &str) -> Vec<Violation> {
         let ast = syn::parse_file(code).expect("Failed to parse");
         let ctx = FileContext {
             path: Path::new("test.rs"),
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_macro_path_detection() {
-        let rule = PreferredCrateRule::new("TEST001", "test-rule")
+        let rule = RequiredCrateRule::new("TEST001", "test-rule")
             .prefer("tracing")
             .over(&["log"])
             .detect_macro_path();
@@ -340,7 +340,7 @@ fn foo() {
 
     #[test]
     fn test_allows_preferred() {
-        let rule = PreferredCrateRule::new("TEST001", "test-rule")
+        let rule = RequiredCrateRule::new("TEST001", "test-rule")
             .prefer("tracing")
             .over(&["log"])
             .detect_macro_path();
@@ -359,7 +359,7 @@ fn foo() {
 
     #[test]
     fn test_multiple_alternatives() {
-        let rule = PreferredCrateRule::new("TEST002", "test-rule")
+        let rule = RequiredCrateRule::new("TEST002", "test-rule")
             .prefer("utoipa")
             .over(&["paperclip", "okapi"])
             .detect_macro_path();
@@ -381,7 +381,7 @@ fn foo() {
 
     #[test]
     fn test_severity_setting() {
-        let rule = PreferredCrateRule::new("TEST003", "test-rule")
+        let rule = RequiredCrateRule::new("TEST003", "test-rule")
             .prefer("tracing")
             .over(&["log"])
             .severity(Severity::Error)

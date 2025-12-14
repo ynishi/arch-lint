@@ -2,7 +2,7 @@
 //!
 //! This demonstrates how easy it is to create custom preferred crate rules.
 
-use arch_lint_core::PreferredCrateRule;
+use arch_lint_core::RequiredCrateRule;
 
 /// Rule code for prefer-utoipa.
 pub const CODE: &str = "PROJ001";
@@ -25,8 +25,8 @@ pub const NAME: &str = "prefer-utoipa";
 /// utoipa::openapi!();
 /// ```
 #[must_use]
-pub fn new_prefer_utoipa() -> PreferredCrateRule {
-    PreferredCrateRule::new(CODE, NAME)
+pub fn new_prefer_utoipa() -> RequiredCrateRule {
+    RequiredCrateRule::new(CODE, NAME)
         .prefer("utoipa")
         .over(&["paperclip", "okapi", "rweb"])
         .detect_macro_path()
