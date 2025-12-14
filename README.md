@@ -66,6 +66,7 @@ arch-lint check --format json
 | AL005 | `require-thiserror` | Requires `thiserror` derive for error types | Error |
 | AL006 | `require-tracing` | Requires `tracing` crate instead of `log` crate | Warning |
 | AL007 | `tracing-env-init` | Prevents hardcoded log levels in tracing initialization | Warning |
+| AL009 | `async-trait-send-check` | Checks proper usage of `async_trait` Send bounds | Warning |
 
 ### Rule Details
 
@@ -253,6 +254,43 @@ let filter = EnvFilter::try_from_default_env()
 severity = "warning"
 ```
 
+#### AL009: async-trait-send-check
+
+Checks proper usage of `async_trait` Send bounds to prevent unnecessary constraints.
+
+```rust
+// BAD - Unnecessary Send bound in single-threaded context
+#[async_trait]
+trait Handler {
+    async fn handle(&self);
+}
+
+// GOOD - Explicitly opt out of Send for single-threaded
+#[async_trait(?Send)]
+trait Handler {
+    async fn handle(&self);
+}
+
+// GOOD - Explicit Send bound for multi-threaded
+#[async_trait]
+trait Service: Send + Sync {
+    async fn process(&self);
+}
+```
+
+**Rationale:**
+- The `#[async_trait]` macro automatically adds `Send` bounds by default
+- In single-threaded async runtimes (e.g., `LocalSet`, wasm), `Send` is unnecessary
+- Unnecessary `Send` bounds can make traits harder to implement
+- Makes threading requirements explicit in the code
+
+**Configuration:**
+```toml
+[rules.async-trait-send-check]
+severity = "warning"
+runtime_mode = "single-thread"  # "single-thread" or "multi-thread"
+```
+
 ## Configuration
 
 Create `arch-lint.toml` in your project root:
@@ -389,7 +427,10 @@ Use presets for quick configuration:
 
 ```rust
 use arch_lint_core::Analyzer;
-use arch_lint_rules::{NoUnwrapExpect, NoSyncIo, HandlerComplexity, RequireTracing, TracingEnvInit};
+use arch_lint_rules::{
+    NoUnwrapExpect, NoSyncIo, HandlerComplexity, RequireTracing,
+    TracingEnvInit, AsyncTraitSendCheck, RuntimeMode,
+};
 
 let analyzer = Analyzer::builder()
     .root("./src")
@@ -398,6 +439,7 @@ let analyzer = Analyzer::builder()
     .rule(HandlerComplexity::new().max_match_arms(15))
     .rule(RequireTracing::new())
     .rule(TracingEnvInit::new())
+    .rule(AsyncTraitSendCheck::new().runtime_mode(RuntimeMode::SingleThread))
     .exclude("**/generated/**")
     .build()?;
 

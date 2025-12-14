@@ -16,6 +16,7 @@
 //! | AL005 | `require-thiserror` | Requires `thiserror` derive for error types |
 //! | AL006 | `require-tracing` | Requires `tracing` crate instead of `log` crate |
 //! | AL007 | `tracing-env-init` | Prevents hardcoded log levels in tracing initialization |
+//! | AL009 | `async-trait-send-check` | Checks proper usage of `async_trait` Send bounds |
 //!
 //! ## Usage
 //!
@@ -33,6 +34,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod async_trait_send_check;
 mod handler_complexity;
 mod no_error_swallowing;
 mod no_sync_io;
@@ -44,6 +46,7 @@ mod require_tracing;
 mod require_tracing_v2;
 mod tracing_env_init;
 
+pub use async_trait_send_check::{AsyncTraitSendCheck, RuntimeMode};
 pub use handler_complexity::{HandlerComplexity, HandlerComplexityConfig};
 pub use no_error_swallowing::NoErrorSwallowing;
 pub use no_sync_io::NoSyncIo;
