@@ -1,0 +1,17 @@
+# arch-lint configuration for sample-project
+
+[analyzer]
+root = "./src"
+
+[rules.no-unwrap-expect]
+enabled = true
+severity = "error"
+allow_in_tests = true
+
+[rules.no-sync-io]
+enabled = true
+severity = "error"
+
+[rules.no-error-swallowing]
+enabled = true
+severity = "error"

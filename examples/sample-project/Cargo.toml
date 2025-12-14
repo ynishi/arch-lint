@@ -1,0 +1,14 @@
+[package]
+name = "sample-project"
+version = "0.1.0"
+edition = "2021"
+
+# Keep this project independent from the workspace
+[workspace]
+
+[dependencies]
+# Use arch-lint for suppression attributes
+arch-lint = { path = "../../crates/arch-lint" }
+
+[dev-dependencies]
+# For testing

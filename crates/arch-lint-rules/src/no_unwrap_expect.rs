@@ -16,10 +16,10 @@
 //! - `// arch-lint: allow(no-unwrap-expect)` comment
 
 use arch_lint_core::utils::allowance::check_allow_with_reason;
-use arch_lint_core::utils::{has_allow_attr, has_cfg_test, has_test_attr};
+use arch_lint_core::utils::{check_arch_lint_allow, has_allow_attr, has_cfg_test, has_test_attr};
 use arch_lint_core::{FileContext, Location, Rule, Severity, Suggestion, Violation};
 use syn::visit::Visit;
-use syn::{Expr, ExprMethodCall, ItemFn, ItemMod};
+use syn::{Expr, ExprMethodCall, ItemFn, ItemImpl, ItemMod};
 
 /// Rule code for no-unwrap-expect.
 pub const CODE: &str = "AL001";
@@ -123,18 +123,25 @@ struct UnwrapExpectVisitor<'a> {
 
 impl<'ast> Visit<'ast> for UnwrapExpectVisitor<'_> {
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
-        // Check for #[cfg(test)] module
         let was_in_test = self.in_test_context;
+        let was_allowed = self.in_allowed_context;
+
         if has_cfg_test(&node.attrs) {
             self.in_test_context = true;
         }
 
+        // Check for #[arch_lint::allow(no-unwrap-expect)]
+        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
+            self.in_allowed_context = true;
+        }
+
         syn::visit::visit_item_mod(self, node);
+
         self.in_test_context = was_in_test;
+        self.in_allowed_context = was_allowed;
     }
 
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        // Check for #[test] function or #[allow(...)] attribute
         let was_in_test = self.in_test_context;
         let was_allowed = self.in_allowed_context;
 
@@ -146,9 +153,26 @@ impl<'ast> Visit<'ast> for UnwrapExpectVisitor<'_> {
             self.in_allowed_context = true;
         }
 
+        // Check for #[arch_lint::allow(no-unwrap-expect)]
+        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
+            self.in_allowed_context = true;
+        }
+
         syn::visit::visit_item_fn(self, node);
 
         self.in_test_context = was_in_test;
+        self.in_allowed_context = was_allowed;
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
+        let was_allowed = self.in_allowed_context;
+
+        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
+            self.in_allowed_context = true;
+        }
+
+        syn::visit::visit_item_impl(self, node);
+
         self.in_allowed_context = was_allowed;
     }
 

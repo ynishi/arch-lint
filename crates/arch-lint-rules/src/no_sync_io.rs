@@ -27,10 +27,10 @@
 //! - `// arch-lint: allow(no-sync-io)` comment
 
 use arch_lint_core::utils::allowance::check_allow_with_reason;
-use arch_lint_core::utils::{has_allow_attr, path_to_string};
+use arch_lint_core::utils::{check_arch_lint_allow, has_allow_attr, path_to_string};
 use arch_lint_core::{FileContext, Location, Rule, Severity, Suggestion, Violation};
 use syn::visit::Visit;
-use syn::{Expr, ExprCall, ExprMethodCall, ExprPath, ItemFn};
+use syn::{Expr, ExprCall, ExprMethodCall, ExprPath, ItemFn, ItemImpl, ItemMod};
 
 /// Rule code for no-sync-io.
 pub const CODE: &str = "AL002";
@@ -152,6 +152,17 @@ struct SyncIoVisitor<'a> {
 }
 
 impl<'ast> Visit<'ast> for SyncIoVisitor<'_> {
+    fn visit_item_mod(&mut self, node: &'ast ItemMod) {
+        let was_allowed = self.in_allowed_context;
+
+        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
+            self.in_allowed_context = true;
+        }
+
+        syn::visit::visit_item_mod(self, node);
+        self.in_allowed_context = was_allowed;
+    }
+
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
         let was_allowed = self.in_allowed_context;
 
@@ -159,7 +170,22 @@ impl<'ast> Visit<'ast> for SyncIoVisitor<'_> {
             self.in_allowed_context = true;
         }
 
+        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
+            self.in_allowed_context = true;
+        }
+
         syn::visit::visit_item_fn(self, node);
+        self.in_allowed_context = was_allowed;
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
+        let was_allowed = self.in_allowed_context;
+
+        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
+            self.in_allowed_context = true;
+        }
+
+        syn::visit::visit_item_impl(self, node);
         self.in_allowed_context = was_allowed;
     }
 
