@@ -24,9 +24,9 @@
 use arch_lint_core::utils::allowance::check_allow_with_reason;
 use arch_lint_core::utils::check_arch_lint_allow;
 use arch_lint_core::{FileContext, Location, Rule, Severity, Suggestion, Violation};
-use syn::visit::Visit;
 #[allow(unused_imports)]
 use syn::spanned::Spanned;
+use syn::visit::Visit;
 use syn::{ItemImpl, ItemMod};
 
 /// Rule code for prefer-from-over-into.
@@ -145,7 +145,9 @@ impl<'ast> Visit<'ast> for FromIntoVisitor<'_> {
                                     NAME,
                                     Severity::Warning,
                                     location,
-                                    format!("Allow directive for '{NAME}' is missing required reason"),
+                                    format!(
+                                        "Allow directive for '{NAME}' is missing required reason"
+                                    ),
                                 )
                                 .with_suggestion(Suggestion::new(
                                     "Add reason=\"...\" to explain why this exception is necessary",
@@ -159,11 +161,8 @@ impl<'ast> Visit<'ast> for FromIntoVisitor<'_> {
                     // Extract type information for better error message
                     let self_type = quote::quote!(#node.self_ty).to_string();
 
-                    let location = Location::new(
-                        self.ctx.relative_path.clone(),
-                        start.line,
-                        start.column + 1,
-                    );
+                    let location =
+                        Location::new(self.ctx.relative_path.clone(), start.line, start.column + 1);
 
                     self.violations.push(
                         Violation::new(
