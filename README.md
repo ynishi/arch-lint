@@ -67,6 +67,7 @@ arch-lint check --format json
 | AL006 | `require-tracing` | Requires `tracing` crate instead of `log` crate | Warning |
 | AL007 | `tracing-env-init` | Prevents hardcoded log levels in tracing initialization | Warning |
 | AL009 | `async-trait-send-check` | Checks proper usage of `async_trait` Send bounds | Warning |
+| AL010 | `prefer-from-over-into` | Prefers `From` trait implementation over `Into` | Warning |
 
 ### Rule Details
 
@@ -291,6 +292,38 @@ severity = "warning"
 runtime_mode = "single-thread"  # "single-thread" or "multi-thread"
 ```
 
+#### AL010: prefer-from-over-into
+
+Prefers implementing `From` trait over `Into` for type conversions.
+
+```rust
+// BAD - Implementing Into directly
+impl Into<String> for MyType {
+    fn into(self) -> String {
+        self.0
+    }
+}
+
+// GOOD - Implement From, get Into for free
+impl From<MyType> for String {
+    fn from(value: MyType) -> String {
+        value.0
+    }
+}
+```
+
+**Rationale:**
+- Rust provides a blanket implementation: `impl<T, U> Into<U> for T where U: From<T>`
+- Implementing `From` automatically provides `Into` implementation
+- Following this convention reduces code duplication
+- Aligns with Rust standard library practices
+
+**Configuration:**
+```toml
+[rules.prefer-from-over-into]
+severity = "warning"
+```
+
 ## Configuration
 
 Create `arch-lint.toml` in your project root:
@@ -429,7 +462,7 @@ Use presets for quick configuration:
 use arch_lint_core::Analyzer;
 use arch_lint_rules::{
     NoUnwrapExpect, NoSyncIo, HandlerComplexity, RequireTracing,
-    TracingEnvInit, AsyncTraitSendCheck, RuntimeMode,
+    TracingEnvInit, AsyncTraitSendCheck, RuntimeMode, PreferFromOverInto,
 };
 
 let analyzer = Analyzer::builder()
@@ -440,6 +473,7 @@ let analyzer = Analyzer::builder()
     .rule(RequireTracing::new())
     .rule(TracingEnvInit::new())
     .rule(AsyncTraitSendCheck::new().runtime_mode(RuntimeMode::SingleThread))
+    .rule(PreferFromOverInto::new())
     .exclude("**/generated/**")
     .build()?;
 
