@@ -229,11 +229,20 @@ severity = "warning"
 
 ## Suppression
 
-arch-lint provides multiple ways to suppress violations when necessary.
+arch-lint provides multiple ways to suppress violations at different scopes.
 
-### Inline Comments (Recommended)
+### Scope Overview
 
-Use inline comments for fine-grained control:
+| Scope | Method | Use Case |
+|-------|--------|----------|
+| Line | Comment | Single expression |
+| Block | `#[arch_lint::allow(...)]` | Function, impl, module |
+| File | `#![arch_lint::allow(...)]` | Entire file |
+| Global | Configuration | Project-wide exclusion |
+
+### Line-level (Comment)
+
+Use inline comments for single expressions:
 
 ```rust
 // arch-lint: allow(no-sync-io) reason="Startup initialization only"
@@ -243,41 +252,76 @@ let config = std::fs::read_to_string("config.toml")?;
 let value = some_option.unwrap();
 ```
 
-**Mandatory Reasoning:** For `Severity::Error` rules (AL001, AL002, AL003, AL005), the `reason` parameter is **required**. Omitting it will generate a `Severity::Warning` violation:
+### Block-level (Attribute)
+
+Use attributes for functions, impl blocks, or modules:
+
+```rust
+#[arch_lint::allow(no_unwrap_expect, reason = "All inputs validated at entry point")]
+fn parse_validated_config(input: &str) -> Config {
+    let value = input.parse().unwrap();
+    let count = input.len().try_into().unwrap();
+    Config { value, count }
+}
+
+#[arch_lint::allow(no_sync_io, reason = "CLI startup, not in async context")]
+mod startup {
+    // All sync I/O allowed in this module
+}
+```
+
+### File-level (Inner Attribute)
+
+Use inner attributes at the top of the file:
+
+```rust
+//! CLI entry point - synchronous I/O is acceptable here.
+
+#![arch_lint::allow(no_sync_io, reason = "CLI tool, no async runtime")]
+
+fn main() {
+    let config = std::fs::read_to_string("config.toml").unwrap();
+    // ...
+}
+```
+
+### Mandatory Reasoning
+
+For `Severity::Error` rules (AL001, AL002, AL003, AL005), the `reason` parameter is **required**. Omitting it will generate a `Severity::Warning` violation:
 
 ```rust
 // ❌ Warning: Allow directive missing required reason
-// arch-lint: allow(no-unwrap-expect)
-value.unwrap()
+#[arch_lint::allow(no_unwrap_expect)]
+fn bad() { ... }
 
 // ✅ OK: Reason provided
-// arch-lint: allow(no-unwrap-expect) reason="Config validated at startup"
-value.unwrap()
+#[arch_lint::allow(no_unwrap_expect, reason = "Config validated at startup")]
+fn good() { ... }
 ```
 
 This ensures that critical suppressions are always documented and justified.
 
-### Rust Attributes
+### Clippy Compatibility
 
-Standard Rust attributes are also supported:
+Standard Clippy attributes are also recognized:
 
 ```rust
 #[allow(clippy::unwrap_used)]
 fn allowed_unwrap() {
-    value.unwrap()  // OK
+    value.unwrap()  // OK - recognized by arch-lint
 }
 ```
 
 ### Configuration File
 
-Disable rules globally or per-file:
+Disable rules globally or per-file in `arch-lint.toml`:
 
 ```toml
 [rules.no-unwrap-expect]
 enabled = false  # Disable entirely
 
 [rules.no-sync-io]
-exclude_files = ["src/startup.rs"]  # Per-file exclusion
+exclude_files = ["src/startup.rs", "src/cli/**"]
 ```
 
 ## Presets
@@ -382,10 +426,11 @@ fi
 
 | Crate | Description |
 |-------|-------------|
+| `arch-lint` | Facade crate (re-exports core + macros) |
 | `arch-lint-core` | Core framework (traits, analyzer, types) |
 | `arch-lint-rules` | Built-in lint rules |
 | `arch-lint-cli` | Command-line interface |
-| `arch-lint-macros` | Procedural macros (planned) |
+| `arch-lint-macros` | Procedural macros (`#[arch_lint::allow(...)]`) |
 
 ## Comparison with Other Tools
 
