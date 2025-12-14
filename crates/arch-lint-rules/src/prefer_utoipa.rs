@@ -1,13 +1,15 @@
-//! Example rule to prefer `utoipa` over other OpenAPI crates.
+//! Example rule to prefer `utoipa` over other `OpenAPI` crates.
 //!
 //! This demonstrates how easy it is to create custom preferred crate rules.
 
 use arch_lint_core::RequiredCrateRule;
 
 /// Rule code for prefer-utoipa.
+#[allow(dead_code)]
 pub const CODE: &str = "PROJ001";
 
 /// Rule name for prefer-utoipa.
+#[allow(dead_code)]
 pub const NAME: &str = "prefer-utoipa";
 
 /// Creates a new prefer-utoipa rule.
@@ -24,6 +26,7 @@ pub const NAME: &str = "prefer-utoipa";
 /// utoipa::path!("/api/users");
 /// utoipa::openapi!();
 /// ```
+#[allow(dead_code)]
 #[must_use]
 pub fn new_prefer_utoipa() -> RequiredCrateRule {
     RequiredCrateRule::new(CODE, NAME)

@@ -164,8 +164,7 @@ impl<'ast> Visit<'ast> for EnvInitVisitor<'_> {
                             check_allow_with_reason(self.ctx.content, start.line, NAME);
                         if allow_check.is_allowed() {
                             // If reason is required but not provided, create a separate violation
-                            if self.rule.requires_allow_reason() && allow_check.reason().is_none()
-                            {
+                            if self.rule.requires_allow_reason() && allow_check.reason().is_none() {
                                 let location = Location::new(
                                     self.ctx.relative_path.clone(),
                                     start.line,

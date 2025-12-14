@@ -35,7 +35,7 @@ pub enum DetectionPattern {
     TypeSuffix {
         /// Suffix to match (e.g., "Error")
         suffix: String,
-        /// Expected derive attribute (e.g., "thiserror::Error")
+        /// Expected derive attribute (e.g., "`thiserror::Error`")
         expected_derive: String,
     },
 
@@ -242,18 +242,19 @@ impl<'ast> Visit<'ast> for MacroPathVisitor<'_> {
         let path_str = path_to_string(&node.path);
 
         if self.rule.is_alternative_macro(&path_str) {
-            let span = node.path.segments.first().unwrap().ident.span();
+            let Some(first_segment) = node.path.segments.first() else {
+                syn::visit::visit_macro(self, node);
+                return;
+            };
+            let span = first_segment.ident.span();
             let start = span.start();
 
             // Check for inline allow comment
             let allow_check = check_allow_with_reason(self.ctx.content, start.line, self.rule.name);
             if allow_check.is_allowed() {
                 if self.rule.requires_allow_reason() && allow_check.reason().is_none() {
-                    let location = Location::new(
-                        self.ctx.relative_path.clone(),
-                        start.line,
-                        start.column + 1,
-                    );
+                    let location =
+                        Location::new(self.ctx.relative_path.clone(), start.line, start.column + 1);
                     self.violations.push(
                         Violation::new(
                             self.rule.code,

@@ -1,16 +1,19 @@
-//! Rule to require `tracing` crate instead of `log` crate (using RequiredCrateRule).
+//! Rule to require `tracing` crate instead of `log` crate (using `RequiredCrateRule`).
 //!
-//! This is a simplified version using the RequiredCrateRule builder.
+//! This is a simplified version using the `RequiredCrateRule` builder.
 
 use arch_lint_core::RequiredCrateRule;
 
 /// Rule code for require-tracing.
+#[allow(dead_code)]
 pub const CODE: &str = "AL006";
 
 /// Rule name for require-tracing.
+#[allow(dead_code)]
 pub const NAME: &str = "require-tracing";
 
-/// Creates a new require-tracing rule using RequiredCrateRule.
+/// Creates a new require-tracing rule using `RequiredCrateRule`.
+#[allow(dead_code)]
 #[must_use]
 pub fn new_require_tracing() -> RequiredCrateRule {
     RequiredCrateRule::new(CODE, NAME)

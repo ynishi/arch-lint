@@ -141,7 +141,11 @@ impl<'ast> Visit<'ast> for TracingVisitor<'_> {
 
         // Check if this is a log:: macro
         if path_str.starts_with("log::") {
-            let span = node.path.segments.first().unwrap().ident.span();
+            let Some(first_segment) = node.path.segments.first() else {
+                syn::visit::visit_macro(self, node);
+                return;
+            };
+            let span = first_segment.ident.span();
             let start = span.start();
 
             // Check for inline allow comment
@@ -149,11 +153,8 @@ impl<'ast> Visit<'ast> for TracingVisitor<'_> {
             if allow_check.is_allowed() {
                 // If reason is required but not provided, create a separate violation
                 if self.rule.requires_allow_reason() && allow_check.reason().is_none() {
-                    let location = Location::new(
-                        self.ctx.relative_path.clone(),
-                        start.line,
-                        start.column + 1,
-                    );
+                    let location =
+                        Location::new(self.ctx.relative_path.clone(), start.line, start.column + 1);
                     self.violations.push(
                         Violation::new(
                             CODE,
@@ -204,7 +205,11 @@ impl<'ast> Visit<'ast> for TracingVisitor<'_> {
 
         // Check if this is a log:: macro
         if path_str.starts_with("log::") {
-            let span = node.mac.path.segments.first().unwrap().ident.span();
+            let Some(first_segment) = node.mac.path.segments.first() else {
+                syn::visit::visit_expr_macro(self, node);
+                return;
+            };
+            let span = first_segment.ident.span();
             let start = span.start();
 
             // Check for inline allow comment
@@ -212,11 +217,8 @@ impl<'ast> Visit<'ast> for TracingVisitor<'_> {
             if allow_check.is_allowed() {
                 // If reason is required but not provided, create a separate violation
                 if self.rule.requires_allow_reason() && allow_check.reason().is_none() {
-                    let location = Location::new(
-                        self.ctx.relative_path.clone(),
-                        start.line,
-                        start.column + 1,
-                    );
+                    let location =
+                        Location::new(self.ctx.relative_path.clone(), start.line, start.column + 1);
                     self.violations.push(
                         Violation::new(
                             CODE,
