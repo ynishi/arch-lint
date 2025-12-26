@@ -147,8 +147,22 @@ impl ThiserrorVisitor<'_> {
             return;
         }
 
-        // Check for inline allow comment
-        let allow_check = check_allow_with_reason(self.ctx.content, start.line, NAME);
+        // Find the earliest line (including attributes) for allow comment check
+        let earliest_line = attrs
+            .iter()
+            .filter_map(|attr| {
+                attr.bracket_token
+                    .span
+                    .open()
+                    .start()
+                    .line
+                    .checked_sub(0)
+            })
+            .min()
+            .unwrap_or(start.line);
+
+        // Check for inline allow comment (check from attributes start to item start)
+        let allow_check = check_allow_with_reason(self.ctx.content, earliest_line, NAME);
         if allow_check.is_allowed() {
             // If reason is required but not provided, create a separate violation
             if self.rule.requires_allow_reason() && allow_check.reason().is_none() {
@@ -188,6 +202,10 @@ impl ThiserrorVisitor<'_> {
 }
 
 /// Checks if attributes contain `#[derive(thiserror::Error)]` or `#[derive(Error)]`.
+///
+/// This handles both patterns:
+/// - `#[derive(thiserror::Error)]` - fully qualified path
+/// - `#[derive(Error)]` - with `use thiserror::Error;`
 fn has_thiserror_derive(attrs: &[syn::Attribute]) -> bool {
     for attr in attrs {
         if !attr.path().is_ident("derive") {
@@ -195,16 +213,21 @@ fn has_thiserror_derive(attrs: &[syn::Attribute]) -> bool {
         }
 
         let attr_str = quote::quote!(#attr).to_string();
-        // Check for various thiserror patterns
-        if attr_str.contains("thiserror::Error")
-            || attr_str.contains("thiserror :: Error")
-            || (attr_str.contains("Error") && !attr_str.contains("derive(Error)"))
+        let normalized = attr_str.replace(' ', "");
+
+        // Check for fully qualified thiserror::Error
+        if normalized.contains("thiserror::Error") {
+            return true;
+        }
+
+        // Check for standalone Error in derive (from `use thiserror::Error;`)
+        // Pattern: derive(..., Error, ...) or derive(Error) or derive(...,Error)
+        if normalized.contains("derive(Error,")
+            || normalized.contains("derive(Error)")
+            || normalized.contains(",Error,")
+            || normalized.contains(",Error)")
         {
-            // More precise check for standalone Error in derive
-            let normalized = attr_str.replace(' ', "");
-            if normalized.contains("thiserror::Error") {
-                return true;
-            }
+            return true;
         }
     }
 
@@ -282,5 +305,68 @@ pub struct ParseError {
 "#,
         );
         assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn test_allows_with_use_thiserror_error() {
+        // When using `use thiserror::Error;` and then `#[derive(Error)]`
+        let violations = check_code(
+            r#"
+#[derive(Debug, Error)]
+pub enum MyError {
+    Io(std::io::Error),
+}
+"#,
+        );
+        assert!(violations.is_empty(), "Should allow #[derive(Error)] pattern");
+    }
+
+    #[test]
+    fn test_allows_error_only_derive() {
+        // derive(Error) alone
+        let violations = check_code(
+            r#"
+#[derive(Error)]
+pub enum MyError {
+    Io(std::io::Error),
+}
+"#,
+        );
+        assert!(violations.is_empty(), "Should allow #[derive(Error)] alone");
+    }
+
+    #[test]
+    fn test_allow_comment_before_attributes() {
+        // Allow comment before derive attribute
+        let violations = check_code(
+            r#"
+// arch-lint: allow(require-thiserror) reason="Data struct"
+#[derive(Debug)]
+pub struct LintError {
+    pub message: String,
+}
+"#,
+        );
+        assert!(
+            violations.is_empty(),
+            "Should respect allow comment before attributes"
+        );
+    }
+
+    #[test]
+    fn test_allow_comment_on_previous_line() {
+        // Allow comment directly before struct
+        let violations = check_code(
+            r#"
+// arch-lint: allow(require-thiserror)
+pub struct ParseError {
+    line: usize,
+}
+"#,
+        );
+        assert!(
+            violations.is_empty(),
+            "Should respect allow comment on previous line"
+        );
     }
 }
