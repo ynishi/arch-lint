@@ -68,14 +68,38 @@ pub fn run(
     Ok(())
 }
 
+/// Find configuration with fallback to global config.
+///
+/// Resolution order:
+/// 1. `{project}/arch-lint.toml` or `.arch-lint.toml`
+/// 2. `~/.arch-lint/base/rust.toml`
+/// 3. `~/.arch-lint/config.toml`
 fn find_config(path: &Path) -> Option<Config> {
+    // Project-level
     let config_names = ["arch-lint.toml", ".arch-lint.toml"];
-
     for name in &config_names {
         let config_path = path.join(name);
         if config_path.exists() {
+            tracing::debug!("Using project config: {}", config_path.display());
             return Config::from_file(&config_path).ok();
         }
+    }
+
+    // Global fallback
+    let global_dir = crate::global_config_dir()?;
+
+    // Language-specific base
+    let rust_config = global_dir.join("base").join("rust.toml");
+    if rust_config.exists() {
+        tracing::debug!("Using global config: {}", rust_config.display());
+        return Config::from_file(&rust_config).ok();
+    }
+
+    // Global default
+    let global_config = global_dir.join("config.toml");
+    if global_config.exists() {
+        tracing::debug!("Using global config: {}", global_config.display());
+        return Config::from_file(&global_config).ok();
     }
 
     None

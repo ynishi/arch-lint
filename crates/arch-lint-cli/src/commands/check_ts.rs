@@ -82,6 +82,12 @@ pub fn run(path: &Path, format: OutputFormat, config_path: Option<PathBuf>) -> R
     Ok(())
 }
 
+/// Load tree-sitter config with fallback to global config.
+///
+/// Resolution order:
+/// 1. `--config` flag (explicit)
+/// 2. `{project}/arch-lint.toml` or `.arch-lint.toml`
+/// 3. `~/.arch-lint/config.toml`
 fn load_ts_config(path: &Path, config_path: Option<&Path>) -> Result<ArchConfig> {
     let candidates = if let Some(cp) = config_path {
         vec![cp.to_path_buf()]
@@ -91,8 +97,19 @@ fn load_ts_config(path: &Path, config_path: Option<&Path>) -> Result<ArchConfig>
 
     for candidate in &candidates {
         if candidate.exists() {
+            tracing::debug!("Using project config: {}", candidate.display());
             return ArchConfig::from_file(candidate)
                 .with_context(|| format!("Failed to load {}", candidate.display()));
+        }
+    }
+
+    // Global fallback
+    if let Some(global_dir) = crate::global_config_dir() {
+        let global_config = global_dir.join("config.toml");
+        if global_config.exists() {
+            tracing::debug!("Using global config: {}", global_config.display());
+            return ArchConfig::from_file(&global_config)
+                .with_context(|| format!("Failed to load {}", global_config.display()));
         }
     }
 

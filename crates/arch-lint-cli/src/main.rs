@@ -88,6 +88,13 @@ pub enum EngineHint {
     Ts,
 }
 
+/// Returns the global config directory path (`~/.arch-lint/`).
+pub(crate) fn global_config_dir() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".arch-lint"))
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -131,17 +138,30 @@ fn main() -> Result<()> {
 }
 
 /// Auto-detect engine from config: if `[[layers]]` present → ts, else → syn.
+///
+/// Resolution order:
+/// 1. `--config` flag (explicit)
+/// 2. `{project}/arch-lint.toml` or `.arch-lint.toml`
+/// 3. `~/.arch-lint/config.toml` (global fallback)
 fn detect_engine(path: &std::path::Path, config_path: Option<&std::path::Path>) -> EngineHint {
-    let candidates = if let Some(cp) = config_path {
+    let mut candidates = if let Some(cp) = config_path {
         vec![cp.to_path_buf()]
     } else {
         vec![path.join("arch-lint.toml"), path.join(".arch-lint.toml")]
     };
 
+    // Global fallback
+    if let Some(global_dir) = global_config_dir() {
+        candidates.push(global_dir.join("config.toml"));
+    }
+
     for candidate in candidates {
         if let Ok(content) = std::fs::read_to_string(&candidate) {
             if content.contains("[[layers]]") {
-                tracing::info!("Detected [[layers]] in config, using tree-sitter engine");
+                tracing::info!(
+                    "Detected [[layers]] in {}, using tree-sitter engine",
+                    candidate.display()
+                );
                 return EngineHint::Ts;
             }
         }
