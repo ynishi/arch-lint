@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tree-sitter engine** (`arch-lint-ts` crate) - Cross-language architecture layer enforcement
+  - `LanguageExtractor` trait for pluggable language support
+  - `KotlinExtractor` for Kotlin `.kt`/`.kts` files (package, imports, declarations)
+  - `LayerResolver` with longest-prefix-match package-to-layer mapping
+  - `ArchRuleEngine` with three rule types:
+    - LAYER001 (layer dependency) - forbidden cross-layer imports
+    - PATTERN001 (import pattern) - forbidden import path patterns per layer
+    - NAMING001 (naming rule) - naming convention-based access control
+  - `ArchConfig` TOML parser with `[[layers]]`, `[dependencies]`, `[[constraints]]`
+  - Config validation (unknown layers, self-dependency, missing entries)
+  - 30 unit tests
+
+- **CLI dual engine support**
+  - `--engine ts|syn` flag for explicit engine selection
+  - Auto-detection from config: `[[layers]]` present triggers tree-sitter engine
+  - `arch-lint init --ts` generates tree-sitter config template
+  - `arch-lint check` dispatches to correct engine automatically
+
+- **Documentation**
+  - `docs/tree-sitter-engine.md` - Comprehensive tree-sitter engine guide
+
 ## [0.2.0] - 2025-12-14
 
 ### Added

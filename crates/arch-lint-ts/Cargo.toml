@@ -1,0 +1,17 @@
+[package]
+name = "arch-lint-ts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Tree-sitter based cross-language architecture linter"
+keywords = ["lint", "architecture", "tree-sitter", "kotlin"]
+categories = ["development-tools"]
+
+[dependencies]
+arch-lint-core.workspace = true
+tree-sitter = "0.26"
+tree-sitter-kotlin-ng = "1.1"
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }

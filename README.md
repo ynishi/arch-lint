@@ -1,6 +1,6 @@
 # arch-lint
 
-A `syn`-based extensible architecture linter for Rust projects.
+Architecture linter for Rust projects and cross-language layer enforcement.
 
 [![Crates.io](https://img.shields.io/crates/v/arch-lint.svg)](https://crates.io/crates/arch-lint)
 [![License](https://img.shields.io/crates/l/arch-lint.svg)](LICENSE)
@@ -19,6 +19,8 @@ In the age of AI-assisted coding, both humans and AI tend to miss consistent arc
 
 ### Key Features
 
+- **Dual engine** - syn (Rust AST) + Tree-sitter (Kotlin, and more to come)
+- **Layer enforcement** - TOML-defined architecture layers with dependency rules
 - **AST-based analysis** - Deep understanding of your code structure
 - **Mandatory reasoning** - Critical violations require documented reasons when suppressed
 - **Extensible rules** - Easy to add custom architectural constraints
@@ -38,22 +40,25 @@ cargo add arch-lint-core arch-lint-rules --dev
 
 ## Quick Start
 
+### Rust (syn engine)
+
 ```bash
-# Initialize configuration
 arch-lint init
-
-# Run lint checks
 arch-lint check
-
-# Check specific directory
-arch-lint check ./src
-
-# Use specific rules only
 arch-lint check --rules no-unwrap-expect,no-sync-io
-
-# Output as JSON (for CI integration)
 arch-lint check --format json
 ```
+
+### Cross-language (tree-sitter engine)
+
+```bash
+arch-lint init --ts
+# Edit [[layers]] and [dependencies] in arch-lint.toml
+arch-lint check              # auto-detects engine from [[layers]]
+arch-lint check --engine ts  # explicit engine selection
+```
+
+See [docs/tree-sitter-engine.md](docs/tree-sitter-engine.md) for full documentation.
 
 ## Available Rules
 
@@ -682,20 +687,23 @@ fi
 |-------|-------------|
 | `arch-lint` | Facade crate (re-exports core + macros) |
 | `arch-lint-core` | Core framework (traits, analyzer, types) |
-| `arch-lint-rules` | Built-in lint rules |
+| `arch-lint-rules` | Built-in lint rules (syn engine) |
+| `arch-lint-ts` | Tree-sitter engine (cross-language layer enforcement) |
 | `arch-lint-cli` | Command-line interface |
 | `arch-lint-macros` | Procedural macros (`#[arch_lint::allow(...)]`) |
 
 ## Comparison with Other Tools
 
-| Tool | Focus | AST-based | Custom Rules | Rust-specific |
-|------|-------|-----------|--------------|---------------|
-| **arch-lint** | Architecture patterns | Yes | Easy | Yes |
-| Clippy | Code quality | Yes | Hard | Yes |
-| cargo-deny | Dependencies | No | Config | Yes |
-| rust-analyzer | IDE support | Yes | No | Yes |
+| Tool | Focus | AST-based | Custom Rules | Cross-language |
+|------|-------|-----------|--------------|----------------|
+| **arch-lint** | Architecture patterns | Yes | Easy | Yes (Tree-sitter) |
+| Clippy | Code quality | Yes | Hard | No |
+| cargo-deny | Dependencies | No | Config | No |
+| ArchUnit | Layer enforcement | Yes | Java DSL | JVM only |
+| deptry | Import checking | No | Config | Python only |
 
-arch-lint complements Clippy by focusing on **architectural patterns** rather than code style. Use both for comprehensive linting.
+arch-lint complements Clippy by focusing on **architectural patterns** rather than code style.
+The tree-sitter engine extends this to non-Rust languages (Kotlin first, more planned).
 
 ## Contributing
 

@@ -1,19 +1,23 @@
 # arch-lint Architecture
 
-A `syn`-based extensible architecture linter for Rust projects.
+Architecture linter with dual engines: syn (Rust AST) and Tree-sitter (cross-language).
 
 ## Overview
 
-arch-lint is designed to catch architectural violations and enforce coding patterns that are often missed by both humans and AI during code review. It provides a framework for defining custom lint rules based on AST analysis.
+arch-lint is designed to catch architectural violations and enforce coding patterns that are often missed by both humans and AI during code review. It provides two complementary engines:
+
+- **syn engine** - Per-file Rust AST analysis (AL001-AL012 rules)
+- **tree-sitter engine** - Cross-language layer dependency enforcement (LAYER001, PATTERN001)
 
 ## Crate Structure
 
 ```
 arch-lint/
 ├── crates/
-│   ├── arch-lint-core/       # Core framework
-│   ├── arch-lint-rules/      # Built-in rules
-│   ├── arch-lint-cli/        # CLI binary
+│   ├── arch-lint-core/       # Core framework (shared types)
+│   ├── arch-lint-rules/      # Built-in syn rules (AL001-AL012)
+│   ├── arch-lint-ts/         # Tree-sitter engine (layer enforcement)
+│   ├── arch-lint-cli/        # CLI binary (dual engine dispatch)
 │   └── arch-lint-macros/     # Procedural macros (future)
 ```
 
@@ -45,16 +49,38 @@ Presets:
 - `Strict` - All rules with stricter settings
 - `Minimal` - AL001 only for gradual adoption
 
+### arch-lint-ts
+
+Tree-sitter based cross-language layer enforcement. Provides:
+
+- **`LanguageExtractor` trait** - Extension point for new languages
+- **`KotlinExtractor`** - Kotlin import/class extraction via Tree-sitter
+- **`LayerResolver`** - Package-to-layer mapping (longest-prefix-match)
+- **`ArchRuleEngine`** - Layer dependency (LAYER001), pattern constraint (PATTERN001), naming convention (NAMING001) checks
+- **`ArchConfig`** - TOML deserialization for `[[layers]]`, `[dependencies]`, `[[constraints]]`
+
+Internal data flow:
+
+```
+Source (.kt) → KotlinExtractor → FileAnalysis → ArchRuleEngine → Vec<Violation>
+```
+
+See [docs/tree-sitter-engine.md](docs/tree-sitter-engine.md) for full documentation.
+
 ### arch-lint-cli
 
-Command-line interface:
+Command-line interface with dual engine dispatch:
 
 ```bash
-arch-lint check [PATH]           # Run lint checks
+arch-lint check [PATH]           # Run lint checks (auto-detect engine)
+arch-lint check --engine ts      # Force tree-sitter engine
 arch-lint check --format json    # JSON output for CI
 arch-lint list-rules             # Show available rules
-arch-lint init                   # Create config file
+arch-lint init                   # Create syn config
+arch-lint init --ts              # Create tree-sitter config (with [[layers]])
 ```
+
+Engine auto-detection: if `[[layers]]` is present in config, the tree-sitter engine is used.
 
 ### arch-lint-macros
 

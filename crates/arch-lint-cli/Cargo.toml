@@ -16,6 +16,8 @@ path = "src/main.rs"
 [dependencies]
 arch-lint-core.workspace = true
 arch-lint-rules.workspace = true
+arch-lint-ts.workspace = true
+ignore.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

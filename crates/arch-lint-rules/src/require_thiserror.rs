@@ -150,14 +150,7 @@ impl ThiserrorVisitor<'_> {
         // Find the earliest line (including attributes) for allow comment check
         let earliest_line = attrs
             .iter()
-            .filter_map(|attr| {
-                attr.bracket_token
-                    .span
-                    .open()
-                    .start()
-                    .line
-                    .checked_sub(0)
-            })
+            .filter_map(|attr| attr.bracket_token.span.open().start().line.checked_sub(0))
             .min()
             .unwrap_or(start.line);
 
@@ -318,7 +311,10 @@ pub enum MyError {
 }
 "#,
         );
-        assert!(violations.is_empty(), "Should allow #[derive(Error)] pattern");
+        assert!(
+            violations.is_empty(),
+            "Should allow #[derive(Error)] pattern"
+        );
     }
 
     #[test]
