@@ -1,10 +1,11 @@
 [package]
 name = "arch-lint-ts"
+description = "Tree-sitter based cross-language architecture linter"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Tree-sitter based cross-language architecture linter"
+repository.workspace = true
 keywords = ["lint", "architecture", "tree-sitter", "kotlin"]
 categories = ["development-tools"]
 
