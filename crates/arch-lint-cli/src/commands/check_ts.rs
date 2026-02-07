@@ -11,8 +11,12 @@ use std::path::{Path, PathBuf};
 use crate::OutputFormat;
 
 /// Runs the tree-sitter check command.
-pub fn run(path: &Path, format: OutputFormat, config_path: Option<&Path>) -> Result<()> {
-    let config = load_ts_config(path, config_path)?;
+pub fn run(
+    path: &Path,
+    format: OutputFormat,
+    source: &crate::config_resolver::ConfigSource,
+) -> Result<()> {
+    let config = load_ts_config(source)?;
     config.validate().context("Config validation failed")?;
 
     let engine = ArchRuleEngine::new(config.clone());
@@ -81,10 +85,8 @@ pub fn run(path: &Path, format: OutputFormat, config_path: Option<&Path>) -> Res
     Ok(())
 }
 
-fn load_ts_config(path: &Path, config_path: Option<&Path>) -> Result<ArchConfig> {
-    let source = crate::config_resolver::resolve(path, config_path);
-
-    match &source {
+fn load_ts_config(source: &crate::config_resolver::ConfigSource) -> Result<ArchConfig> {
+    match source {
         crate::config_resolver::ConfigSource::Default => {
             anyhow::bail!("No arch-lint.toml found. Run `arch-lint init --ts` to create one.")
         }

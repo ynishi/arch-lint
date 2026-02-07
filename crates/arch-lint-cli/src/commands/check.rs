@@ -16,11 +16,9 @@ pub fn run(
     format: OutputFormat,
     rules_filter: Option<String>,
     exclude: Vec<String>,
-    config_path: Option<&Path>,
+    source: &crate::config_resolver::ConfigSource,
 ) -> Result<()> {
-    let source = crate::config_resolver::resolve(path, config_path);
-
-    let config = match &source {
+    let config = match source {
         crate::config_resolver::ConfigSource::Default => Config::default(),
         other => {
             // Invariant: non-Default variants always have a path

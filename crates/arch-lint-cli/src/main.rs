@@ -116,12 +116,11 @@ fn main() -> Result<()> {
             exclude,
             engine,
         } => {
-            let engine = engine.unwrap_or_else(|| detect_engine(&path, cli.config.as_deref()));
+            let source = config_resolver::resolve(&path, cli.config.as_deref());
+            let engine = engine.unwrap_or_else(|| detect_engine(&source));
             match engine {
-                EngineHint::Syn => {
-                    commands::check::run(&path, format, rules, exclude, cli.config.as_deref())
-                }
-                EngineHint::Ts => commands::check_ts::run(&path, format, cli.config.as_deref()),
+                EngineHint::Syn => commands::check::run(&path, format, rules, exclude, &source),
+                EngineHint::Ts => commands::check_ts::run(&path, format, &source),
             }
         }
         Commands::ListRules => {
@@ -139,9 +138,7 @@ fn main() -> Result<()> {
 }
 
 /// Auto-detect engine from config: if `[[layers]]` present → ts, else → syn.
-fn detect_engine(path: &std::path::Path, config_path: Option<&std::path::Path>) -> EngineHint {
-    let source = config_resolver::resolve(path, config_path);
-
+fn detect_engine(source: &config_resolver::ConfigSource) -> EngineHint {
     if let Some(p) = source.path() {
         if let Ok(content) = std::fs::read_to_string(p) {
             if content.contains("[[layers]]") {
