@@ -47,6 +47,10 @@ tokio = { version = "1", features = ["full"] }
 
 # Testing
 insta = { version = "1", features = ["yaml"] }
+tempfile = "3"
+
+# Platform
+home = "0.5"
 
 # Logging
 tracing = "0.1"

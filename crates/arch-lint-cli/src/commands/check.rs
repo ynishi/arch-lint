@@ -6,7 +6,7 @@ use arch_lint_rules::{
     recommended_rules, HandlerComplexity, NoErrorSwallowing, NoSyncIo, NoUnwrapExpect,
     RequireThiserror, RequireTracing, TracingEnvInit,
 };
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::OutputFormat;
 
@@ -16,15 +16,21 @@ pub fn run(
     format: OutputFormat,
     rules_filter: Option<String>,
     exclude: Vec<String>,
-    config_path: Option<PathBuf>,
+    config_path: Option<&Path>,
 ) -> Result<()> {
-    // Load config if specified
-    let config = if let Some(config_path) = config_path {
-        Config::from_file(&config_path)
-            .with_context(|| format!("Failed to load config from {}", config_path.display()))?
-    } else {
-        // Try to find config in standard locations
-        find_config(path).unwrap_or_default()
+    let source = crate::config_resolver::resolve(path, config_path);
+
+    let config = match &source {
+        crate::config_resolver::ConfigSource::Default => Config::default(),
+        other => {
+            // SAFETY: non-Default variants always have a path
+            let p = other.path().context("resolved config has no path")?;
+            if source.is_global() {
+                tracing::info!("Using global config: {}", p.display());
+            }
+            Config::from_file(p)
+                .with_context(|| format!("Failed to load config: {}", p.display()))?
+        }
     };
 
     // Build analyzer
@@ -66,19 +72,6 @@ pub fn run(
     }
 
     Ok(())
-}
-
-fn find_config(path: &Path) -> Option<Config> {
-    let config_names = ["arch-lint.toml", ".arch-lint.toml"];
-
-    for name in &config_names {
-        let config_path = path.join(name);
-        if config_path.exists() {
-            return Config::from_file(&config_path).ok();
-        }
-    }
-
-    None
 }
 
 fn filter_rules(names: &[&str]) -> Vec<arch_lint_core::RuleBox> {

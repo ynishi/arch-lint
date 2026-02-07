@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
 mod commands;
+mod config_resolver;
 
 /// Architecture linter for Rust projects and cross-language layer enforcement
 #[derive(Parser)]
@@ -72,14 +73,19 @@ enum Commands {
     },
 }
 
+/// Output format for lint results.
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
 pub enum OutputFormat {
+    /// Human-readable text output.
     #[default]
     Text,
+    /// JSON output.
     Json,
+    /// One-line-per-violation compact format.
     Compact,
 }
 
+/// Engine selection hint.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum EngineHint {
     /// syn-based Rust AST analysis (existing rules)
@@ -112,8 +118,10 @@ fn main() -> Result<()> {
         } => {
             let engine = engine.unwrap_or_else(|| detect_engine(&path, cli.config.as_deref()));
             match engine {
-                EngineHint::Syn => commands::check::run(&path, format, rules, exclude, cli.config),
-                EngineHint::Ts => commands::check_ts::run(&path, format, cli.config),
+                EngineHint::Syn => {
+                    commands::check::run(&path, format, rules, exclude, cli.config.as_deref())
+                }
+                EngineHint::Ts => commands::check_ts::run(&path, format, cli.config.as_deref()),
             }
         }
         Commands::ListRules => {
@@ -132,16 +140,15 @@ fn main() -> Result<()> {
 
 /// Auto-detect engine from config: if `[[layers]]` present → ts, else → syn.
 fn detect_engine(path: &std::path::Path, config_path: Option<&std::path::Path>) -> EngineHint {
-    let candidates = if let Some(cp) = config_path {
-        vec![cp.to_path_buf()]
-    } else {
-        vec![path.join("arch-lint.toml"), path.join(".arch-lint.toml")]
-    };
+    let source = config_resolver::resolve(path, config_path);
 
-    for candidate in candidates {
-        if let Ok(content) = std::fs::read_to_string(&candidate) {
+    if let Some(p) = source.path() {
+        if let Ok(content) = std::fs::read_to_string(p) {
             if content.contains("[[layers]]") {
-                tracing::info!("Detected [[layers]] in config, using tree-sitter engine");
+                tracing::info!(
+                    "Detected [[layers]] in {}, using tree-sitter engine",
+                    p.display()
+                );
                 return EngineHint::Ts;
             }
         }

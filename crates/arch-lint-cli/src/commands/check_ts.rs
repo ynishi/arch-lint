@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use crate::OutputFormat;
 
 /// Runs the tree-sitter check command.
-pub fn run(path: &Path, format: OutputFormat, config_path: Option<PathBuf>) -> Result<()> {
-    let config = load_ts_config(path, config_path.as_deref())?;
+pub fn run(path: &Path, format: OutputFormat, config_path: Option<&Path>) -> Result<()> {
+    let config = load_ts_config(path, config_path)?;
     config.validate().context("Config validation failed")?;
 
     let engine = ArchRuleEngine::new(config.clone());
@@ -37,12 +37,11 @@ pub fn run(path: &Path, format: OutputFormat, config_path: Option<PathBuf>) -> R
             .map(|e| format!(".{e}"))
             .unwrap_or_default();
 
-        let extractor = match extractors
+        let Some(extractor) = extractors
             .iter()
             .find(|e| e.extensions().contains(&ext.as_str()))
-        {
-            Some(e) => e,
-            None => continue,
+        else {
+            continue;
         };
 
         let source = std::fs::read_to_string(file_path)
@@ -83,20 +82,20 @@ pub fn run(path: &Path, format: OutputFormat, config_path: Option<PathBuf>) -> R
 }
 
 fn load_ts_config(path: &Path, config_path: Option<&Path>) -> Result<ArchConfig> {
-    let candidates = if let Some(cp) = config_path {
-        vec![cp.to_path_buf()]
-    } else {
-        vec![path.join("arch-lint.toml"), path.join(".arch-lint.toml")]
-    };
+    let source = crate::config_resolver::resolve(path, config_path);
 
-    for candidate in &candidates {
-        if candidate.exists() {
-            return ArchConfig::from_file(candidate)
-                .with_context(|| format!("Failed to load {}", candidate.display()));
+    match &source {
+        crate::config_resolver::ConfigSource::Default => {
+            anyhow::bail!("No arch-lint.toml found. Run `arch-lint init --ts` to create one.")
+        }
+        other => {
+            let p = other.path().context("resolved config has no path")?;
+            if source.is_global() {
+                tracing::info!("Using global config: {}", p.display());
+            }
+            ArchConfig::from_file(p).with_context(|| format!("Failed to load {}", p.display()))
         }
     }
-
-    anyhow::bail!("No arch-lint.toml found. Run `arch-lint init --ts` to create one.")
 }
 
 fn discover_files(
