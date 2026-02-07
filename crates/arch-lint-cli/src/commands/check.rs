@@ -23,7 +23,7 @@ pub fn run(
     let config = match &source {
         crate::config_resolver::ConfigSource::Default => Config::default(),
         other => {
-            // SAFETY: non-Default variants always have a path
+            // Invariant: non-Default variants always have a path
             let p = other.path().context("resolved config has no path")?;
             if source.is_global() {
                 tracing::info!("Using global config: {}", p.display());
