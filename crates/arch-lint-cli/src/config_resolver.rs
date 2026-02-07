@@ -232,4 +232,29 @@ mod tests {
         assert!(ConfigSource::Global(PathBuf::new()).is_global());
         assert!(!ConfigSource::Default.is_global());
     }
+
+    #[test]
+    fn global_config_dir_respects_env_var() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        // Must run serially — env var is process-global
+        std::env::set_var("ARCH_LINT_CONFIG_DIR", &dir);
+        let result = global_config_dir();
+        std::env::remove_var("ARCH_LINT_CONFIG_DIR");
+
+        assert_eq!(result, Some(PathBuf::from(dir)));
+    }
+
+    #[test]
+    fn global_config_dir_falls_back_to_home() {
+        // Ensure env var is unset
+        std::env::remove_var("ARCH_LINT_CONFIG_DIR");
+
+        let result = global_config_dir();
+        // Should return Some(~/.arch-lint) on any machine with a home dir
+        if let Some(home) = home::home_dir() {
+            assert_eq!(result, Some(home.join(".arch-lint")));
+        }
+    }
 }
