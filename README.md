@@ -7,58 +7,162 @@ Architecture linter for Rust projects and cross-language layer enforcement.
 
 ## Why arch-lint?
 
-In the age of AI-assisted coding, both humans and AI tend to miss consistent architectural violations:
+Code review catches a problem once. arch-lint catches it forever.
+
+In the age of AI-assisted coding, both humans and LLMs produce the same architectural violations repeatedly:
 
 - `.unwrap()` calls sneaking into production code
-- Blocking I/O in async contexts causing performance issues
+- Blocking I/O in async contexts
+- Domain layer importing infrastructure directly
 - Errors being swallowed with just logging
-- Handler functions growing too complex
-- Inconsistent error type definitions
+- Wrong crate used when the team has a preferred alternative
 
-**arch-lint catches what code review misses.** It provides machine-enforceable rules for patterns that are easy to overlook but critical for code quality.
+**The first time is understandable. The second time is a system failure.** Relying on willpower, diligence, or "be more careful next time" does not scale. arch-lint encodes review feedback as machine-enforceable rules so that the same mistake never requires human (or AI) attention again.
+
+### How It Works
+
+1. A PR review catches an architectural violation
+2. You encode the rule in `arch-lint.toml` (TOML only, no code required) or as a custom `Rule`
+3. `cargo test` fails on every future occurrence — automatically
 
 ### Key Features
 
+- **`cargo test` integration** - `arch_lint::check!()` runs all rules as part of your test suite
+- **Declarative rules** - Define architecture constraints in TOML without writing Rust code
 - **Dual engine** - syn (Rust AST) + Tree-sitter (Kotlin, and more to come)
-- **Layer enforcement** - TOML-defined architecture layers with dependency rules
-- **AST-based analysis** - Deep understanding of your code structure
+- **Layer enforcement** - TOML-defined scopes with dependency rules
 - **Mandatory reasoning** - Critical violations require documented reasons when suppressed
-- **Extensible rules** - Easy to add custom architectural constraints
 - **CI-friendly** - JSON output, exit codes, and clear violation reporting
 
-## Installation
+## Quick Start (30 seconds)
+
+### 1. Add dependency
+
+```bash
+cargo add arch-lint --dev
+```
+
+### 2. Generate config
 
 ```bash
 cargo install arch-lint-cli
-```
-
-Or add to your project:
-
-```bash
-cargo add arch-lint-core arch-lint-rules --dev
-```
-
-## Quick Start
-
-### Rust (syn engine)
-
-```bash
 arch-lint init
-arch-lint check
-arch-lint check --rules no-unwrap-expect,no-sync-io
-arch-lint check --format json
 ```
 
-### Cross-language (tree-sitter engine)
+This creates `arch-lint.toml` with sensible defaults (unwrap/sync-io checks enabled).
+
+### 3. Create the test gate
+
+```rust
+// tests/architecture.rs
+arch_lint::check!();  // expands to a #[test] function
+```
+
+### 4. Run
 
 ```bash
-arch-lint init --ts
-# Edit [[layers]] and [dependencies] in arch-lint.toml
-arch-lint check              # auto-detects engine from [[layers]]
-arch-lint check --engine ts  # explicit engine selection
+cargo test
 ```
 
-See [docs/tree-sitter-engine.md](docs/tree-sitter-engine.md) for full documentation.
+Every rule violation now fails your test suite. Done.
+
+### Options
+
+```rust
+// Strict preset — all rules enabled
+arch_lint::check!(preset = "strict");
+
+// Custom config path
+arch_lint::check!(config = "my-lint.toml");
+
+// Fail on warnings too (default: fail on errors only)
+arch_lint::check!(fail_on = "warning");
+
+// Combined
+arch_lint::check! {
+    preset = "strict",
+    config = "arch-lint.toml",
+    fail_on = "warning",
+}
+```
+
+## Declarative Rules (No Code Required)
+
+Define architecture constraints directly in `arch-lint.toml`. When a review catches a pattern you want to prevent, add a TOML block — no Rust code needed.
+
+### Scope-Based Dependency Control
+
+```toml
+# Define architectural scopes
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[scopes]]
+name = "handler"
+paths = ["src/handler/**"]
+
+# Domain must not import infrastructure
+[[deny-scope-dep]]
+from = "domain"
+to = ["infra"]
+message = "Domain layer must not depend on infrastructure. Use ports/adapters."
+
+# Domain must not use database crates directly
+[[restrict-use]]
+name = "no-db-in-domain"
+scope = "domain"
+deny = ["sqlx::*", "diesel::*", "sea_orm::*"]
+message = "Database access belongs in the infra layer."
+```
+
+### Crate Preference Enforcement
+
+```toml
+# Team decided: use tracing, not log
+[[require-use]]
+name = "prefer-tracing"
+files = ["src/**"]
+prefer = "tracing"
+over = ["log"]
+message = "Use tracing instead of log for structured logging."
+```
+
+### Real-World Example: Review Feedback to Rule
+
+**Before** — a reviewer has to say this every time:
+
+> "Don't call sqlx directly from the domain layer. Use the repository trait."
+
+**After** — add to `arch-lint.toml`:
+
+```toml
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[restrict-use]]
+name = "no-sqlx-in-domain"
+scope = "domain"
+deny = ["sqlx::*"]
+message = "Use repository traits instead of direct DB access in domain."
+```
+
+Now `cargo test` catches it automatically. The reviewer never has to say it again. The AI never generates it unchecked again.
+
+## AI Coding Integration
+
+arch-lint is designed to work as a guardrail for AI-generated code. Since `check!()` integrates into `cargo test`, any AI coding workflow that runs tests automatically gets arch-lint enforcement for free:
+
+- **Claude Code / Cursor / Copilot** — AI runs `cargo test` as part of its feedback loop; arch-lint violations surface immediately
+- **CI/CD** — AI-generated PRs are checked by the same rules as human PRs
+- **CLAUDE.md / .cursorrules** — Point the AI at `arch-lint.toml` to explain project constraints upfront
+
+The goal: the AI learns from the same rule set that humans follow, and neither needs to remember past review feedback.
 
 ## Available Rules
 
@@ -208,7 +312,7 @@ severity = "error"
 
 #### AL006: require-tracing
 
-Requires `tracing` crate instead of `log` crate for structured logging.
+Requires `tracing` crate instead of `log` for structured, async-aware logging.
 
 ```rust
 // BAD
@@ -220,11 +324,6 @@ tracing::info!("Processing request");
 tracing::error!("Error: {}", e);
 ```
 
-**Rationale:**
-- `tracing` provides structured, contextual logging
-- Better performance and async-aware design
-- Consistent logging across workspace crates
-
 **Configuration:**
 ```toml
 [rules.require-tracing]
@@ -233,7 +332,7 @@ severity = "warning"
 
 #### AL007: tracing-env-init
 
-Prevents hardcoded log levels in tracing initialization.
+Prevents hardcoded log levels in tracing initialization so `RUST_LOG` works at runtime.
 
 ```rust
 // BAD - Hardcoded level
@@ -251,11 +350,6 @@ let filter = EnvFilter::try_from_default_env()
     .unwrap_or_else(|_| EnvFilter::new("info"));
 ```
 
-**Rationale:**
-- Allows runtime log level configuration via `RUST_LOG`
-- Prevents accidentally shipping debug logs to production
-- Flexibility for different deployment environments
-
 **Configuration:**
 ```toml
 [rules.tracing-env-init]
@@ -264,7 +358,7 @@ severity = "warning"
 
 #### AL009: async-trait-send-check
 
-Checks proper usage of `async_trait` Send bounds to prevent unnecessary constraints.
+Checks `async_trait` Send bounds — unnecessary `Send` makes traits harder to implement in single-threaded runtimes.
 
 ```rust
 // BAD - Unnecessary Send bound in single-threaded context
@@ -286,12 +380,6 @@ trait Service: Send + Sync {
 }
 ```
 
-**Rationale:**
-- The `#[async_trait]` macro automatically adds `Send` bounds by default
-- In single-threaded async runtimes (e.g., `LocalSet`, wasm), `Send` is unnecessary
-- Unnecessary `Send` bounds can make traits harder to implement
-- Makes threading requirements explicit in the code
-
 **Configuration:**
 ```toml
 [rules.async-trait-send-check]
@@ -301,7 +389,7 @@ runtime_mode = "single-thread"  # "single-thread" or "multi-thread"
 
 #### AL010: prefer-from-over-into
 
-Prefers implementing `From` trait over `Into` for type conversions.
+Prefers `From` over `Into` — implementing `From` gives you `Into` for free via blanket impl.
 
 ```rust
 // BAD - Implementing Into directly
@@ -319,12 +407,6 @@ impl From<MyType> for String {
 }
 ```
 
-**Rationale:**
-- Rust provides a blanket implementation: `impl<T, U> Into<U> for T where U: From<T>`
-- Implementing `From` automatically provides `Into` implementation
-- Following this convention reduces code duplication
-- Aligns with Rust standard library practices
-
 **Configuration:**
 ```toml
 [rules.prefer-from-over-into]
@@ -333,7 +415,7 @@ severity = "warning"
 
 #### AL011: no-panic-in-lib
 
-Forbids panic macros (`panic!`, `todo!`, `unimplemented!`, `unreachable!`) in library code.
+Forbids panic macros (`panic!`, `todo!`, `unimplemented!`, `unreachable!`) in library code — return `Result` instead.
 
 ```rust
 // BAD - Panicking in library code
@@ -351,12 +433,6 @@ pub fn parse_config(input: &str) -> Result<Config, ParseError> {
 }
 ```
 
-**Rationale:**
-- Library code should never panic - return `Result` instead
-- Panics in libraries lead to poor user experience and unexpected crashes
-- Forces proper error handling and makes errors recoverable
-- Test code is excluded by default (can be configured)
-
 **Configuration:**
 ```toml
 [rules.no-panic-in-lib]
@@ -366,7 +442,7 @@ allow_in_tests = true  # Allow panic macros in test code
 
 #### AL012: require-doc-comments
 
-Requires documentation comments (`///`) on public functions, structs, and enums.
+Requires `///` on public items — makes `cargo doc` output useful and forces API design thinking.
 
 ```rust
 // BAD - No documentation
@@ -394,12 +470,6 @@ pub struct Config {
 }
 ```
 
-**Rationale:**
-- Improves API discoverability and usability
-- Makes `cargo doc` output valuable for users
-- Forces developers to think about public API design
-- Enhances team collaboration and code review quality
-
 **Configuration:**
 ```toml
 [rules.require-doc-comments]
@@ -414,6 +484,12 @@ require_enum_docs = true   # Require docs for public enums
 Create `arch-lint.toml` in your project root:
 
 ```toml
+# Preset: "recommended" (default), "strict", or "minimal"
+preset = "recommended"
+
+# Fail threshold: "error" (default), "warning", or "info"
+fail_on = "error"
+
 [analyzer]
 root = "./src"
 exclude = [
@@ -447,6 +523,34 @@ severity = "warning"
 [rules.tracing-env-init]
 enabled = true
 severity = "warning"
+
+# --- Declarative rules (no Rust code needed) ---
+
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[deny-scope-dep]]
+from = "domain"
+to = ["infra"]
+message = "Domain must not depend on infrastructure."
+
+[[restrict-use]]
+name = "no-db-in-domain"
+scope = "domain"
+deny = ["sqlx::*", "diesel::*"]
+message = "Direct DB access is not allowed in domain layer."
+
+[[require-use]]
+name = "prefer-tracing"
+files = ["src/**"]
+prefer = "tracing"
+over = ["log"]
+message = "Use tracing instead of log."
 ```
 
 ## Suppression
@@ -497,11 +601,11 @@ mod startup {
 For `Severity::Error` rules (AL001, AL002, AL003, AL005), the `reason` parameter is **required**. Omitting it will generate a `Severity::Warning` violation:
 
 ```rust
-// ❌ Warning: Allow directive missing required reason
+// BAD — reason omitted → generates a Warning violation
 #[arch_lint::allow(no_unwrap_expect)]
 fn bad() { ... }
 
-// ✅ OK: Reason provided
+// GOOD — reason provided
 #[arch_lint::allow(no_unwrap_expect, reason = "Config validated at startup")]
 fn good() { ... }
 ```
@@ -541,38 +645,6 @@ Use presets for quick configuration:
 | `strict` | All rules | Maximum safety |
 | `minimal` | AL001 (relaxed) | Gradual adoption |
 
-## Programmatic Usage
-
-```rust
-use arch_lint_core::Analyzer;
-use arch_lint_rules::{
-    NoUnwrapExpect, NoSyncIo, HandlerComplexity, RequireTracing,
-    TracingEnvInit, AsyncTraitSendCheck, RuntimeMode, PreferFromOverInto,
-    NoPanicInLib, RequireDocComments,
-};
-
-let analyzer = Analyzer::builder()
-    .root("./src")
-    .rule(NoUnwrapExpect::new().allow_in_tests(true))
-    .rule(NoSyncIo::new())
-    .rule(HandlerComplexity::new().max_match_arms(15))
-    .rule(RequireTracing::new())
-    .rule(TracingEnvInit::new())
-    .rule(AsyncTraitSendCheck::new().runtime_mode(RuntimeMode::SingleThread))
-    .rule(PreferFromOverInto::new())
-    .rule(NoPanicInLib::new())
-    .rule(RequireDocComments::new())
-    .exclude("**/generated/**")
-    .build()?;
-
-let result = analyzer.analyze()?;
-
-if result.has_errors() {
-    result.print_report();
-    std::process::exit(1);
-}
-```
-
 ## Writing Custom Rules
 
 ### Quick Start: RequiredCrateRule
@@ -607,13 +679,9 @@ utoipa::path!("/api");
 tracing::info!("message");
 ```
 
-**Benefits:**
-- ~4x less code than manual implementation
-- Built-in suppression support (`#[arch_lint::allow(...)]`)
-- Consistent error messages
-- Easy to extend for workspace-specific preferences
+Benefits: ~4x less code than manual `Rule` impl, built-in suppression support, consistent error messages.
 
-### Advanced: Custom Rules
+### Advanced: Custom Rules (Rust Code)
 
 For complex logic, implement the `Rule` trait directly:
 
@@ -643,6 +711,69 @@ let analyzer = Analyzer::builder()
     .rule(NoTodoComments)
     .build()?;
 ```
+
+## Programmatic Usage
+
+For direct API access without the `check!()` macro:
+
+```bash
+cargo add arch-lint-core arch-lint-rules --dev
+```
+
+```rust
+use arch_lint_core::Analyzer;
+use arch_lint_rules::{
+    NoUnwrapExpect, NoSyncIo, HandlerComplexity, RequireTracing,
+    TracingEnvInit, AsyncTraitSendCheck, RuntimeMode, PreferFromOverInto,
+    NoPanicInLib, RequireDocComments,
+};
+
+let analyzer = Analyzer::builder()
+    .root("./src")
+    .rule(NoUnwrapExpect::new().allow_in_tests(true))
+    .rule(NoSyncIo::new())
+    .rule(HandlerComplexity::new().max_match_arms(15))
+    .rule(RequireTracing::new())
+    .rule(TracingEnvInit::new())
+    .rule(AsyncTraitSendCheck::new().runtime_mode(RuntimeMode::SingleThread))
+    .rule(PreferFromOverInto::new())
+    .rule(NoPanicInLib::new())
+    .rule(RequireDocComments::new())
+    .exclude("**/generated/**")
+    .build()?;
+
+let result = analyzer.analyze()?;
+
+if result.has_errors() {
+    result.print_report();
+    std::process::exit(1);
+}
+```
+
+## CLI Usage
+
+```bash
+cargo install arch-lint-cli
+
+arch-lint init                            # Generate arch-lint.toml
+arch-lint init --ts                       # Generate with tree-sitter layers
+arch-lint check                           # Run all checks
+arch-lint check --rules no-unwrap-expect  # Run specific rules
+arch-lint check --format json             # JSON output for CI
+arch-lint check --engine ts               # Force tree-sitter engine
+arch-lint list-rules                      # Show available rules
+```
+
+### Cross-language (tree-sitter engine)
+
+```bash
+arch-lint init --ts
+# Edit [[layers]] and [dependencies] in arch-lint.toml
+arch-lint check              # auto-detects engine from [[layers]]
+arch-lint check --engine ts  # explicit engine selection
+```
+
+See [docs/tree-sitter-engine.md](docs/tree-sitter-engine.md) for full documentation.
 
 ## CI Integration
 
@@ -694,13 +825,13 @@ fi
 
 ## Comparison with Other Tools
 
-| Tool | Focus | AST-based | Custom Rules | Cross-language |
-|------|-------|-----------|--------------|----------------|
-| **arch-lint** | Architecture patterns | Yes | Easy | Yes (Tree-sitter) |
-| Clippy | Code quality | Yes | Hard | No |
-| cargo-deny | Dependencies | No | Config | No |
-| ArchUnit | Layer enforcement | Yes | Java DSL | JVM only |
-| deptry | Import checking | No | Config | Python only |
+| Tool | Focus | AST-based | Custom Rules | `cargo test` | Cross-language |
+|------|-------|-----------|--------------|--------------|----------------|
+| **arch-lint** | Architecture patterns | Yes | Easy (TOML or Rust) | Yes (`check!()`) | Yes (Tree-sitter) |
+| Clippy | Code quality | Yes | Hard | No | No |
+| cargo-deny | Dependencies | No | Config | No | No |
+| ArchUnit | Layer enforcement | Yes | Java DSL | N/A | JVM only |
+| deptry | Import checking | No | Config | No | Python only |
 
 arch-lint complements Clippy by focusing on **architectural patterns** rather than code style.
 The tree-sitter engine extends this to non-Rust languages (Kotlin first, more planned).
