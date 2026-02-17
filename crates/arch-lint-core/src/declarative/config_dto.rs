@@ -88,6 +88,9 @@ pub struct RequireUseDto {
 /// TOML representation of a scope dependency constraint.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScopeDepDto {
+    /// Optional rule name (e.g., "no-domain-to-infra").
+    #[serde(default)]
+    pub name: Option<String>,
     /// Source scope name.
     pub from: String,
     /// Denied target scope names.

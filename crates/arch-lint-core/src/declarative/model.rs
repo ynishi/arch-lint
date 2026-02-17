@@ -362,6 +362,7 @@ impl RequireUse {
 /// A scope dependency constraint: deny imports from one scope to others.
 #[derive(Debug, Clone)]
 pub struct ScopeDep {
+    name: Option<String>,
     from: ScopeName,
     to: Vec<ScopeName>,
     message: String,
@@ -373,6 +374,7 @@ impl ScopeDep {
     /// Creates a new scope dependency rule.
     #[must_use]
     pub fn new(
+        name: Option<String>,
         from: ScopeName,
         to: Vec<ScopeName>,
         message: String,
@@ -380,12 +382,21 @@ impl ScopeDep {
         severity: Severity,
     ) -> Self {
         Self {
+            name,
             from,
             to,
             message,
             doc_ref,
             severity,
         }
+    }
+
+    /// Returns the rule name, or a generated fallback (`"deny-scope-dep:{from}"`).
+    #[must_use]
+    pub fn display_name(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| format!("deny-scope-dep:{}", self.from))
     }
 
     /// Returns the source scope.
@@ -762,6 +773,7 @@ mod tests {
     #[test]
     fn scope_dep_is_denied() {
         let dep = ScopeDep::new(
+            Some("no-domain-to-infra".to_string()),
             ScopeName::new("domain").unwrap(),
             vec![
                 ScopeName::new("infrastructure").unwrap(),
@@ -773,6 +785,32 @@ mod tests {
         );
         assert!(dep.is_denied(&ScopeName::new("infrastructure").unwrap()));
         assert!(!dep.is_denied(&ScopeName::new("application").unwrap()));
+    }
+
+    #[test]
+    fn scope_dep_display_name_with_explicit_name() {
+        let dep = ScopeDep::new(
+            Some("no-domain-to-infra".to_string()),
+            ScopeName::new("domain").unwrap(),
+            vec![ScopeName::new("infra").unwrap()],
+            "msg".to_string(),
+            None,
+            Severity::Error,
+        );
+        assert_eq!(dep.display_name(), "no-domain-to-infra");
+    }
+
+    #[test]
+    fn scope_dep_display_name_fallback() {
+        let dep = ScopeDep::new(
+            None,
+            ScopeName::new("domain").unwrap(),
+            vec![ScopeName::new("infra").unwrap()],
+            "msg".to_string(),
+            None,
+            Severity::Error,
+        );
+        assert_eq!(dep.display_name(), "deny-scope-dep:domain");
     }
 
     // -- DeclarativeConfig (aggregate root validation) --
@@ -893,6 +931,7 @@ mod tests {
             vec![GlobPattern::new("src/domain/**").unwrap()],
         )];
         let deps = vec![ScopeDep::new(
+            None,
             ScopeName::new("unknown").unwrap(),
             vec![ScopeName::new("domain").unwrap()],
             "msg".to_string(),
@@ -902,5 +941,94 @@ mod tests {
 
         let result = DeclarativeConfig::new(scopes, vec![], vec![], deps);
         assert!(result.is_err());
+    }
+
+    // -- Overlapping scopes --
+
+    #[test]
+    fn overlapping_scopes_file_matches_both() {
+        let config = DeclarativeConfig::new(
+            vec![
+                Scope::new(
+                    ScopeName::new("domain").unwrap(),
+                    vec![GlobPattern::new("src/domain/**").unwrap()],
+                ),
+                Scope::new(
+                    ScopeName::new("core").unwrap(),
+                    vec![
+                        GlobPattern::new("src/domain/**").unwrap(),
+                        GlobPattern::new("src/core/**").unwrap(),
+                    ],
+                ),
+            ],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+        let scopes = config.scopes_for_path(Path::new("src/domain/entity.rs"));
+        assert_eq!(scopes.len(), 2);
+        let names: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
+        assert!(names.contains(&"domain"));
+        assert!(names.contains(&"core"));
+    }
+
+    #[test]
+    fn overlapping_scopes_rules_from_both_applied() {
+        // A file in overlapping scopes should be subject to rules from ALL matching scopes
+        let config = DeclarativeConfig::new(
+            vec![
+                Scope::new(
+                    ScopeName::new("shared").unwrap(),
+                    vec![GlobPattern::new("src/**").unwrap()],
+                ),
+                Scope::new(
+                    ScopeName::new("domain").unwrap(),
+                    vec![GlobPattern::new("src/domain/**").unwrap()],
+                ),
+            ],
+            vec![
+                RestrictUse::new(
+                    "no-sqlx-in-shared".to_string(),
+                    ScopeRef::Named(ScopeName::new("shared").unwrap()),
+                    vec![UsePattern::new("sqlx::*").unwrap()],
+                    "Shared scope denies sqlx.".to_string(),
+                    None,
+                    Severity::Warning,
+                ),
+                RestrictUse::new(
+                    "no-diesel-in-domain".to_string(),
+                    ScopeRef::Named(ScopeName::new("domain").unwrap()),
+                    vec![UsePattern::new("diesel::*").unwrap()],
+                    "Domain denies diesel.".to_string(),
+                    None,
+                    Severity::Error,
+                ),
+            ],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+        // A file in src/domain/ belongs to both "shared" and "domain"
+        let path = Path::new("src/domain/service.rs");
+        assert!(
+            config.scope_ref_contains(&ScopeRef::Named(ScopeName::new("shared").unwrap()), path,)
+        );
+        assert!(
+            config.scope_ref_contains(&ScopeRef::Named(ScopeName::new("domain").unwrap()), path,)
+        );
+
+        // Both restrict-use rules apply to this path
+        let applicable: Vec<&str> = config
+            .restrict_uses()
+            .iter()
+            .filter(|r| config.scope_ref_contains(r.scope(), path))
+            .map(|r| r.name())
+            .collect();
+        assert_eq!(applicable.len(), 2);
+        assert!(applicable.contains(&"no-sqlx-in-shared"));
+        assert!(applicable.contains(&"no-diesel-in-domain"));
     }
 }

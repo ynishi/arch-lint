@@ -204,7 +204,14 @@ fn convert_scope_dep(dto: ScopeDepDto, index: usize) -> Result<ScopeDep, LoadErr
 
     let severity = parse_severity(&dto.severity, &ctx)?;
 
-    Ok(ScopeDep::new(from, to, dto.message, dto.doc, severity))
+    Ok(ScopeDep::new(
+        dto.name,
+        from,
+        to,
+        dto.message,
+        dto.doc,
+        severity,
+    ))
 }
 
 fn parse_severity(value: &str, context: &str) -> Result<Severity, LoadError> {

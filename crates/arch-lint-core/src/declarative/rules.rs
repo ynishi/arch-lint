@@ -366,8 +366,11 @@ struct ScopeDepVisitor<'a> {
     violations: Vec<Violation>,
 }
 
-/// Converts a `crate::x::y::z` module path to a candidate file path
-/// and returns the scopes that path belongs to.
+/// Converts a `crate::x::y::z` module path to candidate file paths
+/// and returns the scopes that any candidate belongs to.
+///
+/// Tries both `src/x/y/z.rs` and `src/x/y/z/mod.rs` to handle
+/// the two standard Rust module layout conventions.
 ///
 /// Only handles `crate::` prefixed paths. External crates, `self::`,
 /// and `super::` paths return an empty vec.
@@ -384,11 +387,21 @@ fn resolve_target_scopes<'a>(
         return vec![];
     }
 
-    // Construct candidate file path: src/<segments joined by />.rs
-    // Even if the last segments are types (not modules), the glob
-    // pattern `src/infra/**` still matches `src/infra/db/Pool.rs`.
-    let candidate = format!("src/{}.rs", segments.join("/"));
-    config.scopes_for_path(std::path::Path::new(&candidate))
+    let joined = segments.join("/");
+
+    // Try both module layout conventions:
+    //   1. src/x/y/z.rs        (file-per-module)
+    //   2. src/x/y/z/mod.rs    (directory-with-mod)
+    let candidates = [format!("src/{joined}.rs"), format!("src/{joined}/mod.rs")];
+
+    for candidate in &candidates {
+        let scopes = config.scopes_for_path(std::path::Path::new(candidate));
+        if !scopes.is_empty() {
+            return scopes;
+        }
+    }
+
+    vec![]
 }
 
 impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
@@ -410,7 +423,7 @@ impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
 
                         let mut violation = Violation::new(
                             SCOPE_DEP_CODE,
-                            SCOPE_DEP_NAME,
+                            dep.display_name(),
                             dep.severity(),
                             location,
                             format!(
@@ -774,6 +787,7 @@ mod tests {
             ),
         ];
         let deps = vec![ScopeDep::new(
+            Some("no-domain-to-infra".to_string()),
             ScopeName::new("domain").unwrap(),
             vec![ScopeName::new("infra").unwrap()],
             "Domain must not depend on infra.".to_string(),
@@ -795,6 +809,7 @@ mod tests {
 
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].code, SCOPE_DEP_CODE);
+        assert_eq!(violations[0].rule, "no-domain-to-infra");
         assert_eq!(violations[0].severity, Severity::Error);
         assert!(violations[0].message.contains("domain"));
         assert!(violations[0].message.contains("infra"));
@@ -877,5 +892,71 @@ mod tests {
         let violations = rule.check(&ctx, &ast);
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("infra"));
+    }
+
+    #[test]
+    fn scope_dep_without_name_uses_fallback() {
+        let scopes = vec![
+            Scope::new(
+                ScopeName::new("domain").unwrap(),
+                vec![GlobPattern::new("src/domain/**").unwrap()],
+            ),
+            Scope::new(
+                ScopeName::new("infra").unwrap(),
+                vec![GlobPattern::new("src/infra/**").unwrap()],
+            ),
+        ];
+        let deps = vec![ScopeDep::new(
+            None, // no explicit name
+            ScopeName::new("domain").unwrap(),
+            vec![ScopeName::new("infra").unwrap()],
+            "Domain must not depend on infra.".to_string(),
+            None,
+            Severity::Error,
+        )];
+        let config = Arc::new(DeclarativeConfig::new(scopes, vec![], vec![], deps).unwrap());
+        let rule = ScopeDepRule::new(config);
+        let code = "use crate::infra::db::Pool;";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rule, "deny-scope-dep:domain");
+    }
+
+    // ── resolve_target_scopes: mod.rs fallback ──
+
+    #[test]
+    fn scope_dep_detects_mod_rs_layout() {
+        // Scope uses "src/infra/**" which should match both
+        // "src/infra/db.rs" and "src/infra/db/mod.rs".
+        // When use path is `crate::infra::db::Pool`, resolve_target_scopes
+        // tries "src/infra/db/Pool.rs" first, then "src/infra/db/Pool/mod.rs".
+        // Both should match the "src/infra/**" glob.
+        let config = make_scope_dep_config();
+        let rule = ScopeDepRule::new(config);
+        // This simulates a module that uses mod.rs convention
+        let code = "use crate::infra::db::Pool;";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+        assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn resolve_target_scopes_external_crate_returns_empty() {
+        let config = make_scope_dep_config();
+        let scopes = resolve_target_scopes(&config, "sqlx::Pool");
+        assert!(scopes.is_empty());
+    }
+
+    #[test]
+    fn resolve_target_scopes_self_path_returns_empty() {
+        let config = make_scope_dep_config();
+        let scopes = resolve_target_scopes(&config, "self::utils::helper");
+        assert!(scopes.is_empty());
     }
 }

@@ -140,7 +140,7 @@ fn scope_dep_violation_details() {
         .find(|v| v.code == "ALD003")
         .expect("should have deny-scope-dep violation");
 
-    assert_eq!(scope_dep.rule, "deny-scope-dep");
+    assert_eq!(scope_dep.rule, "deny-scope-dep:domain");
     assert_eq!(scope_dep.severity, Severity::Error);
     assert!(scope_dep.message.contains("domain"));
     assert!(scope_dep.message.contains("infra"));
