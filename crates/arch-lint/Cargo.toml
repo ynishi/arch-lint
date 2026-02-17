@@ -13,6 +13,7 @@ categories.workspace = true
 arch-lint-core.workspace = true
 arch-lint-macros.workspace = true
 arch-lint-rules.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true

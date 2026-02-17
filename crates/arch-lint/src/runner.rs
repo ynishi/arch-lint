@@ -105,6 +105,18 @@ fn load_declarative_rules(content: &str) -> Vec<arch_lint_core::RuleBox> {
         .unwrap_or_else(|e| panic!("arch-lint: declarative config error: {e}"))
 }
 
+/// Checks whether a `Cargo.toml` file defines a `[workspace]` section
+/// by parsing as TOML, avoiding false positives from comments or strings.
+fn has_workspace_section(cargo_toml: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(cargo_toml) else {
+        return false;
+    };
+    let Ok(table) = content.parse::<toml::Table>() else {
+        return false;
+    };
+    table.contains_key("workspace")
+}
+
 /// Finds the project root by looking for `Cargo.toml` from `CARGO_MANIFEST_DIR`.
 fn find_project_root() -> PathBuf {
     // CARGO_MANIFEST_DIR points to the crate containing the test,
@@ -116,12 +128,8 @@ fn find_project_root() -> PathBuf {
         let mut candidate = manifest_path.as_path();
         loop {
             let cargo_toml = candidate.join("Cargo.toml");
-            if cargo_toml.exists() {
-                if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-                    if content.contains("[workspace]") {
-                        return candidate.to_path_buf();
-                    }
-                }
+            if cargo_toml.exists() && has_workspace_section(&cargo_toml) {
+                return candidate.to_path_buf();
             }
             match candidate.parent() {
                 Some(parent) => candidate = parent,
