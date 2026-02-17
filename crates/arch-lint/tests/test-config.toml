@@ -1,0 +1,4 @@
+preset = "minimal"
+
+[analyzer]
+exclude = ["**/target/**", "**/vendor/**", "**/examples/**"]

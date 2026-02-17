@@ -34,6 +34,9 @@ mod required_crate;
 mod rule;
 mod types;
 
+/// Declarative architecture rules driven by TOML configuration.
+pub mod declarative;
+
 /// Utility modules for rule implementations.
 pub mod utils;
 

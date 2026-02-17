@@ -12,6 +12,7 @@ categories.workspace = true
 [dependencies]
 arch-lint-core.workspace = true
 arch-lint-macros.workspace = true
+arch-lint-rules.workspace = true
 
 [lints]
 workspace = true

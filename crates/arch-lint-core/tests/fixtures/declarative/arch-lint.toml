@@ -1,0 +1,28 @@
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[restrict-use]]
+name = "no-sqlx-in-domain"
+scope = "domain"
+deny = ["sqlx::*"]
+message = "Domain must be DB-agnostic."
+severity = "error"
+
+[[require-use]]
+name = "prefer-tracing"
+files = ["src/**"]
+prefer = "tracing"
+over = ["log"]
+message = "Use tracing, not log."
+severity = "warning"
+
+[[deny-scope-dep]]
+from = "domain"
+to = ["infra"]
+message = "Domain must not depend on infra."
+severity = "error"

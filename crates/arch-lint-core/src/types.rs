@@ -162,6 +162,9 @@ pub struct Violation {
     pub suggestion: Option<Suggestion>,
     /// Additional labels for context.
     pub labels: Vec<Label>,
+    /// Reference to design document (e.g., "ARCHITECTURE.md L85").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_ref: Option<String>,
 }
 
 impl Violation {
@@ -182,7 +185,15 @@ impl Violation {
             message: message.into(),
             suggestion: None,
             labels: Vec::new(),
+            doc_ref: None,
         }
+    }
+
+    /// Adds a design document reference to this violation.
+    #[must_use]
+    pub fn with_doc_ref(mut self, doc_ref: impl Into<String>) -> Self {
+        self.doc_ref = Some(doc_ref.into());
+        self
     }
 
     /// Adds a suggestion to this violation.
@@ -215,6 +226,9 @@ impl Violation {
         if let Some(suggestion) = &self.suggestion {
             let _ = writeln!(output, "  = help: {}", suggestion.message);
         }
+        if let Some(doc_ref) = &self.doc_ref {
+            let _ = writeln!(output, "  = see: {doc_ref}");
+        }
         output
     }
 }
@@ -230,7 +244,11 @@ impl std::fmt::Display for Violation {
             self.severity,
             self.code,
             self.message
-        )
+        )?;
+        if let Some(doc_ref) = &self.doc_ref {
+            write!(f, " (see: {doc_ref})")?;
+        }
+        Ok(())
     }
 }
 
@@ -334,9 +352,171 @@ impl LintResult {
         );
     }
 
+    /// Formats violations as a test failure report.
+    ///
+    /// Produces a human-readable multi-line report suitable for `panic!()` messages
+    /// in `cargo test` integration.
+    #[must_use]
+    pub fn format_test_report(&self, fail_on: Severity) -> String {
+        use std::fmt::Write;
+
+        let failing: Vec<&Violation> = self
+            .violations
+            .iter()
+            .filter(|v| v.severity >= fail_on)
+            .collect();
+
+        let mut report = String::new();
+        let _ = writeln!(
+            report,
+            "\n=== arch-lint: {} violation(s) ===\n",
+            failing.len()
+        );
+
+        for v in &failing {
+            let _ = writeln!(
+                report,
+                "{} [{}] at {}:{}:{}",
+                v.rule,
+                v.code,
+                v.location.file.display(),
+                v.location.line,
+                v.location.column,
+            );
+            let _ = writeln!(report, "  {}: {}", v.severity, v.message);
+            if let Some(suggestion) = &v.suggestion {
+                let _ = writeln!(report, "  = help: {}", suggestion.message);
+            }
+            if let Some(doc_ref) = &v.doc_ref {
+                let _ = writeln!(report, "  = see: {doc_ref}");
+            }
+            let _ = writeln!(report);
+        }
+
+        let (errors, warnings, infos) = self.count_by_severity();
+        let _ = writeln!(
+            report,
+            "Total: {} error(s), {} warning(s), {} info(s) in {} file(s)",
+            errors, warnings, infos, self.files_checked
+        );
+
+        report
+    }
+
+    /// Checks if any violations meet or exceed the given severity threshold.
+    #[must_use]
+    pub fn has_violations_at(&self, severity: Severity) -> bool {
+        self.violations.iter().any(|v| v.severity >= severity)
+    }
+
     /// Adds violations from another result.
     pub fn extend(&mut self, other: Self) {
         self.violations.extend(other.violations);
         self.files_checked += other.files_checked;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_violation(severity: Severity) -> Violation {
+        Violation::new(
+            "AL001",
+            "no-unwrap-expect",
+            severity,
+            Location::new(PathBuf::from("src/lib.rs"), 42, 10),
+            ".unwrap() detected",
+        )
+    }
+
+    // --- Violation doc_ref tests ---
+
+    #[test]
+    fn violation_new_has_no_doc_ref() {
+        let v = make_violation(Severity::Error);
+        assert!(v.doc_ref.is_none());
+    }
+
+    #[test]
+    fn violation_with_doc_ref_sets_value() {
+        let v = make_violation(Severity::Error).with_doc_ref("ARCHITECTURE.md L85");
+        assert_eq!(v.doc_ref.as_deref(), Some("ARCHITECTURE.md L85"));
+    }
+
+    #[test]
+    fn violation_format_includes_doc_ref() {
+        let v = make_violation(Severity::Error).with_doc_ref("ARCHITECTURE.md L85");
+        let formatted = v.format();
+        assert!(formatted.contains("= see: ARCHITECTURE.md L85"));
+    }
+
+    #[test]
+    fn violation_format_omits_doc_ref_when_none() {
+        let v = make_violation(Severity::Error);
+        let formatted = v.format();
+        assert!(!formatted.contains("see:"));
+    }
+
+    #[test]
+    fn violation_display_includes_doc_ref() {
+        let v = make_violation(Severity::Error).with_doc_ref("DDD.md L33");
+        let display = format!("{v}");
+        assert!(display.contains("(see: DDD.md L33)"));
+    }
+
+    #[test]
+    fn violation_display_omits_doc_ref_when_none() {
+        let v = make_violation(Severity::Error);
+        let display = format!("{v}");
+        assert!(!display.contains("see:"));
+    }
+
+    // --- LintResult tests ---
+
+    #[test]
+    fn has_violations_at_error_only() {
+        let mut result = LintResult::new();
+        result.violations.push(make_violation(Severity::Warning));
+        assert!(!result.has_violations_at(Severity::Error));
+        assert!(result.has_violations_at(Severity::Warning));
+    }
+
+    #[test]
+    fn format_test_report_filters_by_severity() {
+        let mut result = LintResult::new();
+        result.files_checked = 5;
+        result.violations.push(make_violation(Severity::Warning));
+        result.violations.push(make_violation(Severity::Error));
+
+        let report = result.format_test_report(Severity::Error);
+        // Only 1 error-level violation should appear in report header
+        assert!(report.contains("1 violation(s)"));
+        assert!(report.contains("1 error(s)"));
+        assert!(report.contains("1 warning(s)"));
+    }
+
+    #[test]
+    fn format_test_report_includes_doc_ref() {
+        let mut result = LintResult::new();
+        result.files_checked = 1;
+        result
+            .violations
+            .push(make_violation(Severity::Error).with_doc_ref("ARCH.md L10"));
+
+        let report = result.format_test_report(Severity::Error);
+        assert!(report.contains("= see: ARCH.md L10"));
+    }
+
+    #[test]
+    fn format_test_report_includes_suggestion() {
+        let mut result = LintResult::new();
+        result.files_checked = 1;
+        result.violations.push(
+            make_violation(Severity::Error).with_suggestion(Suggestion::new("Use ? operator")),
+        );
+
+        let report = result.format_test_report(Severity::Error);
+        assert!(report.contains("= help: Use ? operator"));
     }
 }

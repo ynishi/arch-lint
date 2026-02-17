@@ -7,6 +7,15 @@ use std::path::PathBuf;
 /// Top-level configuration for arch-lint.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
+    /// Preset to use (e.g., "recommended", "strict", "minimal").
+    #[serde(default)]
+    pub preset: Option<String>,
+
+    /// Severity threshold for test failure (default: "error").
+    /// Violations at or above this severity cause `check!()` to fail.
+    #[serde(default)]
+    pub fail_on: Option<String>,
+
     /// Analyzer configuration.
     #[serde(default)]
     pub analyzer: AnalyzerConfig,

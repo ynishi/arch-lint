@@ -2,34 +2,38 @@
 //!
 //! AST-based architecture linter for Rust projects.
 //!
-//! This is the main facade crate that re-exports core functionality and macros.
+//! This is the main facade crate that re-exports core functionality, macros, and rules.
 //!
-//! ## Quick Start
+//! ## Quick Start — `cargo test` Integration
 //!
 //! ```toml
-//! [dependencies]
-//! arch-lint = "0.1"
+//! [dev-dependencies]
+//! arch-lint = "0.3"
 //! ```
+//!
+//! ```rust,ignore
+//! // tests/architecture.rs
+//! arch_lint::check!();
+//! ```
+//!
+//! This runs arch-lint as part of `cargo test`. Configure via `arch-lint.toml`.
 //!
 //! ## Suppression Attributes
 //!
 //! Use `#[arch_lint::allow(...)]` to suppress rules:
 //!
 //! ```rust,ignore
-//! // Function-level
 //! #[arch_lint::allow(no_unwrap_expect, reason = "Validated at startup")]
 //! fn load_config() -> Config {
 //!     CONFIG.get().unwrap().clone()
 //! }
-//!
-//! // File-level (inner attribute at top of file)
-//! #![arch_lint::allow(no_sync_io, reason = "CLI tool")]
 //! ```
 //!
 //! ## Programmatic Usage
 //!
 //! ```rust,ignore
 //! use arch_lint::Analyzer;
+//! use arch_lint::rules::presets::Preset;
 //!
 //! let analyzer = Analyzer::builder()
 //!     .root("./src")
@@ -45,3 +49,18 @@ pub use arch_lint_core::*;
 
 // Re-export the allow macro for #[arch_lint::allow(...)]
 pub use arch_lint_macros::allow;
+
+// Re-export the check macro for arch_lint::check!()
+pub use arch_lint_macros::check;
+
+/// Built-in rules and presets.
+pub mod rules {
+    pub use arch_lint_rules::*;
+}
+
+mod runner;
+
+#[doc(hidden)]
+pub mod __internal {
+    pub use crate::runner::run_check;
+}
