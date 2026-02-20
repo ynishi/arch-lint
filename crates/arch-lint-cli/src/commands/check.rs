@@ -3,8 +3,8 @@
 use anyhow::{Context, Result};
 use arch_lint_core::{Analyzer, Config};
 use arch_lint_rules::{
-    recommended_rules, HandlerComplexity, NoErrorSwallowing, NoSyncIo, NoUnwrapExpect,
-    RequireThiserror, RequireTracing, TracingEnvInit,
+    recommended_rules, HandlerComplexity, NoErrorSwallowing, NoSilentResultDrop, NoSyncIo,
+    NoUnwrapExpect, RequireThiserror, RequireTracing, TracingEnvInit,
 };
 use std::path::Path;
 
@@ -80,6 +80,9 @@ fn filter_rules(names: &[&str]) -> Vec<arch_lint_core::RuleBox> {
             "require-thiserror" | "AL005" => rules.push(Box::new(RequireThiserror::new())),
             "require-tracing" | "AL006" => rules.push(Box::new(RequireTracing::new())),
             "tracing-env-init" | "AL007" => rules.push(Box::new(TracingEnvInit::new())),
+            "no-silent-result-drop" | "AL013" => {
+                rules.push(Box::new(NoSilentResultDrop::new()));
+            }
             _ => tracing::warn!("Unknown rule: {}", name),
         }
     }

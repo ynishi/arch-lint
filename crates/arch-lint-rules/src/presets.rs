@@ -1,8 +1,8 @@
 //! Rule presets for common configurations.
 
 use crate::{
-    HandlerComplexity, NoErrorSwallowing, NoSyncIo, NoUnwrapExpect, RequireThiserror,
-    RequireTracing, TracingEnvInit,
+    HandlerComplexity, NoErrorSwallowing, NoSilentResultDrop, NoSyncIo, NoUnwrapExpect,
+    RequireThiserror, RequireTracing, TracingEnvInit,
 };
 use arch_lint_core::RuleBox;
 
@@ -35,6 +35,7 @@ impl Preset {
 /// - `no-unwrap-expect` (AL001) - Forbids `.unwrap()/.expect()`
 /// - `no-sync-io` (AL002) - Forbids blocking I/O
 /// - `no-error-swallowing` (AL003) - Forbids silent error handling
+/// - `no-silent-result-drop` (AL013) - Forbids silently discarding Result errors
 /// - `require-thiserror` (AL005) - Requires thiserror for error types
 /// - `require-tracing` (AL006) - Requires tracing instead of log
 /// - `tracing-env-init` (AL007) - Prevents hardcoded log levels
@@ -44,6 +45,7 @@ pub fn recommended_rules() -> Vec<RuleBox> {
         Box::new(NoUnwrapExpect::new()),
         Box::new(NoSyncIo::new()),
         Box::new(NoErrorSwallowing::new()),
+        Box::new(NoSilentResultDrop::new()),
         Box::new(RequireThiserror::new()),
         Box::new(RequireTracing::new()),
         Box::new(TracingEnvInit::new()),
@@ -54,6 +56,7 @@ pub fn recommended_rules() -> Vec<RuleBox> {
 ///
 /// Includes all recommended rules plus:
 /// - Stricter `no-unwrap-expect` (no exceptions in tests)
+/// - Stricter `no-silent-result-drop` (no exceptions in tests, `.ok()` forbidden)
 /// - `handler-complexity` (AL004) - Limits handler complexity
 #[must_use]
 pub fn strict_rules() -> Vec<RuleBox> {
@@ -65,6 +68,11 @@ pub fn strict_rules() -> Vec<RuleBox> {
         ),
         Box::new(NoSyncIo::new()),
         Box::new(NoErrorSwallowing::new()),
+        Box::new(
+            NoSilentResultDrop::new()
+                .allow_in_tests(false)
+                .allow_ok(false),
+        ),
         Box::new(RequireThiserror::new()),
         Box::new(RequireTracing::new()),
         Box::new(TracingEnvInit::new()),
@@ -88,6 +96,7 @@ pub fn all_rules() -> Vec<RuleBox> {
         Box::new(NoUnwrapExpect::new()),
         Box::new(NoSyncIo::new()),
         Box::new(NoErrorSwallowing::new()),
+        Box::new(NoSilentResultDrop::new()),
         Box::new(HandlerComplexity::new()),
         Box::new(RequireThiserror::new()),
         Box::new(RequireTracing::new()),

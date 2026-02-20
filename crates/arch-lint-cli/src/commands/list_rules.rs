@@ -18,7 +18,7 @@ pub fn run() {
     }
 
     println!("\nPresets:");
-    println!("  recommended  - AL001, AL002, AL003, AL005, AL006, AL007 (default)");
+    println!("  recommended  - AL001, AL002, AL003, AL005, AL006, AL007, AL013 (default)");
     println!("  strict       - All rules with stricter settings");
     println!("  minimal      - AL001 only (for gradual adoption)");
 
