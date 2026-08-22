@@ -165,7 +165,8 @@ fn convert_restrict_use(dto: RestrictUseDto) -> Result<RestrictUse, LoadError> {
         dto.message,
         dto.doc,
         severity,
-    ))
+    )
+    .with_check_inline(dto.check_inline))
 }
 
 fn convert_require_use(dto: RequireUseDto) -> Result<RequireUse, LoadError> {
@@ -211,7 +212,8 @@ fn convert_scope_dep(dto: ScopeDepDto, index: usize) -> Result<ScopeDep, LoadErr
         dto.message,
         dto.doc,
         severity,
-    ))
+    )
+    .with_check_inline(dto.check_inline))
 }
 
 fn parse_severity(value: &str, context: &str) -> Result<Severity, LoadError> {

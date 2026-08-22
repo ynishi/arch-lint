@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Inline qualified-path checking** for declarative rules (ALD001 `restrict-use`, ALD003 `deny-scope-dep`)
+  - References like `sqlx::query(...)` or `crate::infra::Db::new()` written without a `use` statement are now detected, in expression, type, trait-bound, and macro positions
+  - New per-rule option `check-inline` (default: `true`); set `check-inline = false` to restore the previous `use`-only behavior
+  - `self::` / `super::` relative paths and single-segment local names remain out of scope (unchanged v1 limitation)
+
 - **Tree-sitter engine** (`arch-lint-ts` crate) - Cross-language architecture layer enforcement
   - `LanguageExtractor` trait for pluggable language support
   - `KotlinExtractor` for Kotlin `.kt`/`.kts` files (package, imports, declarations)

@@ -80,6 +80,32 @@ pub(crate) fn expand_use_tree(tree: &syn::UseTree, prefix: &str) -> Vec<Resolved
     }
 }
 
+/// Converts an inline qualified path (expression, type, trait bound, or
+/// macro position — anywhere outside a `use` statement) to a flat
+/// `::` separated string.
+///
+/// Returns `None` for paths that cannot denote a cross-scope reference:
+/// single-segment paths (local names) and `self::` / `super::` relative
+/// paths (v1 limitation, same as the use-based checks). Generic arguments
+/// are dropped, so `crate::infra::Db::<T>` becomes `crate::infra::Db`;
+/// paths nested inside generic arguments are visited separately by syn.
+pub(crate) fn inline_path_to_string(path: &syn::Path) -> Option<String> {
+    if path.segments.len() < 2 {
+        return None;
+    }
+    let first = path.segments[0].ident.to_string();
+    if first == "self" || first == "super" {
+        return None;
+    }
+    Some(
+        path.segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::"),
+    )
+}
+
 // ────────────────────────────────────────────
 // RestrictUseRule
 // ────────────────────────────────────────────
@@ -90,7 +116,8 @@ const RESTRICT_USE_CODE: &str = "ALD001";
 /// A per-file rule that enforces `[[restrict-use]]` declarations.
 ///
 /// For each file, determines which restrict-use rules apply based on
-/// scope membership, then checks every `use` import against the deny list.
+/// scope membership, then checks every `use` import — and, unless
+/// `check-inline = false`, every inline qualified path — against the deny list.
 pub struct RestrictUseRule {
     config: Arc<DeclarativeConfig>,
 }
@@ -175,6 +202,35 @@ impl<'ast> Visit<'ast> for RestrictUseVisitor<'_> {
         }
 
         syn::visit::visit_item_use(self, node);
+    }
+
+    fn visit_path(&mut self, node: &'ast syn::Path) {
+        // `use` statements contain `UseTree` nodes, not `syn::Path`,
+        // so this never double-reports an import already flagged above.
+        if let Some(path) = inline_path_to_string(node) {
+            for rule in &self.applicable {
+                if rule.check_inline() && rule.is_denied(&path) {
+                    let start = node.span().start();
+                    let location =
+                        Location::new(self.ctx.relative_path.clone(), start.line, start.column + 1);
+
+                    let mut violation = Violation::new(
+                        RESTRICT_USE_CODE,
+                        rule.name(),
+                        rule.severity(),
+                        location,
+                        format!("{}: `{}`", rule.message(), path),
+                    );
+                    if let Some(doc) = rule.doc_ref() {
+                        violation = violation.with_doc_ref(doc);
+                    }
+
+                    self.violations.push(violation);
+                }
+            }
+        }
+
+        syn::visit::visit_path(self, node);
     }
 }
 
@@ -296,9 +352,12 @@ const SCOPE_DEP_CODE: &str = "ALD003";
 
 /// A per-file rule that enforces `[[deny-scope-dep]]` declarations.
 ///
-/// Detects `use crate::...` imports that cross denied scope boundaries.
+/// Detects `use crate::...` imports and inline qualified paths
+/// (e.g. `crate::infra::db::connect()`) that cross denied scope boundaries.
 /// For example, if `domain` must not depend on `infra`, then files in
-/// `src/domain/**` must not contain `use crate::infra::...`.
+/// `src/domain/**` must not reference `crate::infra::...`.
+///
+/// Inline path checking can be disabled per rule with `check-inline = false`.
 ///
 /// # Limitations (v1)
 ///
@@ -446,6 +505,51 @@ impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
 
         syn::visit::visit_item_use(self, node);
     }
+
+    fn visit_path(&mut self, node: &'ast syn::Path) {
+        // `use` statements contain `UseTree` nodes, not `syn::Path`,
+        // so this never double-reports an import already flagged above.
+        if let Some(path) = inline_path_to_string(node) {
+            let target_scopes = resolve_target_scopes(self.config, &path);
+
+            for dep in &self.applicable {
+                if !dep.check_inline() {
+                    continue;
+                }
+                for target_scope in &target_scopes {
+                    if dep.is_denied(target_scope) {
+                        let start = node.span().start();
+                        let location = Location::new(
+                            self.ctx.relative_path.clone(),
+                            start.line,
+                            start.column + 1,
+                        );
+
+                        let mut violation = Violation::new(
+                            SCOPE_DEP_CODE,
+                            dep.display_name(),
+                            dep.severity(),
+                            location,
+                            format!(
+                                "{}: `{}` (scope `{}` \u{2192} scope `{}`)",
+                                dep.message(),
+                                path,
+                                dep.from_scope(),
+                                target_scope,
+                            ),
+                        );
+                        if let Some(doc) = dep.doc_ref() {
+                            violation = violation.with_doc_ref(doc);
+                        }
+
+                        self.violations.push(violation);
+                    }
+                }
+            }
+        }
+
+        syn::visit::visit_path(self, node);
+    }
 }
 
 // ────────────────────────────────────────────
@@ -533,6 +637,45 @@ mod tests {
         let paths = expand_use_tree(&item.tree, "");
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].path, "serde");
+    }
+
+    // ── inline_path_to_string ──
+
+    fn parse_type_path(code: &str) -> syn::Path {
+        match syn::parse_str::<syn::Type>(code).expect("test type should parse") {
+            syn::Type::Path(tp) => tp.path,
+            _ => panic!("expected a type path"),
+        }
+    }
+
+    #[test]
+    fn inline_path_multi_segment() {
+        let path = parse_type_path("crate::infra::Db");
+        assert_eq!(
+            inline_path_to_string(&path).as_deref(),
+            Some("crate::infra::Db")
+        );
+    }
+
+    #[test]
+    fn inline_path_drops_generic_arguments() {
+        let path = parse_type_path("crate::infra::Db<T>");
+        assert_eq!(
+            inline_path_to_string(&path).as_deref(),
+            Some("crate::infra::Db")
+        );
+    }
+
+    #[test]
+    fn inline_path_skips_single_segment() {
+        let path = parse_type_path("Db");
+        assert!(inline_path_to_string(&path).is_none());
+    }
+
+    #[test]
+    fn inline_path_skips_self_and_super() {
+        assert!(inline_path_to_string(&parse_type_path("self::Db")).is_none());
+        assert!(inline_path_to_string(&parse_type_path("super::Db")).is_none());
     }
 
     // ── RestrictUseRule ──
@@ -651,6 +794,74 @@ mod tests {
         let violations = rule.check(&ctx, &ast);
         // "sqlx::*" matches pattern "sqlx::*"
         assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn restrict_detects_inline_expr_path() {
+        let config = make_restrict_config();
+        let rule = RestrictUseRule::new(config);
+        let code = r#"fn f() { let _ = sqlx::query("SELECT 1"); }"#;
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("sqlx::query"));
+    }
+
+    #[test]
+    fn restrict_detects_inline_type_position() {
+        let config = make_restrict_config();
+        let rule = RestrictUseRule::new(config);
+        let code = "fn f(pool: sqlx::Pool) {}";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("sqlx::Pool"));
+    }
+
+    #[test]
+    fn restrict_check_inline_false_skips_inline_path() {
+        let scopes = vec![Scope::new(
+            ScopeName::new("domain").unwrap(),
+            vec![GlobPattern::new("src/domain/**").unwrap()],
+        )];
+        let restrict = vec![RestrictUse::new(
+            "no-sqlx-in-domain".to_string(),
+            ScopeRef::Named(ScopeName::new("domain").unwrap()),
+            vec![UsePattern::new("sqlx::*").unwrap()],
+            "Domain must be DB-agnostic.".to_string(),
+            None,
+            Severity::Error,
+        )
+        .with_check_inline(false)];
+        let config = Arc::new(DeclarativeConfig::new(scopes, restrict, vec![], vec![]).unwrap());
+        let rule = RestrictUseRule::new(config);
+        // The inline path is skipped, but the `use` import is still flagged.
+        let code = "use sqlx::Pool;\nfn f() { sqlx::query(\"SELECT 1\"); }";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("sqlx::Pool"));
+    }
+
+    #[test]
+    fn restrict_inline_skips_self_and_super_paths() {
+        let config = make_restrict_config();
+        let rule = RestrictUseRule::new(config);
+        let code = "fn f() { self::helper(); super::helper(); }";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+        assert!(violations.is_empty());
     }
 
     #[test]
@@ -892,6 +1103,80 @@ mod tests {
         let violations = rule.check(&ctx, &ast);
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("infra"));
+    }
+
+    #[test]
+    fn scope_dep_detects_inline_expr_path() {
+        let config = make_scope_dep_config();
+        let rule = ScopeDepRule::new(config);
+        let code = "fn f() { crate::infra::db::connect(); }";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("crate::infra::db::connect"));
+    }
+
+    #[test]
+    fn scope_dep_detects_inline_type_position() {
+        let config = make_scope_dep_config();
+        let rule = ScopeDepRule::new(config);
+        let code = "fn f(db: crate::infra::db::Pool) {}";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("crate::infra::db::Pool"));
+    }
+
+    #[test]
+    fn scope_dep_inline_allows_same_scope() {
+        let config = make_scope_dep_config();
+        let rule = ScopeDepRule::new(config);
+        let code = "fn f() { crate::domain::entity::User::new(); }";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn scope_dep_check_inline_false_skips_inline_path() {
+        let scopes = vec![
+            Scope::new(
+                ScopeName::new("domain").unwrap(),
+                vec![GlobPattern::new("src/domain/**").unwrap()],
+            ),
+            Scope::new(
+                ScopeName::new("infra").unwrap(),
+                vec![GlobPattern::new("src/infra/**").unwrap()],
+            ),
+        ];
+        let deps = vec![ScopeDep::new(
+            Some("no-domain-to-infra".to_string()),
+            ScopeName::new("domain").unwrap(),
+            vec![ScopeName::new("infra").unwrap()],
+            "Domain must not depend on infra.".to_string(),
+            None,
+            Severity::Error,
+        )
+        .with_check_inline(false)];
+        let config = Arc::new(DeclarativeConfig::new(scopes, vec![], vec![], deps).unwrap());
+        let rule = ScopeDepRule::new(config);
+        // The inline path is skipped, but the `use` import is still flagged.
+        let code = "use crate::infra::db::Pool;\nfn f() { crate::infra::db::connect(); }";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("crate::infra::db::Pool"));
     }
 
     #[test]

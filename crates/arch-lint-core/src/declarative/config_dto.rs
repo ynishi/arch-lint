@@ -58,6 +58,9 @@ pub struct RestrictUseDto {
     /// Severity (default: "error").
     #[serde(default = "default_severity_str")]
     pub severity: String,
+    /// Also check inline qualified paths like `sqlx::query(...)` (default: true).
+    #[serde(rename = "check-inline", default = "default_true")]
+    pub check_inline: bool,
 }
 
 /// TOML representation of a require-use rule.
@@ -103,6 +106,9 @@ pub struct ScopeDepDto {
     /// Severity (default: "error").
     #[serde(default = "default_severity_str")]
     pub severity: String,
+    /// Also check inline qualified paths like `crate::infra::Db::new()` (default: true).
+    #[serde(rename = "check-inline", default = "default_true")]
+    pub check_inline: bool,
 }
 
 fn default_severity_str() -> String {
@@ -111,6 +117,10 @@ fn default_severity_str() -> String {
 
 fn default_severity_warning_str() -> String {
     "warning".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -160,9 +170,32 @@ message = "Domain must not depend on infra."
         assert_eq!(dto.restrict_use.len(), 1);
         assert_eq!(dto.restrict_use[0].scope, Some("domain".to_string()));
         assert_eq!(dto.restrict_use[0].deny.len(), 2);
+        assert!(dto.restrict_use[0].check_inline);
         assert_eq!(dto.require_use.len(), 1);
         assert_eq!(dto.deny_scope_dep.len(), 1);
         assert_eq!(dto.deny_scope_dep[0].severity, "error");
+        assert!(dto.deny_scope_dep[0].check_inline);
+    }
+
+    #[test]
+    fn deserialize_check_inline_false() {
+        let toml_str = r#"
+[[restrict-use]]
+name = "no-sqlx-in-domain"
+files = ["src/domain/**"]
+deny = ["sqlx::*"]
+message = "Domain must be DB-agnostic."
+check-inline = false
+
+[[deny-scope-dep]]
+from = "domain"
+to = ["infra"]
+message = "Domain must not depend on infra."
+check-inline = false
+"#;
+        let dto: DeclarativeConfigDto = toml::from_str(toml_str).unwrap();
+        assert!(!dto.restrict_use[0].check_inline);
+        assert!(!dto.deny_scope_dep[0].check_inline);
     }
 
     #[test]

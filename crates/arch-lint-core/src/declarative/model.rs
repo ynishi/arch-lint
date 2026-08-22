@@ -215,10 +215,14 @@ pub struct RestrictUse {
     message: String,
     doc_ref: Option<String>,
     severity: Severity,
+    check_inline: bool,
 }
 
 impl RestrictUse {
     /// Creates a new restrict-use rule.
+    ///
+    /// Inline qualified-path checking is enabled by default;
+    /// use [`Self::with_check_inline`] to disable it.
     #[must_use]
     pub fn new(
         name: String,
@@ -235,7 +239,22 @@ impl RestrictUse {
             message,
             doc_ref,
             severity,
+            check_inline: true,
         }
+    }
+
+    /// Sets whether inline qualified paths (e.g. `sqlx::query(...)` outside
+    /// a `use` statement) are also checked.
+    #[must_use]
+    pub fn with_check_inline(mut self, check_inline: bool) -> Self {
+        self.check_inline = check_inline;
+        self
+    }
+
+    /// Returns whether inline qualified paths are checked.
+    #[must_use]
+    pub fn check_inline(&self) -> bool {
+        self.check_inline
     }
 
     /// Returns the rule name.
@@ -368,10 +387,14 @@ pub struct ScopeDep {
     message: String,
     doc_ref: Option<String>,
     severity: Severity,
+    check_inline: bool,
 }
 
 impl ScopeDep {
     /// Creates a new scope dependency rule.
+    ///
+    /// Inline qualified-path checking is enabled by default;
+    /// use [`Self::with_check_inline`] to disable it.
     #[must_use]
     pub fn new(
         name: Option<String>,
@@ -388,7 +411,22 @@ impl ScopeDep {
             message,
             doc_ref,
             severity,
+            check_inline: true,
         }
+    }
+
+    /// Sets whether inline qualified paths (e.g. `crate::infra::Db::new()`
+    /// outside a `use` statement) are also checked.
+    #[must_use]
+    pub fn with_check_inline(mut self, check_inline: bool) -> Self {
+        self.check_inline = check_inline;
+        self
+    }
+
+    /// Returns whether inline qualified paths are checked.
+    #[must_use]
+    pub fn check_inline(&self) -> bool {
+        self.check_inline
     }
 
     /// Returns the rule name, or a generated fallback (`"deny-scope-dep:{from}"`).

@@ -120,6 +120,11 @@ deny = ["sqlx::*", "diesel::*", "sea_orm::*"]
 message = "Database access belongs in the infra layer."
 ```
 
+Both `[[restrict-use]]` and `[[deny-scope-dep]]` check `use` imports **and**
+inline qualified paths (e.g. `sqlx::query(...)` or `crate::infra::Db::new()`
+written without a `use`). To restrict a rule to `use` statements only, set
+`check-inline = false` on that rule.
+
 ### Crate Preference Enforcement
 
 ```toml
