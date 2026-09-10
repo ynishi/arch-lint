@@ -11,7 +11,7 @@ use crate::declarative::model::{DeclarativeConfig, ScopeDep};
 use crate::rule::Rule;
 use crate::types::{Location, Violation};
 
-use super::{expand_use_tree, inline_path_to_string};
+use super::{expand_use_tree, inline_path_to_string, Decision, Suppressions};
 
 const SCOPE_DEP_NAME: &str = "deny-scope-dep";
 const SCOPE_DEP_CODE: &str = "ALD003";
@@ -73,11 +73,18 @@ impl Rule for ScopeDepRule {
             return vec![];
         }
 
+        let scopes = Suppressions::new(
+            SCOPE_DEP_NAME,
+            SCOPE_DEP_CODE,
+            applicable.iter().map(|d| (d.display_name(), d.severity())),
+        );
+
         let mut visitor = ScopeDepVisitor {
             ctx,
             config: &self.config,
             applicable,
             code: SCOPE_DEP_CODE,
+            scopes,
             violations: Vec::new(),
         };
         visitor.visit_file(ast);
@@ -95,6 +102,9 @@ pub(super) struct ScopeDepVisitor<'a> {
     pub(super) config: &'a DeclarativeConfig,
     pub(super) applicable: Vec<&'a ScopeDep>,
     pub(super) code: &'static str,
+    /// Suppression state, one entry per rule in `applicable` and in the same
+    /// order.
+    pub(super) scopes: Suppressions,
     pub(super) violations: Vec<Violation>,
 }
 
@@ -137,40 +147,71 @@ fn resolve_target_scopes<'a>(
 }
 
 impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        let mark = self.scopes.enter_item_mod(&node.attrs);
+        syn::visit::visit_item_mod(self, node);
+        self.scopes.exit(mark);
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        let mark = self.scopes.enter_item_fn(&node.attrs);
+        syn::visit::visit_item_fn(self, node);
+        self.scopes.exit(mark);
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        let mark = self.scopes.enter_block(&node.attrs);
+        syn::visit::visit_item_impl(self, node);
+        self.scopes.exit(mark);
+    }
+
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
         let resolved = expand_use_tree(&node.tree, "");
 
         for use_item in &resolved {
             let target_scopes = resolve_target_scopes(self.config, &use_item.path);
 
-            for dep in &self.applicable {
+            for (index, dep) in self.applicable.iter().enumerate() {
                 for target_scope in &target_scopes {
-                    if dep.is_denied(target_scope) {
-                        let start = use_item.span.start();
-                        let location = Location::new(
-                            self.ctx.relative_path.clone(),
-                            start.line,
-                            start.column + 1,
-                        );
+                    if !dep.is_denied(target_scope) {
+                        continue;
+                    }
+                    match self.scopes.decide(
+                        index,
+                        self.ctx,
+                        self.code,
+                        use_item.span,
+                        Some(&node.attrs),
+                    ) {
+                        Decision::Suppressed => {}
+                        Decision::MissingReason(warning) => self.violations.push(*warning),
+                        Decision::Report => {
+                            let start = use_item.span.start();
+                            let location = Location::new(
+                                self.ctx.relative_path.clone(),
+                                start.line,
+                                start.column + 1,
+                            );
 
-                        let mut violation = Violation::new(
-                            self.code,
-                            dep.display_name(),
-                            dep.severity(),
-                            location,
-                            format!(
-                                "{}: `{}` (scope `{}` \u{2192} scope `{}`)",
-                                dep.message(),
-                                use_item.path,
-                                dep.from_scope(),
-                                target_scope,
-                            ),
-                        );
-                        if let Some(doc) = dep.doc_ref() {
-                            violation = violation.with_doc_ref(doc);
+                            let mut violation = Violation::new(
+                                self.code,
+                                dep.display_name(),
+                                dep.severity(),
+                                location,
+                                format!(
+                                    "{}: `{}` (scope `{}` \u{2192} scope `{}`)",
+                                    dep.message(),
+                                    use_item.path,
+                                    dep.from_scope(),
+                                    target_scope,
+                                ),
+                            );
+                            if let Some(doc) = dep.doc_ref() {
+                                violation = violation.with_doc_ref(doc);
+                            }
+
+                            self.violations.push(violation);
                         }
-
-                        self.violations.push(violation);
                     }
                 }
             }
@@ -185,37 +226,47 @@ impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
         if let Some(path) = inline_path_to_string(node) {
             let target_scopes = resolve_target_scopes(self.config, &path);
 
-            for dep in &self.applicable {
+            for (index, dep) in self.applicable.iter().enumerate() {
                 if !dep.check_inline() {
                     continue;
                 }
                 for target_scope in &target_scopes {
-                    if dep.is_denied(target_scope) {
-                        let start = node.span().start();
-                        let location = Location::new(
-                            self.ctx.relative_path.clone(),
-                            start.line,
-                            start.column + 1,
-                        );
+                    if !dep.is_denied(target_scope) {
+                        continue;
+                    }
+                    match self
+                        .scopes
+                        .decide(index, self.ctx, self.code, node.span(), None)
+                    {
+                        Decision::Suppressed => {}
+                        Decision::MissingReason(warning) => self.violations.push(*warning),
+                        Decision::Report => {
+                            let start = node.span().start();
+                            let location = Location::new(
+                                self.ctx.relative_path.clone(),
+                                start.line,
+                                start.column + 1,
+                            );
 
-                        let mut violation = Violation::new(
-                            self.code,
-                            dep.display_name(),
-                            dep.severity(),
-                            location,
-                            format!(
-                                "{}: `{}` (scope `{}` \u{2192} scope `{}`)",
-                                dep.message(),
-                                path,
-                                dep.from_scope(),
-                                target_scope,
-                            ),
-                        );
-                        if let Some(doc) = dep.doc_ref() {
-                            violation = violation.with_doc_ref(doc);
+                            let mut violation = Violation::new(
+                                self.code,
+                                dep.display_name(),
+                                dep.severity(),
+                                location,
+                                format!(
+                                    "{}: `{}` (scope `{}` \u{2192} scope `{}`)",
+                                    dep.message(),
+                                    path,
+                                    dep.from_scope(),
+                                    target_scope,
+                                ),
+                            );
+                            if let Some(doc) = dep.doc_ref() {
+                                violation = violation.with_doc_ref(doc);
+                            }
+
+                            self.violations.push(violation);
                         }
-
-                        self.violations.push(violation);
                     }
                 }
             }
@@ -489,5 +540,100 @@ mod tests {
         let config = make_scope_dep_config();
         let scopes = resolve_target_scopes(&config, "self::utils::helper");
         assert!(scopes.is_empty());
+    }
+
+    // ── suppression ──
+
+    fn check_domain(code: &str) -> Vec<Violation> {
+        let rule = ScopeDepRule::new(make_scope_dep_config());
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+        rule.check(&ctx, &ast)
+    }
+
+    #[test]
+    fn suppress_attribute_on_the_use_item() {
+        let code =
+            "#[arch_lint::allow(no_domain_to_infra, reason = \"bootstrap\")]\nuse crate::infra::db::Pool;";
+        assert!(check_domain(code).is_empty());
+    }
+
+    #[test]
+    fn suppress_attribute_on_enclosing_fn_for_inline_path() {
+        let code = "#[arch_lint::allow(deny_scope_dep, reason = \"bootstrap\")]\nfn wire() {\n    crate::infra::db::connect();\n}";
+        assert!(check_domain(code).is_empty());
+    }
+
+    #[test]
+    fn suppress_attribute_on_enclosing_mod() {
+        let code = "#[arch_lint::allow(ALD003, reason = \"bootstrap\")]\nmod wiring {\n    use crate::infra::db::Pool;\n}";
+        assert!(check_domain(code).is_empty());
+    }
+
+    #[test]
+    fn suppress_comment_by_kind_user_and_code_names() {
+        for name in ["deny-scope-dep", "no-domain-to-infra", "ALD003"] {
+            let code = format!(
+                "// arch-lint: allow({name}) reason=\"bootstrap\"\nuse crate::infra::db::Pool;"
+            );
+            assert!(
+                check_domain(&code).is_empty(),
+                "allow({name}) should suppress the violation"
+            );
+        }
+    }
+
+    #[test]
+    fn comment_without_reason_on_error_rule_warns_instead() {
+        let code = "// arch-lint: allow(no-domain-to-infra)\nuse crate::infra::db::Pool;";
+        let violations = check_domain(code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].severity, Severity::Warning);
+        assert_eq!(violations[0].rule, "no-domain-to-infra");
+        assert!(violations[0].message.contains("missing required reason"));
+    }
+
+    #[test]
+    fn user_name_allow_does_not_suppress_a_sibling_rule() {
+        let scopes = vec![
+            Scope::new(
+                ScopeName::new("domain").unwrap(),
+                vec![GlobPattern::new("src/domain/**").unwrap()],
+            ),
+            Scope::new(
+                ScopeName::new("infra").unwrap(),
+                vec![GlobPattern::new("src/infra/**").unwrap()],
+            ),
+        ];
+        let deps = vec![
+            ScopeDep::new(
+                Some("no-domain-to-infra".to_string()),
+                ScopeName::new("domain").unwrap(),
+                vec![ScopeName::new("infra").unwrap()],
+                "Domain must not depend on infra.".to_string(),
+                None,
+                Severity::Error,
+            ),
+            ScopeDep::new(
+                Some("domain-stays-pure".to_string()),
+                ScopeName::new("domain").unwrap(),
+                vec![ScopeName::new("infra").unwrap()],
+                "Domain stays pure.".to_string(),
+                None,
+                Severity::Error,
+            ),
+        ];
+        let config = Arc::new(DeclarativeConfig::new(scopes, vec![], vec![], deps).unwrap());
+        let rule = ScopeDepRule::new(config);
+        let code =
+            "#[arch_lint::allow(no_domain_to_infra, reason = \"bootstrap\")]\nuse crate::infra::db::Pool;";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].rule, "domain-stays-pure");
     }
 }

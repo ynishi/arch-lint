@@ -7,7 +7,7 @@ use crate::declarative::model::{DeclarativeConfig, Naming};
 use crate::rule::Rule;
 use crate::types::Violation;
 
-use super::{build_violation, walk_items};
+use super::{build_violation, walk_items, Decision, Suppressions};
 
 const NAMING_NAME: &str = "naming";
 const NAMING_CODE: &str = "ALD007";
@@ -55,18 +55,31 @@ impl Rule for NamingRule {
             return vec![];
         }
 
+        let mut scopes = Suppressions::new(
+            NAMING_NAME,
+            NAMING_CODE,
+            applicable
+                .iter()
+                .map(|r| (r.name().to_string(), r.severity())),
+        );
+
         let mut violations = Vec::new();
-        walk_items(&ast.items, &mut |view| {
+        walk_items(&ast.items, &mut scopes, &mut |view, scopes| {
             let Some(ident) = view.ident else {
                 return;
             };
             let name = ident.to_string();
-            for rule in &applicable {
+            for (index, rule) in applicable.iter().enumerate() {
                 if rule.item() != view.kind || !rule.visibility().matches(view.is_pub) {
                     continue;
                 }
-                if !rule.pattern().is_match(&name) {
-                    violations.push(build_violation(
+                if rule.pattern().is_match(&name) {
+                    continue;
+                }
+                match scopes.decide(index, ctx, NAMING_CODE, view.span, Some(view.attrs)) {
+                    Decision::Suppressed => {}
+                    Decision::MissingReason(warning) => violations.push(*warning),
+                    Decision::Report => violations.push(build_violation(
                         NAMING_CODE,
                         rule.name(),
                         rule.severity(),
@@ -80,7 +93,7 @@ impl Rule for NamingRule {
                             rule.pattern().as_str(),
                         ),
                         rule.doc_ref(),
-                    ));
+                    )),
                 }
             }
         });
@@ -163,5 +176,111 @@ mod tests {
             crate::test_utils::check_rule(&rule, "pub mod inner {\n    pub struct User;\n}");
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].location.line, 2);
+    }
+
+    // ── suppression ──
+
+    fn ports_rule() -> NamingRule {
+        naming_rule(
+            ItemKind::Trait,
+            "^[A-Z][A-Za-z0-9]*(Repository|Port)$",
+            VisibilityFilter::Pub,
+        )
+    }
+
+    #[test]
+    fn suppress_attribute_on_the_item() {
+        let violations = crate::test_utils::check_rule(
+            &ports_rule(),
+            "#[arch_lint::allow(domain_ports, reason = \"legacy name\")]\npub trait UserService {}",
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    #[test]
+    fn suppress_attribute_on_enclosing_mod() {
+        let violations = crate::test_utils::check_rule(
+            &ports_rule(),
+            "#[arch_lint::allow(naming, reason = \"legacy names\")]\npub mod legacy {\n    pub trait UserService {}\n}",
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    #[test]
+    fn suppress_comment_by_kind_user_and_code_names() {
+        for name in ["naming", "domain-ports", "ALD007"] {
+            let code = format!("// arch-lint: allow({name})\npub trait UserService {{}}");
+            let violations = crate::test_utils::check_rule(&ports_rule(), &code);
+            assert!(
+                violations.is_empty(),
+                "allow({name}) should suppress: {violations:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn user_name_allow_does_not_suppress_a_sibling_rule() {
+        let config = DeclarativeConfig::builder()
+            .namings(vec![
+                Naming::new(
+                    "domain-ports".to_string(),
+                    ScopeRef::Inline(vec![GlobPattern::new("**/*.rs").unwrap()]),
+                    ItemKind::Trait,
+                    RegexPattern::new("^[A-Z][A-Za-z0-9]*(Repository|Port)$").unwrap(),
+                    "Domain traits are ports.".to_string(),
+                    None,
+                    Severity::Warning,
+                )
+                .with_visibility(VisibilityFilter::Pub),
+                Naming::new(
+                    "traits-are-prefixed".to_string(),
+                    ScopeRef::Inline(vec![GlobPattern::new("**/*.rs").unwrap()]),
+                    ItemKind::Trait,
+                    RegexPattern::new("^Abstract").unwrap(),
+                    "Domain traits start with Abstract.".to_string(),
+                    None,
+                    Severity::Warning,
+                )
+                .with_visibility(VisibilityFilter::Pub),
+            ])
+            .build()
+            .unwrap();
+        let rule = NamingRule::new(Arc::new(config));
+
+        let violations = crate::test_utils::check_rule(
+            &rule,
+            "#[arch_lint::allow(domain_ports, reason = \"legacy name\")]\npub trait UserService {}",
+        );
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].rule, "traits-are-prefixed");
+    }
+
+    #[test]
+    fn comment_without_reason_on_error_rule_warns_instead() {
+        let config = DeclarativeConfig::builder()
+            .namings(vec![Naming::new(
+                "domain-ports".to_string(),
+                ScopeRef::Inline(vec![GlobPattern::new("**/*.rs").unwrap()]),
+                ItemKind::Trait,
+                RegexPattern::new("^[A-Z][A-Za-z0-9]*(Repository|Port)$").unwrap(),
+                "Domain traits are ports.".to_string(),
+                None,
+                Severity::Error,
+            )
+            .with_visibility(VisibilityFilter::Pub)])
+            .build()
+            .unwrap();
+        let rule = NamingRule::new(Arc::new(config));
+
+        let violations = crate::test_utils::check_rule(
+            &rule,
+            "// arch-lint: allow(domain-ports)\npub trait UserService {}",
+        );
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].severity, Severity::Warning);
+        assert_eq!(violations[0].code, NAMING_CODE);
+        assert!(violations[0].message.contains("missing required reason"));
     }
 }

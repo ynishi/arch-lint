@@ -8,7 +8,7 @@ use crate::declarative::model::{DeclarativeConfig, RequireReturn};
 use crate::rule::Rule;
 use crate::types::Violation;
 
-use super::{build_violation, render_return_type, walk_items};
+use super::{build_violation, render_return_type, walk_items, Decision, Suppressions};
 
 const REQUIRE_RETURN_NAME: &str = "require-return";
 const REQUIRE_RETURN_CODE: &str = "ALD008";
@@ -56,19 +56,32 @@ impl Rule for RequireReturnRule {
             return vec![];
         }
 
+        let mut scopes = Suppressions::new(
+            REQUIRE_RETURN_NAME,
+            REQUIRE_RETURN_CODE,
+            applicable
+                .iter()
+                .map(|r| (r.name().to_string(), r.severity())),
+        );
+
         let mut violations = Vec::new();
-        walk_items(&ast.items, &mut |view| {
+        walk_items(&ast.items, &mut scopes, &mut |view, scopes| {
             let Some(sig) = view.sig else {
                 return;
             };
             let rendered = render_return_type(sig);
             let is_async = sig.asyncness.is_some();
-            for rule in &applicable {
+            for (index, rule) in applicable.iter().enumerate() {
                 if !rule.visibility().matches(view.is_pub) || !rule.matches_asyncness(is_async) {
                     continue;
                 }
-                if !rule.pattern().is_match(&rendered) {
-                    violations.push(build_violation(
+                if rule.pattern().is_match(&rendered) {
+                    continue;
+                }
+                match scopes.decide(index, ctx, REQUIRE_RETURN_CODE, view.span, Some(view.attrs)) {
+                    Decision::Suppressed => {}
+                    Decision::MissingReason(warning) => violations.push(*warning),
+                    Decision::Report => violations.push(build_violation(
                         REQUIRE_RETURN_CODE,
                         rule.name(),
                         rule.severity(),
@@ -82,7 +95,7 @@ impl Rule for RequireReturnRule {
                             rule.pattern().as_str(),
                         ),
                         rule.doc_ref(),
-                    ));
+                    )),
                 }
             }
         });
@@ -181,5 +194,65 @@ mod tests {
         assert!(
             crate::test_utils::check_rule(&rule, "fn helper() -> String { todo!() }").is_empty()
         );
+    }
+
+    // ── suppression ──
+
+    fn handler_rule() -> RequireReturnRule {
+        require_return_rule(APP_RESULT, VisibilityFilter::Pub, Some(true))
+    }
+
+    #[test]
+    fn suppress_attribute_on_the_item() {
+        let violations = crate::test_utils::check_rule(
+            &handler_rule(),
+            "#[arch_lint::allow(handlers_return_app_result, reason = \"streaming handler\")]\npub async fn handler() -> String { todo!() }",
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    #[test]
+    fn suppress_attribute_on_enclosing_mod() {
+        let violations = crate::test_utils::check_rule(
+            &handler_rule(),
+            "#[arch_lint::allow(require_return, reason = \"streaming handlers\")]\npub mod stream {\n    pub async fn handler() -> String { todo!() }\n}",
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    #[test]
+    fn suppress_attribute_on_enclosing_impl() {
+        let violations = crate::test_utils::check_rule(
+            &handler_rule(),
+            "struct S;\n#[arch_lint::allow(ALD008, reason = \"streaming handlers\")]\nimpl S {\n    pub async fn handler() -> String { todo!() }\n}",
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    #[test]
+    fn suppress_comment_by_kind_user_and_code_names() {
+        for name in ["require-return", "handlers-return-app-result", "ALD008"] {
+            let code = format!(
+                "// arch-lint: allow({name}) reason=\"streaming handler\"\npub async fn handler() -> String {{ todo!() }}"
+            );
+            let violations = crate::test_utils::check_rule(&handler_rule(), &code);
+            assert!(
+                violations.is_empty(),
+                "allow({name}) should suppress: {violations:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn comment_without_reason_on_error_rule_warns_instead() {
+        let violations = crate::test_utils::check_rule(
+            &handler_rule(),
+            "// arch-lint: allow(handlers-return-app-result)\npub async fn handler() -> String { todo!() }",
+        );
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].severity, Severity::Warning);
+        assert_eq!(violations[0].code, REQUIRE_RETURN_CODE);
+        assert!(violations[0].message.contains("missing required reason"));
     }
 }

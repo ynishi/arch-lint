@@ -11,6 +11,7 @@ use crate::rule::Rule;
 use crate::types::Violation;
 
 use super::scope_dep::ScopeDepVisitor;
+use super::Suppressions;
 
 const LAYERING_NAME: &str = "layering";
 const LAYERING_CODE: &str = "ALD004";
@@ -69,11 +70,18 @@ impl Rule for LayeringRule {
             return vec![];
         }
 
+        let scopes = Suppressions::new(
+            LAYERING_NAME,
+            LAYERING_CODE,
+            applicable.iter().map(|d| (d.display_name(), d.severity())),
+        );
+
         let mut visitor = ScopeDepVisitor {
             ctx,
             config: &self.config,
             applicable,
             code: LAYERING_CODE,
+            scopes,
             violations: Vec::new(),
         };
         visitor.visit_file(ast);
@@ -241,5 +249,52 @@ mod tests {
         let ast = parse_file(code);
 
         assert!(rule.check(&ctx, &ast).is_empty());
+    }
+
+    // ── suppression ──
+
+    fn check_infra(code: &str) -> Vec<Violation> {
+        let rule = LayeringRule::new(make_layering_config(false));
+        let ctx = make_ctx("src/infra/db.rs", code);
+        let ast = parse_file(code);
+        rule.check(&ctx, &ast)
+    }
+
+    #[test]
+    fn suppress_attribute_on_the_use_item() {
+        let code =
+            "#[arch_lint::allow(clean_arch, reason = \"wiring\")]\nuse crate::handler::api::Router;";
+        assert!(check_infra(code).is_empty());
+    }
+
+    #[test]
+    fn suppress_attribute_on_enclosing_fn_for_inline_path() {
+        let code = "#[arch_lint::allow(layering, reason = \"wiring\")]\nfn wire() {\n    crate::handler::api::route();\n}";
+        assert!(check_infra(code).is_empty());
+    }
+
+    #[test]
+    fn suppress_comment_by_kind_user_and_code_names() {
+        for name in ["layering", "clean-arch", "ALD004"] {
+            let code = format!(
+                "// arch-lint: allow({name}) reason=\"wiring\"\nuse crate::handler::api::Router;"
+            );
+            assert!(
+                check_infra(&code).is_empty(),
+                "allow({name}) should suppress the violation"
+            );
+        }
+    }
+
+    #[test]
+    fn comment_without_reason_on_error_rule_warns_instead() {
+        let code = "// arch-lint: allow(clean-arch)\nuse crate::handler::api::Router;";
+        let violations = check_infra(code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].severity, Severity::Warning);
+        assert_eq!(violations[0].code, LAYERING_CODE);
+        assert_eq!(violations[0].rule, "clean-arch");
+        assert!(violations[0].message.contains("missing required reason"));
     }
 }

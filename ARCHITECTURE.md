@@ -294,9 +294,7 @@ Visitors maintain state as they traverse:
 3. **Incremental Analysis** - Only re-analyze changed files
 4. **Parallel Execution** - Run rules concurrently (`[analyzer].parallelism`)
 5. **SARIF / GitHub annotations output** - CI-native reporting
-6. **Suppression for declarative rules** - `#[arch_lint::allow]` and comment
-   directives currently apply to built-in rules only
-7. **More tree-sitter languages** - Kotlin is the only extractor today
+6. **More tree-sitter languages** - Kotlin is the only extractor today
 
 ## Testing
 

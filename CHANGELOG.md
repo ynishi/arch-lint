@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Suppression for declarative rules** - ALD001-ALD008 now honor the same
+  directives as the built-in rules: `#[arch_lint::allow(<name>, reason = "...")]`
+  on the offending item or an enclosing `mod` / `fn` / `impl`, and
+  `// arch-lint: allow(<name>) reason="..."` on the violating line or the line
+  above it. `<name>` may be the rule kind (`restrict-use`), the TOML rule name
+  (`no-sqlx-in-domain`) or the code (`ALD001`), in kebab-case or `snake_case`;
+  a TOML name suppresses only that rule. Error-severity rules require a reason
+  on the comment path, reporting the same "missing required reason" warning as
+  the built-in rules. Declarative rules keep firing inside `#[cfg(test)]`
 - **ALD004 `[[layering]]`** - declare an ordered stack of scopes
   (`order = ["handler", "domain", "infra"]`); a layer may only depend on layers
   below it, and `adjacent_only = true` also forbids skipping a layer. Replaces

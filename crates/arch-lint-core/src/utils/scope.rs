@@ -41,6 +41,7 @@
 //! # Ok::<(), syn::Error>(())
 //! ```
 
+use super::allowance::AllowCheck;
 use super::attributes::{check_arch_lint_allow, has_allow_attr, has_cfg_test, has_test_attr};
 use syn::Attribute;
 
@@ -57,12 +58,14 @@ pub struct ScopeState {
 /// Tracks whether the visitor is currently inside a suppressed scope.
 ///
 /// A scope is *allowed* when an enclosing item carries
-/// `#[arch_lint::allow(<rule name>)]` (or one of the lint names registered with
+/// `#[arch_lint::allow(<rule name>)]` (or one of the names registered with
+/// [`ScopeTracker::with_aliases`], or one of the lint names registered with
 /// [`ScopeTracker::with_fn_allow_lints`]), and it is a *test* scope when an
 /// enclosing item carries `#[cfg(test)]` or `#[test]`.
 #[derive(Debug, Clone)]
 pub struct ScopeTracker {
     rule_name: &'static str,
+    aliases: Vec<String>,
     fn_allow_lints: &'static [&'static str],
     allow_in_tests: bool,
     state: ScopeState,
@@ -77,6 +80,7 @@ impl ScopeTracker {
     pub const fn new(rule_name: &'static str) -> Self {
         Self {
             rule_name,
+            aliases: Vec::new(),
             fn_allow_lints: &[],
             allow_in_tests: false,
             state: ScopeState {
@@ -84,6 +88,32 @@ impl ScopeTracker {
                 in_allowed_context: false,
             },
         }
+    }
+
+    /// Registers extra names that also suppress this rule when they appear in
+    /// an `#[arch_lint::allow(...)]` attribute.
+    ///
+    /// Rules whose identity is not a single `&'static str` use this: a
+    /// declarative rule registers the user-given rule name from the TOML and
+    /// the rule code alongside the rule kind name passed to [`Self::new`].
+    /// Names are matched with the same `-`/`_` normalization as the rule name.
+    ///
+    /// ```
+    /// use arch_lint_core::utils::scope::ScopeTracker;
+    ///
+    /// let tracker = ScopeTracker::new("restrict-use").with_aliases(["no-sqlx-in-domain", "ALD001"]);
+    /// let attrs: Vec<syn::Attribute> =
+    ///     vec![syn::parse_quote!(#[arch_lint::allow(no_sqlx_in_domain)])];
+    /// assert!(tracker.allows(&attrs));
+    /// ```
+    #[must_use]
+    pub fn with_aliases<I, S>(mut self, aliases: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.aliases = aliases.into_iter().map(Into::into).collect();
+        self
     }
 
     /// Registers `#[allow(...)]` lint names that also suppress this rule when
@@ -139,12 +169,30 @@ impl ScopeTracker {
         self.state = saved;
     }
 
-    /// Returns true if `attrs` carry `#[arch_lint::allow(...)]` for this rule.
+    /// Returns true if `attrs` carry `#[arch_lint::allow(...)]` for this rule
+    /// name or one of its aliases.
     ///
     /// Use this for items that are checked in place without opening a scope.
     #[must_use]
     pub fn allows(&self, attrs: &[Attribute]) -> bool {
-        check_arch_lint_allow(attrs, self.rule_name).is_allowed()
+        self.allow_check(attrs).is_allowed()
+    }
+
+    /// Returns the `#[arch_lint::allow(...)]` directive on `attrs` that matches
+    /// this rule name or one of its aliases, with the reason it carries.
+    #[must_use]
+    pub fn allow_check(&self, attrs: &[Attribute]) -> AllowCheck {
+        let check = check_arch_lint_allow(attrs, self.rule_name);
+        if check.is_allowed() {
+            return check;
+        }
+        for alias in &self.aliases {
+            let check = check_arch_lint_allow(attrs, alias);
+            if check.is_allowed() {
+                return check;
+            }
+        }
+        AllowCheck::Denied
     }
 
     /// Returns true if an enclosing item opened an allowed scope.
@@ -255,6 +303,75 @@ mod tests {
         assert!(tracker.is_allowed());
         tracker.exit(outer);
         assert!(!tracker.is_allowed());
+    }
+
+    #[test]
+    fn test_aliases_match_in_addition_to_rule_name() {
+        let tracker =
+            ScopeTracker::new("restrict-use").with_aliases(["no-sqlx-in-domain", "ALD001"]);
+
+        let by_kind: Vec<Attribute> = vec![parse_quote!(#[arch_lint::allow(restrict_use)])];
+        let by_user: Vec<Attribute> = vec![parse_quote!(#[arch_lint::allow(no_sqlx_in_domain)])];
+        let by_code: Vec<Attribute> = vec![parse_quote!(#[arch_lint::allow(ALD001)])];
+        let other: Vec<Attribute> = vec![parse_quote!(#[arch_lint::allow(other_rule)])];
+
+        assert!(tracker.allows(&by_kind));
+        assert!(tracker.allows(&by_user));
+        assert!(tracker.allows(&by_code));
+        assert!(!tracker.allows(&other));
+    }
+
+    #[test]
+    fn test_aliases_are_kebab_snake_normalized() {
+        // The alias may be written either way; the attribute always carries the
+        // snake_case spelling, because `a-b` is not a single Rust token.
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[arch_lint::allow(no_sqlx_in_domain)])];
+
+        assert!(ScopeTracker::new("restrict-use")
+            .with_aliases(["no-sqlx-in-domain"])
+            .allows(&attrs));
+        assert!(ScopeTracker::new("restrict-use")
+            .with_aliases(["no_sqlx_in_domain"])
+            .allows(&attrs));
+    }
+
+    #[test]
+    fn test_aliases_open_a_scope_like_the_rule_name() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[arch_lint::allow(no_sqlx_in_domain)])];
+        let mut tracker = ScopeTracker::new("restrict-use").with_aliases(["no-sqlx-in-domain"]);
+
+        let saved = tracker.enter_item_mod(&attrs);
+        assert!(tracker.is_allowed());
+        assert!(tracker.suppressed());
+
+        tracker.exit(saved);
+        assert!(!tracker.is_allowed());
+    }
+
+    #[test]
+    fn test_allow_check_reports_reason() {
+        let tracker = ScopeTracker::new("restrict-use").with_aliases(["no-sqlx-in-domain"]);
+
+        let with_reason: Vec<Attribute> =
+            vec![parse_quote!(#[arch_lint::allow(no_sqlx_in_domain, reason = "legacy query")])];
+        assert_eq!(
+            tracker.allow_check(&with_reason).reason(),
+            Some("legacy query")
+        );
+
+        let without_reason: Vec<Attribute> =
+            vec![parse_quote!(#[arch_lint::allow(no_sqlx_in_domain)])];
+        assert!(tracker.allow_check(&without_reason).is_allowed());
+        assert_eq!(tracker.allow_check(&without_reason).reason(), None);
+
+        assert!(!tracker.allow_check(&[]).is_allowed());
+    }
+
+    #[test]
+    fn test_default_tracker_has_no_aliases() {
+        let tracker = tracker();
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[arch_lint::allow(some_other_name)])];
+        assert!(!tracker.allows(&attrs));
     }
 
     #[test]

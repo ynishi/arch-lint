@@ -761,6 +761,11 @@ arch-lint provides multiple ways to suppress violations at different scopes.
 | File | Configuration (`exclude_files`) | Entire file |
 | Global | Configuration (`enabled = false`) | Project-wide exclusion |
 
+Both directives apply to the built-in rules (AL001-AL013) **and** to the
+declarative rules from `arch-lint.toml` (ALD001-ALD008); see
+[Declarative rules](#declarative-rules-ald001-ald008) below for the names a
+declarative rule answers to.
+
 ### Line-level (Comment)
 
 Use inline comments for single expressions:
@@ -806,6 +811,46 @@ fn good() { ... }
 ```
 
 This ensures that critical suppressions are always documented and justified.
+
+The reason is required on the **comment** path: a comment directive without a
+reason on an error rule suppresses the violation and reports a warning
+(`Allow directive for '<rule>' is missing required reason`) in its place. An
+attribute without a reason suppresses silently.
+
+### Declarative rules (ALD001-ALD008)
+
+The declarative rules honor the same two directives, with the same semantics.
+A declarative rule answers to three names, each in kebab-case or `snake_case`:
+
+| Name | Example | Suppresses |
+|------|---------|------------|
+| Rule kind | `restrict-use` / `restrict_use` | every `[[restrict-use]]` rule |
+| TOML `name` | `no-sqlx-in-domain` | only that one TOML rule |
+| Rule code | `ALD001` | every rule reported under that code |
+
+`allow(all)` suppresses everything, as it does for the built-in rules.
+
+```rust
+// Comment on the violating line or the line above it
+// arch-lint: allow(no-sqlx-in-domain) reason="legacy row mapping"
+use sqlx::Pool;
+
+// Attribute on the offending item
+#[arch_lint::allow(no_orm_derives_in_domain, reason = "legacy row mapping")]
+#[derive(sqlx::FromRow)]
+pub struct User { pub id: i64 }
+
+// Attribute on an enclosing mod / fn / impl, covering everything inside it
+#[arch_lint::allow(layering, reason = "composition root wires the layers")]
+pub fn wire() {
+    let _ = crate::handler::api::list_users;
+}
+```
+
+Unlike some built-in rules, declarative rules are **not** switched off inside
+`#[cfg(test)]` modules or `#[test]` functions: they express architecture
+constraints, so test code is held to them too. Take a directory out of a scope
+with `exclude` on `[[scopes]]` if that is not what you want.
 
 ### Clippy Compatibility
 

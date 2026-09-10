@@ -19,6 +19,9 @@ mod require_return;
 mod require_use;
 mod restrict_use;
 mod scope_dep;
+mod suppress;
+
+pub(crate) use suppress::{Decision, Suppressions};
 
 pub use deny_attr::DenyAttrRule;
 pub use layering::LayeringRule;
@@ -154,11 +157,22 @@ fn is_public(vis: &syn::Visibility) -> bool {
 /// reported. Visibility is the item's own `pub` for free, module and inherent
 /// impl items; items of a trait definition inherit the trait's visibility, and
 /// items of a trait impl (and `impl` blocks themselves) count as public.
-pub(crate) fn walk_items<'ast>(items: &'ast [syn::Item], f: &mut impl FnMut(&ItemView<'ast>)) {
+///
+/// `scopes` tracks suppression while descending: entering a `mod`, `impl` or
+/// `trait` body widens it when that item carries `#[arch_lint::allow(...)]`, so
+/// `f` sees the enclosing scope of the item it is called with. An item is
+/// emitted before its own body is entered, so an allow on `mod foo` suppresses
+/// both the `mod foo` item itself and everything inside it.
+pub(crate) fn walk_items<'ast>(
+    items: &'ast [syn::Item],
+    scopes: &mut Suppressions,
+    f: &mut impl FnMut(&ItemView<'ast>, &Suppressions),
+) {
     for item in items {
         match item {
             syn::Item::Struct(i) => emit_named(
                 f,
+                scopes,
                 ItemKind::Struct,
                 &i.ident,
                 &i.attrs,
@@ -167,6 +181,7 @@ pub(crate) fn walk_items<'ast>(items: &'ast [syn::Item], f: &mut impl FnMut(&Ite
             ),
             syn::Item::Enum(i) => emit_named(
                 f,
+                scopes,
                 ItemKind::Enum,
                 &i.ident,
                 &i.attrs,
@@ -175,6 +190,7 @@ pub(crate) fn walk_items<'ast>(items: &'ast [syn::Item], f: &mut impl FnMut(&Ite
             ),
             syn::Item::Union(i) => emit_named(
                 f,
+                scopes,
                 ItemKind::Union,
                 &i.ident,
                 &i.attrs,
@@ -183,6 +199,7 @@ pub(crate) fn walk_items<'ast>(items: &'ast [syn::Item], f: &mut impl FnMut(&Ite
             ),
             syn::Item::Fn(i) => emit_named(
                 f,
+                scopes,
                 ItemKind::Fn,
                 &i.sig.ident,
                 &i.attrs,
@@ -191,6 +208,7 @@ pub(crate) fn walk_items<'ast>(items: &'ast [syn::Item], f: &mut impl FnMut(&Ite
             ),
             syn::Item::Type(i) => emit_named(
                 f,
+                scopes,
                 ItemKind::Type,
                 &i.ident,
                 &i.attrs,
@@ -199,6 +217,7 @@ pub(crate) fn walk_items<'ast>(items: &'ast [syn::Item], f: &mut impl FnMut(&Ite
             ),
             syn::Item::Const(i) => emit_named(
                 f,
+                scopes,
                 ItemKind::Const,
                 &i.ident,
                 &i.attrs,
@@ -207,6 +226,7 @@ pub(crate) fn walk_items<'ast>(items: &'ast [syn::Item], f: &mut impl FnMut(&Ite
             ),
             syn::Item::Static(i) => emit_named(
                 f,
+                scopes,
                 ItemKind::Static,
                 &i.ident,
                 &i.attrs,
@@ -216,6 +236,7 @@ pub(crate) fn walk_items<'ast>(items: &'ast [syn::Item], f: &mut impl FnMut(&Ite
             syn::Item::Mod(i) => {
                 emit_named(
                     f,
+                    scopes,
                     ItemKind::Mod,
                     &i.ident,
                     &i.attrs,
@@ -223,31 +244,41 @@ pub(crate) fn walk_items<'ast>(items: &'ast [syn::Item], f: &mut impl FnMut(&Ite
                     None,
                 );
                 if let Some((_, nested)) = &i.content {
-                    walk_items(nested, f);
+                    let mark = scopes.enter_item_mod(&i.attrs);
+                    walk_items(nested, scopes, f);
+                    scopes.exit(mark);
                 }
             }
-            syn::Item::Trait(i) => walk_trait(i, f),
-            syn::Item::Impl(i) => walk_impl(i, f),
+            syn::Item::Trait(i) => walk_trait(i, scopes, f),
+            syn::Item::Impl(i) => walk_impl(i, scopes, f),
             _ => {}
         }
     }
 }
 
 /// Emits a trait and its associated items; items inherit the trait's visibility.
-fn walk_trait<'ast>(item: &'ast syn::ItemTrait, f: &mut impl FnMut(&ItemView<'ast>)) {
+fn walk_trait<'ast>(
+    item: &'ast syn::ItemTrait,
+    scopes: &mut Suppressions,
+    f: &mut impl FnMut(&ItemView<'ast>, &Suppressions),
+) {
     let trait_is_pub = is_public(&item.vis);
     emit_named(
         f,
+        scopes,
         ItemKind::Trait,
         &item.ident,
         &item.attrs,
         trait_is_pub,
         None,
     );
+
+    let mark = scopes.enter_block(&item.attrs);
     for trait_item in &item.items {
         match trait_item {
             syn::TraitItem::Fn(m) => emit_named(
                 f,
+                scopes,
                 ItemKind::Fn,
                 &m.sig.ident,
                 &m.attrs,
@@ -255,33 +286,59 @@ fn walk_trait<'ast>(item: &'ast syn::ItemTrait, f: &mut impl FnMut(&ItemView<'as
                 Some(&m.sig),
             ),
             syn::TraitItem::Const(c) => {
-                emit_named(f, ItemKind::Const, &c.ident, &c.attrs, trait_is_pub, None);
+                emit_named(
+                    f,
+                    scopes,
+                    ItemKind::Const,
+                    &c.ident,
+                    &c.attrs,
+                    trait_is_pub,
+                    None,
+                );
             }
             syn::TraitItem::Type(t) => {
-                emit_named(f, ItemKind::Type, &t.ident, &t.attrs, trait_is_pub, None);
+                emit_named(
+                    f,
+                    scopes,
+                    ItemKind::Type,
+                    &t.ident,
+                    &t.attrs,
+                    trait_is_pub,
+                    None,
+                );
             }
             _ => {}
         }
     }
+    scopes.exit(mark);
 }
 
 /// Emits an `impl` block and its items; items of a trait impl count as public.
-fn walk_impl<'ast>(item: &'ast syn::ItemImpl, f: &mut impl FnMut(&ItemView<'ast>)) {
-    f(&ItemView {
-        kind: ItemKind::Impl,
-        name: normalize_rendered(&item.self_ty.to_token_stream().to_string()),
-        ident: None,
-        span: item.self_ty.span(),
-        attrs: &item.attrs,
-        is_pub: true,
-        sig: None,
-    });
+fn walk_impl<'ast>(
+    item: &'ast syn::ItemImpl,
+    scopes: &mut Suppressions,
+    f: &mut impl FnMut(&ItemView<'ast>, &Suppressions),
+) {
+    f(
+        &ItemView {
+            kind: ItemKind::Impl,
+            name: normalize_rendered(&item.self_ty.to_token_stream().to_string()),
+            ident: None,
+            span: item.self_ty.span(),
+            attrs: &item.attrs,
+            is_pub: true,
+            sig: None,
+        },
+        scopes,
+    );
 
     let is_trait_impl = item.trait_.is_some();
+    let mark = scopes.enter_block(&item.attrs);
     for impl_item in &item.items {
         match impl_item {
             syn::ImplItem::Fn(m) => emit_named(
                 f,
+                scopes,
                 ItemKind::Fn,
                 &m.sig.ident,
                 &m.attrs,
@@ -290,6 +347,7 @@ fn walk_impl<'ast>(item: &'ast syn::ItemImpl, f: &mut impl FnMut(&ItemView<'ast>
             ),
             syn::ImplItem::Const(c) => emit_named(
                 f,
+                scopes,
                 ItemKind::Const,
                 &c.ident,
                 &c.attrs,
@@ -298,6 +356,7 @@ fn walk_impl<'ast>(item: &'ast syn::ItemImpl, f: &mut impl FnMut(&ItemView<'ast>
             ),
             syn::ImplItem::Type(t) => emit_named(
                 f,
+                scopes,
                 ItemKind::Type,
                 &t.ident,
                 &t.attrs,
@@ -307,25 +366,30 @@ fn walk_impl<'ast>(item: &'ast syn::ItemImpl, f: &mut impl FnMut(&ItemView<'ast>
             _ => {}
         }
     }
+    scopes.exit(mark);
 }
 
 fn emit_named<'ast>(
-    f: &mut impl FnMut(&ItemView<'ast>),
+    f: &mut impl FnMut(&ItemView<'ast>, &Suppressions),
+    scopes: &Suppressions,
     kind: ItemKind,
     ident: &'ast syn::Ident,
     attrs: &'ast [syn::Attribute],
     is_pub: bool,
     sig: Option<&'ast syn::Signature>,
 ) {
-    f(&ItemView {
-        kind,
-        name: ident.to_string(),
-        ident: Some(ident),
-        span: ident.span(),
-        attrs,
-        is_pub,
-        sig,
-    });
+    f(
+        &ItemView {
+            kind,
+            name: ident.to_string(),
+            ident: Some(ident),
+            span: ident.span(),
+            attrs,
+            is_pub,
+            sig,
+        },
+        scopes,
+    );
 }
 
 /// Renders a path as `::` separated segments (generic arguments dropped).

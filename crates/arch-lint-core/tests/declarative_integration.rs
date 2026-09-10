@@ -16,6 +16,10 @@ fn patterns_fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/declarative_patterns")
 }
 
+fn suppression_fixture_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/declarative_suppression")
+}
+
 fn load_config_and_rules(toml_content: &str) -> (Config, Vec<arch_lint_core::RuleBox>) {
     let config = if toml_content.is_empty() {
         Config::default()
@@ -238,6 +242,76 @@ fn layering_violation_points_at_the_upward_import() {
         .contains("infra/db.rs"));
     assert!(layering.message.contains("scope `infra`"));
     assert!(layering.message.contains("scope `handler`"));
+}
+
+// ── Suppression: attribute and comment directives on declarative rules ──
+
+#[test]
+fn suppression_directives_silence_declarative_rules() {
+    let root = suppression_fixture_root();
+    let toml_content = std::fs::read_to_string(root.join("arch-lint.toml")).unwrap();
+    let (config, rules) = load_config_and_rules(&toml_content);
+
+    let mut builder = Analyzer::builder().root(&root).config(config);
+    for rule in rules {
+        builder = builder.rule_box(rule);
+    }
+    let result = builder.build().unwrap().analyze().unwrap();
+
+    let summary: Vec<String> = result
+        .violations
+        .iter()
+        .map(|v| {
+            format!(
+                "{} {} @ {}:{} — {}",
+                v.code,
+                v.rule,
+                v.location.file.display(),
+                v.location.line,
+                v.message
+            )
+        })
+        .collect();
+
+    // Everything in the fixture is suppressed except:
+    //   1. the control trait in src/domain/control.rs (nothing suppresses it)
+    //   2. the reason-less directive on `list_users`, which is reported as a
+    //      "missing required reason" warning instead of the ALD008 error
+    assert_eq!(result.violations.len(), 2, "{summary:#?}");
+
+    let control = result
+        .violations
+        .iter()
+        .find(|v| v.code == "ALD007")
+        .unwrap_or_else(|| panic!("control naming violation should still fire: {summary:#?}"));
+    assert_eq!(control.rule, "domain-ports");
+    assert!(control
+        .location
+        .file
+        .to_string_lossy()
+        .contains("domain/control.rs"));
+
+    let missing_reason = result
+        .violations
+        .iter()
+        .find(|v| v.code == "ALD008")
+        .unwrap_or_else(|| panic!("missing-reason warning should be reported: {summary:#?}"));
+    assert_eq!(missing_reason.rule, "handlers-return-app-result");
+    assert_eq!(missing_reason.severity, Severity::Warning);
+    assert!(missing_reason.message.contains("missing required reason"));
+    assert!(missing_reason
+        .location
+        .file
+        .to_string_lossy()
+        .contains("handler/api.rs"));
+
+    // The suppressed kinds produce nothing at all.
+    for code in ["ALD001", "ALD004", "ALD005", "ALD006"] {
+        assert!(
+            !result.violations.iter().any(|v| v.code == code),
+            "{code} should be suppressed: {summary:#?}"
+        );
+    }
 }
 
 // ── Edge case: empty config produces no violations ──

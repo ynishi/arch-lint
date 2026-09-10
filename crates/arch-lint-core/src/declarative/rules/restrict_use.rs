@@ -11,7 +11,7 @@ use crate::declarative::model::{DeclarativeConfig, RestrictUse};
 use crate::rule::Rule;
 use crate::types::{Location, Violation};
 
-use super::{expand_use_tree, inline_path_to_string};
+use super::{expand_use_tree, inline_path_to_string, Decision, Suppressions};
 
 const RESTRICT_USE_NAME: &str = "restrict-use";
 const RESTRICT_USE_CODE: &str = "ALD001";
@@ -61,9 +61,18 @@ impl Rule for RestrictUseRule {
             return vec![];
         }
 
+        let scopes = Suppressions::new(
+            RESTRICT_USE_NAME,
+            RESTRICT_USE_CODE,
+            applicable
+                .iter()
+                .map(|r| (r.name().to_string(), r.severity())),
+        );
+
         let mut visitor = RestrictUseVisitor {
             ctx,
             applicable,
+            scopes,
             violations: Vec::new(),
         };
         visitor.visit_file(ast);
@@ -74,32 +83,67 @@ impl Rule for RestrictUseRule {
 struct RestrictUseVisitor<'a> {
     ctx: &'a FileContext<'a>,
     applicable: Vec<&'a RestrictUse>,
+    scopes: Suppressions,
     violations: Vec<Violation>,
 }
 
 impl<'ast> Visit<'ast> for RestrictUseVisitor<'_> {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        let mark = self.scopes.enter_item_mod(&node.attrs);
+        syn::visit::visit_item_mod(self, node);
+        self.scopes.exit(mark);
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        let mark = self.scopes.enter_item_fn(&node.attrs);
+        syn::visit::visit_item_fn(self, node);
+        self.scopes.exit(mark);
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        let mark = self.scopes.enter_block(&node.attrs);
+        syn::visit::visit_item_impl(self, node);
+        self.scopes.exit(mark);
+    }
+
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
         let resolved = expand_use_tree(&node.tree, "");
 
         for use_item in &resolved {
-            for rule in &self.applicable {
-                if rule.is_denied(&use_item.path) {
-                    let start = use_item.span.start();
-                    let location =
-                        Location::new(self.ctx.relative_path.clone(), start.line, start.column + 1);
+            for (index, rule) in self.applicable.iter().enumerate() {
+                if !rule.is_denied(&use_item.path) {
+                    continue;
+                }
+                match self.scopes.decide(
+                    index,
+                    self.ctx,
+                    RESTRICT_USE_CODE,
+                    use_item.span,
+                    Some(&node.attrs),
+                ) {
+                    Decision::Suppressed => {}
+                    Decision::MissingReason(warning) => self.violations.push(*warning),
+                    Decision::Report => {
+                        let start = use_item.span.start();
+                        let location = Location::new(
+                            self.ctx.relative_path.clone(),
+                            start.line,
+                            start.column + 1,
+                        );
 
-                    let mut violation = Violation::new(
-                        RESTRICT_USE_CODE,
-                        rule.name(),
-                        rule.severity(),
-                        location,
-                        format!("{}: `{}`", rule.message(), use_item.path),
-                    );
-                    if let Some(doc) = rule.doc_ref() {
-                        violation = violation.with_doc_ref(doc);
+                        let mut violation = Violation::new(
+                            RESTRICT_USE_CODE,
+                            rule.name(),
+                            rule.severity(),
+                            location,
+                            format!("{}: `{}`", rule.message(), use_item.path),
+                        );
+                        if let Some(doc) = rule.doc_ref() {
+                            violation = violation.with_doc_ref(doc);
+                        }
+
+                        self.violations.push(violation);
                     }
-
-                    self.violations.push(violation);
                 }
             }
         }
@@ -111,24 +155,37 @@ impl<'ast> Visit<'ast> for RestrictUseVisitor<'_> {
         // `use` statements contain `UseTree` nodes, not `syn::Path`,
         // so this never double-reports an import already flagged above.
         if let Some(path) = inline_path_to_string(node) {
-            for rule in &self.applicable {
-                if rule.check_inline() && rule.is_denied(&path) {
-                    let start = node.span().start();
-                    let location =
-                        Location::new(self.ctx.relative_path.clone(), start.line, start.column + 1);
+            for (index, rule) in self.applicable.iter().enumerate() {
+                if !rule.check_inline() || !rule.is_denied(&path) {
+                    continue;
+                }
+                match self
+                    .scopes
+                    .decide(index, self.ctx, RESTRICT_USE_CODE, node.span(), None)
+                {
+                    Decision::Suppressed => {}
+                    Decision::MissingReason(warning) => self.violations.push(*warning),
+                    Decision::Report => {
+                        let start = node.span().start();
+                        let location = Location::new(
+                            self.ctx.relative_path.clone(),
+                            start.line,
+                            start.column + 1,
+                        );
 
-                    let mut violation = Violation::new(
-                        RESTRICT_USE_CODE,
-                        rule.name(),
-                        rule.severity(),
-                        location,
-                        format!("{}: `{}`", rule.message(), path),
-                    );
-                    if let Some(doc) = rule.doc_ref() {
-                        violation = violation.with_doc_ref(doc);
+                        let mut violation = Violation::new(
+                            RESTRICT_USE_CODE,
+                            rule.name(),
+                            rule.severity(),
+                            location,
+                            format!("{}: `{}`", rule.message(), path),
+                        );
+                        if let Some(doc) = rule.doc_ref() {
+                            violation = violation.with_doc_ref(doc);
+                        }
+
+                        self.violations.push(violation);
                     }
-
-                    self.violations.push(violation);
                 }
             }
         }
@@ -341,6 +398,172 @@ mod tests {
     }
 
     // ── restrict-use `except` / scope `exclude` ──
+
+    // ── suppression: attribute, comment, name forms ──
+
+    fn check_domain(code: &str) -> Vec<Violation> {
+        let rule = RestrictUseRule::new(make_restrict_config());
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+        rule.check(&ctx, &ast)
+    }
+
+    #[test]
+    fn suppress_attribute_on_the_use_item() {
+        let code = "#[arch_lint::allow(no_sqlx_in_domain, reason = \"legacy\")]\nuse sqlx::Pool;";
+        assert!(check_domain(code).is_empty());
+    }
+
+    #[test]
+    fn suppress_attribute_on_enclosing_mod() {
+        let code = "#[arch_lint::allow(restrict_use, reason = \"legacy\")]\nmod inner {\n    use sqlx::Pool;\n}";
+        assert!(check_domain(code).is_empty());
+    }
+
+    #[test]
+    fn suppress_attribute_on_enclosing_fn() {
+        let code = "#[arch_lint::allow(no_sqlx_in_domain, reason = \"legacy\")]\nfn f() {\n    let _ = sqlx::query(\"SELECT 1\");\n}";
+        assert!(check_domain(code).is_empty());
+    }
+
+    #[test]
+    fn suppress_attribute_on_enclosing_impl() {
+        let code = "struct S;\n#[arch_lint::allow(no_sqlx_in_domain, reason = \"legacy\")]\nimpl S {\n    fn f(&self) {\n        let _ = sqlx::query(\"SELECT 1\");\n    }\n}";
+        assert!(check_domain(code).is_empty());
+    }
+
+    #[test]
+    fn suppress_inline_comment_on_previous_line() {
+        let code = "// arch-lint: allow(no-sqlx-in-domain) reason=\"legacy\"\nuse sqlx::Pool;";
+        assert!(check_domain(code).is_empty());
+    }
+
+    #[test]
+    fn suppress_inline_comment_on_the_same_line() {
+        let code = "use sqlx::Pool; // arch-lint: allow(no-sqlx-in-domain) reason=\"legacy\"";
+        // The trailing-comment form is only recognized when the directive is the
+        // whole comment line, exactly as for the built-in rules; here the line
+        // starts with `use`, so the import is still reported.
+        assert_eq!(check_domain(code).len(), 1);
+    }
+
+    #[test]
+    fn suppress_by_kind_name_user_name_and_code() {
+        for name in ["restrict-use", "no-sqlx-in-domain", "ALD001"] {
+            let code = format!("// arch-lint: allow({name}) reason=\"legacy\"\nuse sqlx::Pool;");
+            assert!(
+                check_domain(&code).is_empty(),
+                "allow({name}) should suppress the violation"
+            );
+        }
+    }
+
+    #[test]
+    fn suppress_by_unrelated_name_does_not_apply() {
+        let code = "// arch-lint: allow(no-reqwest-in-domain) reason=\"legacy\"\nuse sqlx::Pool;";
+        assert_eq!(check_domain(code).len(), 1);
+    }
+
+    #[test]
+    fn user_name_allow_does_not_suppress_a_sibling_rule() {
+        let scopes = vec![Scope::new(
+            ScopeName::new("domain").unwrap(),
+            vec![GlobPattern::new("src/domain/**").unwrap()],
+        )];
+        let restrict = vec![
+            RestrictUse::new(
+                "no-sqlx-in-domain".to_string(),
+                ScopeRef::Named(ScopeName::new("domain").unwrap()),
+                vec![UsePattern::new("sqlx::*").unwrap()],
+                "Domain must be DB-agnostic.".to_string(),
+                None,
+                Severity::Error,
+            ),
+            RestrictUse::new(
+                "no-orm-in-domain".to_string(),
+                ScopeRef::Named(ScopeName::new("domain").unwrap()),
+                vec![UsePattern::new("sqlx::*").unwrap()],
+                "Domain must not touch the ORM.".to_string(),
+                None,
+                Severity::Error,
+            ),
+        ];
+        let config = Arc::new(DeclarativeConfig::new(scopes, restrict, vec![], vec![]).unwrap());
+        let rule = RestrictUseRule::new(config);
+        let code = "#[arch_lint::allow(no_sqlx_in_domain, reason = \"legacy\")]\nuse sqlx::Pool;";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].rule, "no-orm-in-domain");
+    }
+
+    #[test]
+    fn comment_without_reason_on_error_rule_warns_instead() {
+        let code = "// arch-lint: allow(no-sqlx-in-domain)\nuse sqlx::Pool;";
+        let violations = check_domain(code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].severity, Severity::Warning);
+        assert_eq!(violations[0].code, RESTRICT_USE_CODE);
+        assert_eq!(violations[0].rule, "no-sqlx-in-domain");
+        assert!(violations[0].message.contains("missing required reason"));
+    }
+
+    #[test]
+    fn comment_without_reason_on_warning_rule_suppresses() {
+        let config = Arc::new(
+            DeclarativeConfig::new(
+                vec![],
+                vec![RestrictUse::new(
+                    "no-sqlx-handlers".to_string(),
+                    ScopeRef::Inline(vec![GlobPattern::new("src/handlers/**").unwrap()]),
+                    vec![UsePattern::new("sqlx::*").unwrap()],
+                    "Handlers must use repository.".to_string(),
+                    None,
+                    Severity::Warning,
+                )],
+                vec![],
+                vec![],
+            )
+            .unwrap(),
+        );
+        let rule = RestrictUseRule::new(config);
+        let code = "// arch-lint: allow(no-sqlx-handlers)\nuse sqlx::Pool;";
+        let ctx = make_ctx("src/handlers/api.rs", code);
+        let ast = parse_file(code);
+
+        assert!(rule.check(&ctx, &ast).is_empty());
+    }
+
+    #[test]
+    fn attribute_without_reason_suppresses_like_built_in_rules() {
+        // The built-in rules only require a reason on the *comment* path, so an
+        // attribute without one suppresses silently here too.
+        let code = "#[arch_lint::allow(no_sqlx_in_domain)]\nuse sqlx::Pool;";
+        assert!(check_domain(code).is_empty());
+    }
+
+    #[test]
+    fn cfg_test_module_is_still_checked() {
+        let code = "#[cfg(test)]\nmod tests {\n    use sqlx::Pool;\n}";
+        assert_eq!(
+            check_domain(code).len(),
+            1,
+            "declarative rules express architecture constraints and stay on in test code"
+        );
+    }
+
+    #[test]
+    fn scope_is_restored_after_the_allowed_item() {
+        let code = "#[arch_lint::allow(no_sqlx_in_domain, reason = \"legacy\")]\nmod allowed {\n    use sqlx::Pool;\n}\nmod plain {\n    use sqlx::Executor;\n}";
+        let violations = check_domain(code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(violations[0].message.contains("sqlx::Executor"));
+    }
 
     #[test]
     fn restrict_except_suppresses_denied_import() {
