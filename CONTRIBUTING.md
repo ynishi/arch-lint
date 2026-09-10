@@ -25,7 +25,11 @@ Prefer `cargo test -p <crate>` while iterating on a single crate.
 ## Adding a rule
 
 1. Create `crates/arch-lint-rules/src/<rule_name>.rs` implementing
-   `arch_lint_core::Rule` with unit tests.
+   `arch_lint_core::Rule` with unit tests. Track `#[arch_lint::allow(...)]` /
+   `#[cfg(test)]` suppression with `arch_lint_core::utils::ScopeTracker` rather
+   than hand-rolled `in_allowed_context` flags, and write tests against
+   `arch_lint_core::test_utils::check_rule` (enabled by the crate's
+   `test-utils` dev-dependency feature) rather than building a `FileContext` by hand.
 2. Export it from `crates/arch-lint-rules/src/lib.rs`.
 3. Register it in `crates/arch-lint-rules/src/presets.rs`: add the name to
    `ALL`, map its code in `canonical_rule_name`, and wire any `[rules.<name>]`

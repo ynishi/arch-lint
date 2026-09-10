@@ -9,6 +9,10 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# Test helpers for rule crates (`arch_lint_core::test_utils`).
+test-utils = []
+
 [dependencies]
 syn.workspace = true
 quote.workspace = true

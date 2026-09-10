@@ -3,6 +3,7 @@
 pub mod allowance;
 pub mod attributes;
 pub mod paths;
+pub mod scope;
 
 // Re-export commonly used utilities for rule implementations
 #[doc(inline)]
@@ -11,3 +12,5 @@ pub use allowance::{check_allow_comment, check_allow_with_reason, AllowCheck, Al
 pub use attributes::{check_arch_lint_allow, has_allow_attr, has_cfg_test, has_test_attr};
 #[doc(inline)]
 pub use paths::path_to_string;
+#[doc(inline)]
+pub use scope::{ScopeState, ScopeTracker};

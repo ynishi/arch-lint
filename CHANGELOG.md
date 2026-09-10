@@ -38,6 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fail_on` / `exclude_files` examples
 - Makefile `publish` targets include `arch-lint-ts` and the `arch-lint` facade;
   `bump-version` works with GNU sed
+- **Built-in rules share their visitor scaffolding** - the `#[arch_lint::allow(...)]` /
+  `#[cfg(test)]` / `#[test]` suppression state that nine rules each tracked by hand now lives
+  in `arch_lint_core::utils::scope::ScopeTracker`, and their `visit_item_mod` /
+  `visit_item_fn` / `visit_item_impl` overrides delegate to it. New
+  `arch_lint_core::test_utils` (behind the `test-utils` feature) replaces the `FileContext`
+  literal that was copied into every rule's test module. No change to rule behavior, codes,
+  messages, severities, or public rule APIs
 
 ### Removed
 

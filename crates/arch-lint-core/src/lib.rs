@@ -40,6 +40,11 @@ pub mod declarative;
 /// Utility modules for rule implementations.
 pub mod utils;
 
+/// Helpers for unit-testing rules (enabled by the `test-utils` feature).
+#[cfg(any(test, feature = "test-utils"))]
+#[doc(hidden)]
+pub mod test_utils;
+
 pub use analyzer::{Analyzer, AnalyzerBuilder};
 pub use config::{AnalyzerConfig, Config, ConfigError, RuleConfig};
 pub use context::{FileContext, ProjectContext};

@@ -560,20 +560,13 @@ impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
 mod tests {
     use super::*;
     use crate::declarative::model::*;
-    use std::path::PathBuf;
 
     fn parse_file(code: &str) -> syn::File {
         syn::parse_file(code).expect("test code should parse")
     }
 
     fn make_ctx<'a>(path: &'a str, content: &'a str) -> FileContext<'a> {
-        FileContext {
-            path: std::path::Path::new(path),
-            content,
-            is_test: false,
-            module_path: vec![],
-            relative_path: PathBuf::from(path),
-        }
+        crate::test_utils::file_ctx(path, content, false)
     }
 
     fn extract_use_tree(code: &str) -> syn::ItemUse {
