@@ -17,11 +17,18 @@ const DEFAULT_CONFIG: &str = r#"# arch-lint configuration
 # root = "./src"
 
 # Glob patterns to exclude from analysis
+# Matched against each file's path relative to the root and its absolute path.
 exclude = [
     "**/target/**",
     "**/vendor/**",
     "**/generated/**",
 ]
+
+# Skip files ignored by git (.gitignore, .git/info/exclude, global gitignore)
+# respect_gitignore = true
+
+# If set, only files matching one of these patterns are analyzed
+# include = ["src/**"]
 
 # Rule configurations
 # Each rule can be enabled/disabled, have its severity overridden,

@@ -226,9 +226,13 @@ enabled = true
 allow_patterns = ["tokio::", "async_std::"]
 ```
 
-`[analyzer].include`, `respect_gitignore`, and `parallelism` are parsed but not
-yet honored by the syn engine (file discovery is `**/*.rs` under `root` minus
-`exclude`).
+`[analyzer].include` and `respect_gitignore` are honored by the syn engine.
+File discovery walks `root` with the `ignore` crate: gitignored paths are
+skipped unless `respect_gitignore = false`, then `include` (if non-empty) keeps
+only matching files, then `exclude` drops the rest. `include` and `exclude`
+patterns are matched against the path relative to `root` as well as the
+absolute path. `[analyzer].parallelism` is still parsed but not honored — file
+analysis runs sequentially.
 
 ## Extending with Custom Rules
 

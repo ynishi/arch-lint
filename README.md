@@ -656,6 +656,7 @@ exclude = [
     "**/vendor/**",
 ]
 respect_gitignore = true
+# include = ["src/app/**", "src/domain/**"]
 
 [rules.no-unwrap-expect]
 enabled = true
@@ -747,6 +748,39 @@ async = true
 pattern = "^Result<.*,\\s*AppError>$"
 message = "Handlers must return Result<_, AppError>."
 ```
+
+### `[analyzer]` options
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `root` | `"."` | Directory to walk. |
+| `respect_gitignore` | `true` | Skip files git ignores. |
+| `include` | `[]` (all `*.rs`) | Glob patterns; when non-empty, only matching files are analyzed. |
+| `exclude` | `["**/target/**", "**/vendor/**"]` | Glob patterns dropped from the result. |
+| `parallelism` | unset | **Reserved** — parsed, but analysis currently runs sequentially. |
+
+File discovery runs in this order:
+
+1. Walk `root` (hidden files and directories are traversed, matching the
+   historical `**/*.rs` glob behavior).
+2. If `respect_gitignore = true`, skip anything ignored by a `.gitignore` at
+   any level, by `.git/info/exclude`, or by the global gitignore. Ignore rules
+   are applied even when `root` is **not** inside a git repository, so a
+   scaffolded project or a fixture directory carrying a `.gitignore` is
+   filtered the same way a checked-out repository is. Non-git ignore files
+   (`.ignore`, `.rgignore`) are never consulted.
+3. Keep `*.rs` files matching at least one `include` pattern (all of them when
+   `include` is empty).
+4. Drop files matching any `exclude` pattern.
+
+`include` and `exclude` patterns are matched against each file's path
+**relative to `root`** as well as against its absolute path, so both
+`exclude = ["src/generated/**"]` and `exclude = ["**/generated/**"]` work. A
+leading `./` on a pattern is accepted (`./src/**` ≡ `src/**`).
+
+`Cargo.toml` discovery — used by project-wide rules such as `required-crate` —
+follows the same `respect_gitignore` and `exclude` settings, but ignores
+`include`, which scopes source files only.
 
 ## Suppression
 

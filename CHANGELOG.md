@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`[analyzer] respect_gitignore` and `include` are now honored** - file
+  discovery walks the root with the `ignore` crate instead of a bare
+  `**/*.rs` glob. With the default `respect_gitignore = true`, gitignored
+  files are skipped (`.gitignore` at any level, `.git/info/exclude`, global
+  gitignore); ignore rules apply even outside a git repository, so scaffolded
+  projects and fixture directories are filtered the same way. A non-empty
+  `include` restricts analysis to matching files, and `Cargo.toml` discovery
+  for project-wide rules follows the same gitignore and `exclude` settings.
+  `include` / `exclude` patterns now match the path **relative to the root**
+  as well as the absolute path, so `exclude = ["src/generated/**"]` works as
+  written. New `AnalyzerBuilder::respect_gitignore(bool)` and
+  `AnalyzerBuilder::includes(..)` methods; an explicit builder call overrides
+  the configured `respect_gitignore`. `[analyzer] parallelism` remains parsed
+  but unused
 - **Suppression for declarative rules** - ALD001-ALD008 now honor the same
   directives as the built-in rules: `#[arch_lint::allow(<name>, reason = "...")]`
   on the offending item or an enclosing `mod` / `fn` / `impl`, and
