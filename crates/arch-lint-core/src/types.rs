@@ -26,6 +26,24 @@ impl std::fmt::Display for Severity {
     }
 }
 
+/// Error returned when parsing an unknown severity name.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown severity `{0}`. Valid values: error, warning, info")]
+pub struct ParseSeverityError(pub String);
+
+impl std::str::FromStr for Severity {
+    type Err = ParseSeverityError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "error" => Ok(Self::Error),
+            "warning" => Ok(Self::Warning),
+            "info" => Ok(Self::Info),
+            other => Err(ParseSeverityError(other.to_string())),
+        }
+    }
+}
+
 /// Source code location.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Location {

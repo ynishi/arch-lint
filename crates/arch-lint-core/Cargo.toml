@@ -17,13 +17,8 @@ serde.workspace = true
 thiserror.workspace = true
 miette.workspace = true
 glob.workspace = true
-walkdir.workspace = true
-ignore.workspace = true
 tracing.workspace = true
 toml.workspace = true
-
-[dev-dependencies]
-insta.workspace = true
 
 [lints]
 workspace = true

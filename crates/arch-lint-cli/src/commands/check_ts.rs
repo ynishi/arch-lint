@@ -56,7 +56,9 @@ pub fn run(
             .unwrap_or(file_path)
             .to_path_buf();
 
-        let mut analysis = extractor.analyze(&source);
+        let mut analysis = extractor
+            .analyze(&source)
+            .with_context(|| format!("Failed to analyze {}", file_path.display()))?;
         analysis.file_path = rel;
 
         let violations = engine.check(&analysis);

@@ -19,8 +19,10 @@ pub fn run() {
 
     println!("\nPresets:");
     println!("  recommended  - AL001, AL002, AL003, AL005, AL006, AL007, AL013 (default)");
-    println!("  strict       - All rules with stricter settings");
+    println!("  strict       - All rules (AL001-AL013) with stricter settings");
     println!("  minimal      - AL001 only (for gradual adoption)");
+    println!("\nDeclarative rules ([[restrict-use]], [[require-use]], [[deny-scope-dep]])");
+    println!("are loaded from arch-lint.toml and always run alongside the preset.");
 
     println!("\nUse --rules to filter specific rules, e.g.:");
     println!("  arch-lint check --rules no-unwrap-expect,no-sync-io");

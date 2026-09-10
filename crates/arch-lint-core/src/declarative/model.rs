@@ -195,7 +195,7 @@ impl ScopeRef {
     /// Tests whether a relative file path matches this scope reference.
     ///
     /// For `Named`, requires the scope registry to resolve. Use
-    /// [`DeclarativeConfig::scope_contains`] instead.
+    /// [`DeclarativeConfig::scope_ref_contains`] instead.
     /// For `Inline`, matches directly against the patterns.
     #[must_use]
     pub fn matches_inline(&self, path: &Path) -> bool {

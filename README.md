@@ -3,7 +3,8 @@
 Architecture linter for Rust projects and cross-language layer enforcement.
 
 [![Crates.io](https://img.shields.io/crates/v/arch-lint.svg)](https://crates.io/crates/arch-lint)
-[![License](https://img.shields.io/crates/l/arch-lint.svg)](LICENSE)
+[![License](https://img.shields.io/crates/l/arch-lint.svg)](LICENSE-MIT)
+[![CI](https://github.com/ynishi/arch-lint/actions/workflows/ci.yml/badge.svg)](https://github.com/ynishi/arch-lint/actions/workflows/ci.yml)
 
 ## Why arch-lint?
 
@@ -184,6 +185,15 @@ The goal: the AI learns from the same rule set that humans follow, and neither n
 | AL010 | `prefer-from-over-into` | Prefers `From` trait implementation over `Into` | Warning |
 | AL011 | `no-panic-in-lib` | Forbids panic macros in library code | Error |
 | AL012 | `require-doc-comments` | Requires documentation comments on public items | Warning |
+| AL013 | `no-silent-result-drop` | Forbids silently discarding `Result` error information | Warning |
+
+Declarative rules defined in `arch-lint.toml` (see [Declarative Rules](#declarative-rules-no-code-required)):
+
+| Code | Section | Description |
+|------|---------|-------------|
+| ALD001 | `[[restrict-use]]` | Forbids `use` paths (and inline qualified paths) within a scope |
+| ALD002 | `[[require-use]]` | Requires a preferred crate over alternatives within a file set |
+| ALD003 | `[[deny-scope-dep]]` | Forbids one scope from depending on another |
 
 ### Rule Details
 
@@ -484,6 +494,31 @@ require_struct_docs = true # Require docs for public structs
 require_enum_docs = true   # Require docs for public enums
 ```
 
+#### AL013: no-silent-result-drop
+
+Detects `Result` values whose error is discarded without being handled or logged.
+
+```rust
+// BAD
+let _ = save(&data);
+save(&data).ok();
+
+// GOOD
+save(&data)?;
+if let Err(e) = save(&data) {
+    tracing::warn!(error = %e, "save failed, continuing");
+}
+```
+
+**Configuration:**
+```toml
+[rules.no-silent-result-drop]
+allow_in_tests = true        # Allow in test code (default: true; `strict` sets false)
+allow_ok = false             # Allow `.ok()` conversion (default: false)
+allow_let_underscore = false # Allow `let _ = result` (default: false)
+severity = "warning"
+```
+
 ## Configuration
 
 Create `arch-lint.toml` in your project root:
@@ -646,9 +681,13 @@ Use presets for quick configuration:
 
 | Preset | Rules | Description |
 |--------|-------|-------------|
-| `recommended` | AL001, AL002, AL003, AL005, AL006, AL007 | Sensible defaults |
-| `strict` | All rules | Maximum safety |
-| `minimal` | AL001 (relaxed) | Gradual adoption |
+| `recommended` | AL001, AL002, AL003, AL005, AL006, AL007, AL013 | Sensible defaults |
+| `strict` | All rules (AL001-AL013), no test exceptions, `.expect()` and `.ok()` forbidden | Maximum safety |
+| `minimal` | AL001 (relaxed, `.expect()` allowed) | Gradual adoption |
+
+Declarative rules from `arch-lint.toml` always run in addition to the preset.
+Per-rule options under `[rules.<name>]` override the preset defaults, and
+`exclude_files` skips a rule for matching files (globs relative to the analyzer root).
 
 ## Writing Custom Rules
 

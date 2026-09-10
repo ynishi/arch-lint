@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tree_sitter::{Language, Node, Parser};
 
 use crate::extractor::{
-    DeclInfo, DeclKind, FileAnalysis, ImportInfo, LanguageExtractor, PackageInfo,
+    DeclInfo, DeclKind, ExtractError, FileAnalysis, ImportInfo, LanguageExtractor, PackageInfo,
 };
 
 /// Extracts imports, classes, and package declarations from Kotlin source.
@@ -144,14 +144,19 @@ impl LanguageExtractor for KotlinExtractor {
         &[".kt", ".kts"]
     }
 
-    fn analyze(&self, source: &str) -> FileAnalysis {
+    fn analyze(&self, source: &str) -> Result<FileAnalysis, ExtractError> {
         let mut parser = Parser::new();
         parser
             .set_language(&self.language)
-            .expect("failed to set kotlin language");
+            .map_err(|source| ExtractError::Language {
+                language: self.language_id(),
+                source,
+            })?;
 
         let src = source.as_bytes();
-        let tree = parser.parse(src, None).expect("failed to parse");
+        let tree = parser.parse(src, None).ok_or(ExtractError::NoTree {
+            language: self.language_id(),
+        })?;
         let root = tree.root_node();
 
         let mut result = FileAnalysis {
@@ -181,7 +186,7 @@ impl LanguageExtractor for KotlinExtractor {
             }
         }
 
-        result
+        Ok(result)
     }
 }
 
@@ -190,7 +195,9 @@ mod tests {
     use super::*;
 
     fn analyze(src: &str) -> FileAnalysis {
-        KotlinExtractor::new().analyze(src)
+        KotlinExtractor::new()
+            .analyze(src)
+            .expect("kotlin grammar loads and parses")
     }
 
     #[test]

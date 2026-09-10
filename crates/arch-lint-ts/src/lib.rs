@@ -23,6 +23,6 @@ pub mod layer;
 
 pub use config::ArchConfig;
 pub use engine::ArchRuleEngine;
-pub use extractor::{FileAnalysis, LanguageExtractor};
+pub use extractor::{ExtractError, FileAnalysis, LanguageExtractor};
 pub use kotlin::KotlinExtractor;
 pub use layer::LayerResolver;

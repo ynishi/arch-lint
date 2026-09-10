@@ -16,7 +16,7 @@ pub enum LoadError {
     /// A field-level validation error.
     #[error("{context}: {source}")]
     Validation {
-        /// Where the error occurred (e.g., "scopes[0].name").
+        /// Where the error occurred (e.g., `scopes[0].name`).
         context: String,
         /// The underlying model error.
         source: ModelError,
@@ -158,15 +158,10 @@ fn convert_restrict_use(dto: RestrictUseDto) -> Result<RestrictUse, LoadError> {
 
     let severity = parse_severity(&dto.severity, &format!("restrict-use '{}'", dto.name))?;
 
-    Ok(RestrictUse::new(
-        dto.name,
-        scope,
-        deny,
-        dto.message,
-        dto.doc,
-        severity,
+    Ok(
+        RestrictUse::new(dto.name, scope, deny, dto.message, dto.doc, severity)
+            .with_check_inline(dto.check_inline),
     )
-    .with_check_inline(dto.check_inline))
 }
 
 fn convert_require_use(dto: RequireUseDto) -> Result<RequireUse, LoadError> {
@@ -205,15 +200,10 @@ fn convert_scope_dep(dto: ScopeDepDto, index: usize) -> Result<ScopeDep, LoadErr
 
     let severity = parse_severity(&dto.severity, &ctx)?;
 
-    Ok(ScopeDep::new(
-        dto.name,
-        from,
-        to,
-        dto.message,
-        dto.doc,
-        severity,
+    Ok(
+        ScopeDep::new(dto.name, from, to, dto.message, dto.doc, severity)
+            .with_check_inline(dto.check_inline),
     )
-    .with_check_inline(dto.check_inline))
 }
 
 fn parse_severity(value: &str, context: &str) -> Result<Severity, LoadError> {

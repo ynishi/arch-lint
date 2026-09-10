@@ -61,7 +61,7 @@ impl Config {
     pub fn is_rule_enabled(&self, rule_name: &str) -> bool {
         self.rules
             .get(rule_name)
-            .map_or(true, |c| c.enabled.unwrap_or(true))
+            .is_none_or(|c| c.enabled.unwrap_or(true))
     }
 
     /// Gets the severity override for a rule.
@@ -126,12 +126,27 @@ pub struct RuleConfig {
     #[serde(default)]
     pub severity: Option<crate::Severity>,
 
+    /// Glob patterns (relative to the analyzer root) for files this rule skips.
+    #[serde(default)]
+    pub exclude_files: Vec<String>,
+
     /// Rule-specific options as key-value pairs.
     #[serde(flatten)]
     pub options: HashMap<String, toml::Value>,
 }
 
 impl RuleConfig {
+    /// Returns `true` if `relative_path` matches any `exclude_files` pattern.
+    ///
+    /// Patterns are matched against the path relative to the analyzer root,
+    /// using glob semantics (`src/cli/**`, `src/startup.rs`).
+    #[must_use]
+    pub fn excludes_file(&self, relative_path: &std::path::Path) -> bool {
+        self.exclude_files
+            .iter()
+            .any(|pattern| glob::Pattern::new(pattern).is_ok_and(|p| p.matches_path(relative_path)))
+    }
+
     /// Gets an option value as a specific type.
     #[must_use]
     pub fn get_option<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
@@ -232,5 +247,22 @@ allow_in_tests = true
 
         let rule_config = config.rules.get("no-unwrap-expect").unwrap();
         assert!(rule_config.get_bool("allow_in_tests", false));
+    }
+
+    #[test]
+    fn test_exclude_files_glob() {
+        let toml = r#"
+[rules.no-sync-io]
+exclude_files = ["src/startup.rs", "src/cli/**"]
+"#;
+        let config = Config::parse(toml).expect("Failed to parse");
+        let rule = config.rules.get("no-sync-io").unwrap();
+
+        assert!(rule.excludes_file(std::path::Path::new("src/startup.rs")));
+        assert!(rule.excludes_file(std::path::Path::new("src/cli/main.rs")));
+        assert!(rule.excludes_file(std::path::Path::new("src/cli/sub/cmd.rs")));
+        assert!(!rule.excludes_file(std::path::Path::new("src/lib.rs")));
+        // `exclude_files` is not leaked into the free-form options map
+        assert!(!rule.options.contains_key("exclude_files"));
     }
 }

@@ -26,7 +26,7 @@ pub fn run_check(preset: Option<&str>, config_path: Option<&str>, fail_on: Optio
 
     let effective_preset = resolve_preset(preset, &config);
     let effective_fail_on = resolve_fail_on(fail_on, &config);
-    let preset_rules = effective_preset.rules();
+    let preset_rules = effective_preset.rules_with_config(&config);
     let declarative_rules = load_declarative_rules(&content);
 
     let mut builder = Analyzer::builder().root(&root).config(config);
@@ -151,14 +151,7 @@ fn resolve_preset(macro_arg: Option<&str>, config: &Config) -> Preset {
         .or(config.preset.as_deref())
         .unwrap_or("recommended");
 
-    match name {
-        "recommended" => Preset::Recommended,
-        "strict" => Preset::Strict,
-        "minimal" => Preset::Minimal,
-        other => panic!(
-            "arch-lint: unknown preset `{other}`. Valid presets: recommended, strict, minimal"
-        ),
-    }
+    name.parse().unwrap_or_else(|e| panic!("arch-lint: {e}"))
 }
 
 /// Resolves the effective `fail_on` severity from macro arg > config > default.
@@ -167,14 +160,7 @@ fn resolve_preset(macro_arg: Option<&str>, config: &Config) -> Preset {
 fn resolve_fail_on(macro_arg: Option<&str>, config: &Config) -> Severity {
     let name = macro_arg.or(config.fail_on.as_deref()).unwrap_or("error");
 
-    match name {
-        "error" => Severity::Error,
-        "warning" => Severity::Warning,
-        "info" => Severity::Info,
-        other => {
-            panic!("arch-lint: unknown severity `{other}`. Valid values: error, warning, info")
-        }
-    }
+    name.parse().unwrap_or_else(|e| panic!("arch-lint: {e}"))
 }
 
 #[cfg(test)]

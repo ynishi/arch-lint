@@ -284,6 +284,20 @@ impl Analyzer {
                 continue;
             }
 
+            if self
+                .config
+                .rules
+                .get(rule.name())
+                .is_some_and(|c| c.excludes_file(&ctx.relative_path))
+            {
+                debug!(
+                    "Skipping rule {} for excluded file: {}",
+                    rule.name(),
+                    ctx.relative_path.display()
+                );
+                continue;
+            }
+
             let rule_violations = rule.check(&ctx, &ast);
             let rule_violations = self.apply_severity_override(rule.name(), rule_violations);
             violations.extend(rule_violations);
@@ -312,7 +326,7 @@ impl Analyzer {
         let mut files = Vec::new();
 
         for entry in glob::glob(&pattern)? {
-            let path = entry.map_err(|e| AnalyzerError::Io(e.into_error()))?;
+            let path = entry.map_err(|e| AnalyzerError::Io(e.into()))?;
 
             // Check exclude patterns
             if self.should_exclude(&path) {
@@ -332,7 +346,7 @@ impl Analyzer {
         let mut files = Vec::new();
 
         for entry in glob::glob(&pattern)? {
-            let path = entry.map_err(|e| AnalyzerError::Io(e.into_error()))?;
+            let path = entry.map_err(|e| AnalyzerError::Io(e.into()))?;
             if !self.should_exclude(&path) {
                 files.push(path);
             }

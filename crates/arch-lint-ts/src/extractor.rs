@@ -71,6 +71,27 @@ pub struct FileAnalysis {
     pub declarations: Vec<DeclInfo>,
 }
 
+/// Errors from Tree-sitter extraction.
+#[derive(Debug, thiserror::Error)]
+pub enum ExtractError {
+    /// The grammar could not be loaded into the parser (ABI version mismatch).
+    #[error("failed to load {language} grammar: {source}")]
+    Language {
+        /// Language identifier.
+        language: &'static str,
+        /// Underlying Tree-sitter error.
+        #[source]
+        source: tree_sitter::LanguageError,
+    },
+
+    /// Tree-sitter returned no tree (cancelled or timed out).
+    #[error("{language} parser produced no syntax tree")]
+    NoTree {
+        /// Language identifier.
+        language: &'static str,
+    },
+}
+
 /// Trait for language-specific Tree-sitter extraction.
 ///
 /// Implement this to add support for a new language.
@@ -84,5 +105,11 @@ pub trait LanguageExtractor: Send + Sync {
     fn extensions(&self) -> &'static [&'static str];
 
     /// Extract imports, declarations, and package info from source code.
-    fn analyze(&self, source: &str) -> FileAnalysis;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExtractError`] if the grammar cannot be loaded or the
+    /// parser yields no tree. Syntax errors inside `source` are *not*
+    /// errors: Tree-sitter recovers and the partial tree is analyzed.
+    fn analyze(&self, source: &str) -> Result<FileAnalysis, ExtractError>;
 }

@@ -46,12 +46,10 @@ mod no_silent_result_drop;
 mod no_sync_io;
 mod no_unwrap_expect;
 mod prefer_from_over_into;
-mod prefer_utoipa;
 mod presets;
 mod require_doc_comments;
 mod require_thiserror;
 mod require_tracing;
-mod require_tracing_v2;
 mod tracing_env_init;
 
 pub use async_trait_send_check::{AsyncTraitSendCheck, RuntimeMode};
@@ -62,7 +60,10 @@ pub use no_silent_result_drop::NoSilentResultDrop;
 pub use no_sync_io::NoSyncIo;
 pub use no_unwrap_expect::NoUnwrapExpect;
 pub use prefer_from_over_into::PreferFromOverInto;
-pub use presets::{all_rules, recommended_rules, strict_rules, Preset};
+pub use presets::{
+    all_rules, canonical_rule_name, minimal_rules, recommended_rules, rule_by_name,
+    rule_from_config, strict_rules, ParsePresetError, Preset,
+};
 pub use require_doc_comments::RequireDocComments;
 pub use require_thiserror::RequireThiserror;
 pub use require_tracing::RequireTracing;

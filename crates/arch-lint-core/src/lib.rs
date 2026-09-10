@@ -41,9 +41,11 @@ pub mod declarative;
 pub mod utils;
 
 pub use analyzer::{Analyzer, AnalyzerBuilder};
-pub use config::Config;
+pub use config::{AnalyzerConfig, Config, ConfigError, RuleConfig};
 pub use context::{FileContext, ProjectContext};
 pub use required_crate::{DetectionPattern, RequiredCrateRule};
 pub use rule::{ProjectRule, ProjectRuleBox, Rule, RuleBox};
-pub use types::{Label, LintResult, Location, Replacement, Severity, Suggestion, Violation};
+pub use types::{
+    Label, LintResult, Location, ParseSeverityError, Replacement, Severity, Suggestion, Violation,
+};
 pub use utils::allowance::{AllowCheck, AllowState};
