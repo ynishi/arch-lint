@@ -351,6 +351,13 @@ let content = tokio::fs::read_to_string("file.txt").await?;
 if tokio::fs::try_exists(&path).await? { /* ... */ }
 ```
 
+`is_file()` / `is_dir()` are reported only when the receiver is a path. On a
+value that came from `file_type()`, `metadata()`, `symlink_metadata()` or
+`fs::metadata(..)` (directly, through `?` / `unwrap()` / `ok()`, a `let`
+binding in the same block, or a closure parameter such as
+`entry.file_type().is_some_and(|ft| ft.is_file())`) they are pure accessors
+and are not reported — the `metadata()` call itself still is.
+
 **Configuration:**
 ```toml
 [rules.no-sync-io]

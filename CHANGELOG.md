@@ -98,6 +98,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AL002 `no-sync-io` no longer reports `is_file()` / `is_dir()` on `FileType` /
+  `Metadata` values (results of `file_type()`, `metadata()`, `symlink_metadata()`,
+  `fs::metadata(..)`, also through `?` / `unwrap()`, `let` bindings and closure
+  parameters); only the path-receiver form performs I/O
 - Documentation drift: README rule table lists AL013 and the declarative ALD001-ALD003 codes;
   ARCHITECTURE.md reflects the facade / macros / declarative rules; broken `CONTRIBUTING.md` /
   `LICENSE` links; facade crate doc pointed at `arch-lint = "0.4"`
