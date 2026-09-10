@@ -8,12 +8,13 @@
 //! ```
 
 use anyhow::Result;
+use arch_lint::session::ConfigSource;
 use clap::{Parser, Subcommand};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
 mod commands;
-mod config_resolver;
 
 /// Architecture linter for Rust projects and cross-language layer enforcement
 #[derive(Parser)]
@@ -106,6 +107,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
 
     match cli.command {
@@ -116,7 +118,7 @@ fn main() -> Result<()> {
             exclude,
             engine,
         } => {
-            let source = config_resolver::resolve(&path, cli.config.as_deref());
+            let source = ConfigSource::resolve(&path, cli.config.as_deref());
             let engine = engine.unwrap_or_else(|| detect_engine(&source));
             match engine {
                 EngineHint::Syn => commands::check::run(&path, format, rules, exclude, &source),
@@ -138,7 +140,7 @@ fn main() -> Result<()> {
 }
 
 /// Auto-detect engine from config: if `[[layers]]` present → ts, else → syn.
-fn detect_engine(source: &config_resolver::ConfigSource) -> EngineHint {
+fn detect_engine(source: &ConfigSource) -> EngineHint {
     if let Some(p) = source.path() {
         if let Ok(content) = std::fs::read_to_string(p) {
             if has_layers_table(&content) {

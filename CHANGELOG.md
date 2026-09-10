@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`arch_lint::Session` - the SDK driver for the syn engine.** The
+  "root + config → `LintResult`" pipeline that `check!()` and the CLI each
+  reimplemented is now one public, non-panicking API.
+  `Session::discover(root)` resolves the config file
+  (`<root>/arch-lint.toml` → `<root>/.arch-lint.toml` → `$ARCH_LINT_CONFIG_DIR`
+  or `~/.arch-lint/` `config.toml` → defaults) and records the winner in
+  `ConfigSource`, reachable via `session.config_source()`.
+  `Session::from_config_path(root, path)` and
+  `Session::from_config_str(root, toml)` cover explicit and in-memory
+  configuration, and `Session::from_source(root, source)` takes an
+  already-resolved `ConfigSource`. Overrides are builder-style —
+  `with_preset`, `with_fail_on`, `with_rules`, `with_rule_filter` (names or
+  codes; unknown names are `SessionError::UnknownRule`) and `with_exclude` —
+  alongside the `root()` / `config()` / `config_source()` / `preset()` /
+  `fail_on()` accessors. `run()` returns `Result<LintResult, SessionError>`;
+  `SessionError` is a `thiserror` enum that preserves the underlying config,
+  declarative-rule and analyzer errors as sources.
+  `Session::find_workspace_root(path)` exposes the `[workspace]` walk that
+  `check!()` uses
+- **`arch_lint::report::render`** - renders a `LintResult` as text, JSON or
+  compact output, the same three formats the CLI emits. ANSI colours are
+  opt-in through `Format::Text { color }` and default to off, so library
+  callers and captured output stay plain; the JSON is the same
+  `serde_json::to_string_pretty` document as `--format json`
+- **`arch_lint_ts::TsSession`** - the same driver shape for the tree-sitter
+  engine. `TsSession::new(config, root)` starts with the Kotlin extractor
+  registered, `.with_extractor(..)` adds languages, `.respect_gitignore(bool)`
+  overrides the config, and `.run()` validates the config, discovers files,
+  runs the engine and returns a sorted `LintResult` or a `TsSessionError`
+- **`[analyzer] respect_gitignore` for the tree-sitter engine** (default
+  `true`), matching the syn analyzer. File discovery uses the same ignore
+  sources with `require_git(false)`, so the rules apply outside a git
+  repository too
+- **`arch_lint_core::AnalyzerError` is re-exported** from the crate root, so
+  callers can match on analyzer failures rather than only print them
 - **`[analyzer] respect_gitignore` and `include` are now honored** - file
   discovery walks the root with the `ignore` crate instead of a bare
   `**/*.rs` glob. With the default `respect_gitignore = true`, gitignored
@@ -70,6 +105,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CLI colours are emitted only when stdout is a terminal.** `--format text`
+  severity labels and the summary line, and the `tracing` log lines, are plain
+  when the output is piped or redirected. Terminal output is unchanged
+- **The CLI is now a wrapper over the facade.** `arch-lint-cli` depends on
+  `arch-lint` and delegates to `Session` and `report::render`;
+  `src/config_resolver.rs` and `src/commands/output.rs` moved into
+  `arch_lint::session` and `arch_lint::report`, and `commands/check_ts.rs`
+  delegates to `arch_lint_ts::TsSession`. Behaviour, exit codes and output are
+  unchanged apart from the colour policy above; error messages may now carry
+  additional `SessionError` context
+- **The tree-sitter `exclude` patterns are matched as globs** against the
+  root-relative path (`src/test/**` now works as written). The previous
+  substring behaviour is kept as a fallback, so existing configs such as
+  `**/generated/**` keep matching
 - **`strict` preset now includes every rule** (AL009-AL012 were missing); `list-rules` and
   `--rules` now accept AL009-AL012 as well
 - `--rules` with an unknown name is an error instead of a silent warning

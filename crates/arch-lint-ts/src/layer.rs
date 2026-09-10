@@ -47,6 +47,7 @@ mod tests {
         ArchConfig {
             root: ".".into(),
             exclude: vec![],
+            respect_gitignore: true,
             layers: vec![
                 LayerDef {
                     name: "domain".into(),

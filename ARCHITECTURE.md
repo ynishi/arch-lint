@@ -14,11 +14,11 @@ arch-lint is designed to catch architectural violations and enforce coding patte
 ```
 arch-lint/
 ├── crates/
-│   ├── arch-lint/            # Facade: re-exports core + rules + macros, hosts check!() runner
+│   ├── arch-lint/            # Facade + driver: Session, report, check!() runner
 │   ├── arch-lint-core/       # Core framework (traits, analyzer, config, declarative rules)
 │   ├── arch-lint-rules/      # Built-in syn rules (AL001-AL013) + presets/registry
-│   ├── arch-lint-ts/         # Tree-sitter engine (layer enforcement)
-│   ├── arch-lint-cli/        # CLI binary (dual engine dispatch)
+│   ├── arch-lint-ts/         # Tree-sitter engine (layer enforcement) + TsSession driver
+│   ├── arch-lint-cli/        # CLI binary (argument parsing, engine dispatch)
 │   └── arch-lint-macros/     # Procedural macros: #[arch_lint::allow], arch_lint::check!()
 ```
 
@@ -72,19 +72,31 @@ Tree-sitter based cross-language layer enforcement. Provides:
 - **`KotlinExtractor`** - Kotlin import/class extraction via Tree-sitter
 - **`LayerResolver`** - Package-to-layer mapping (longest-prefix-match)
 - **`ArchRuleEngine`** - Layer dependency (LAYER001), pattern constraint (PATTERN001), naming convention (NAMING001) checks
-- **`ArchConfig`** - TOML deserialization for `[[layers]]`, `[dependencies]`, `[[constraints]]`
+- **`ArchConfig`** - TOML deserialization for `[analyzer]` (`root`, `exclude`, `respect_gitignore`), `[[layers]]`, `[dependencies]`, `[[constraints]]`
+- **`TsSession`** - The driver: validates the config, discovers files, runs the engine over each one, sorts the result
 
 Internal data flow:
 
 ```
 Source (.kt) → KotlinExtractor → FileAnalysis → ArchRuleEngine → Vec<Violation>
+                            ↑ TsSession drives this loop and collects LintResult
 ```
+
+`TsSession::new(config, root)` starts with the Kotlin extractor registered;
+`.with_extractor(..)` adds more and `.respect_gitignore(bool)` overrides
+`[analyzer] respect_gitignore`. File discovery walks the analysis root with the
+`ignore` crate (`require_git(false)`, hidden entries kept) and applies
+`[analyzer] exclude` as globs against the root-relative path, falling back to
+substring matching for patterns that do not match as globs.
 
 See [docs/tree-sitter-engine.md](docs/tree-sitter-engine.md) for full documentation.
 
 ### arch-lint-cli
 
-Command-line interface with dual engine dispatch:
+Command-line interface with dual engine dispatch. It is a thin wrapper: the
+pipeline itself lives in the `arch-lint` facade (`Session`, `report::render`)
+and in `arch-lint-ts` (`TsSession`). The CLI owns argument parsing, engine
+detection, colour policy and the exit code.
 
 ```bash
 arch-lint check [PATH]           # Run lint checks (auto-detect engine)
@@ -100,8 +112,13 @@ is used when a non-empty `[[layers]]` array is present.
 
 `check` (syn engine) selects rules the same way `check!()` does:
 `--rules` > `preset` in config > `recommended`, then adds declarative rules
-from the config. It exits non-zero when a violation at or above `fail_on`
-(config, default `error`) is found.
+from the config. Both paths go through `Session`, so the selection logic exists
+once. It exits non-zero when a violation at or above `fail_on` (config, default
+`error`) is found.
+
+ANSI colours in `--format text` are emitted only when stdout is a terminal
+(`std::io::IsTerminal`); the same applies to the `tracing` log lines. Redirected
+and piped output is plain.
 
 ### arch-lint-macros
 
@@ -109,12 +126,37 @@ Procedural macros:
 - `#[arch_lint::allow(rule, reason = "...")]` - Block-level suppression attribute
 - `arch_lint::check!()` - Generates a `#[test]` that runs the analyzer via `arch_lint::__internal::run_check`
 
-### arch-lint (facade)
+### arch-lint (facade + driver)
 
 Re-exports `arch-lint-core`, `arch-lint-rules` (as `arch_lint::rules`), and the
-macros. `runner.rs` implements `check!()`: finds the workspace root, reads
-`arch-lint.toml`, resolves preset / `fail_on`, builds preset + declarative
-rules, and panics with a formatted report on failure.
+macros, and hosts the driver layer that turns "root + config" into a
+`LintResult`:
+
+- **`session::Session`** - the SDK entry point. `discover(root)` walks the
+  config lookup order (`<root>/arch-lint.toml` → `<root>/.arch-lint.toml` →
+  `$ARCH_LINT_CONFIG_DIR` or `~/.arch-lint/` `config.toml` → defaults) and
+  records the winner in `ConfigSource`; `from_config_path` and
+  `from_config_str` cover explicit and in-memory configuration. It resolves
+  preset and `fail_on`, loads the declarative rules from the same document,
+  applies `with_preset` / `with_fail_on` / `with_rules` / `with_rule_filter` /
+  `with_exclude` overrides, and `run()` builds the `Analyzer` and analyzes.
+  Every failure is a `SessionError` — the driver never panics and never exits.
+- **`session::Session::find_workspace_root`** - the `[workspace]` walk used by
+  `check!()`, public and testable.
+- **`report::render`** - `LintResult` → text / JSON / compact string. ANSI
+  colours are opt-in (`Format::Text { color }`, default `false`), so a library
+  caller gets plain output unless it asks otherwise.
+
+`runner.rs` is what `check!()` calls. It is now only the `cargo test` contract:
+find the workspace root, build a `Session`, apply the macro's `preset` /
+`config` / `fail_on` arguments as overrides, run, and panic with the formatted
+report when violations reach `fail_on`.
+
+```
+check!()  ─┐
+           ├─→ Session::discover → run() → LintResult ─→ report::render
+CLI check ─┘
+```
 
 ## Core Abstractions
 

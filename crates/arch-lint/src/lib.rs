@@ -31,16 +31,30 @@
 //!
 //! ## Programmatic Usage
 //!
-//! ```rust,ignore
-//! use arch_lint::Analyzer;
-//! use arch_lint::rules::presets::Preset;
+//! [`Session`] is the SDK entry point: it performs the same
+//! "root + config → [`LintResult`]" pipeline that `check!()` and the CLI use,
+//! without panicking or exiting the process.
 //!
-//! let analyzer = Analyzer::builder()
-//!     .root("./src")
-//!     .build()?;
+//! ```no_run
+//! use arch_lint::report::{render, Format};
+//! use arch_lint::Session;
 //!
-//! let result = analyzer.analyze()?;
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let session = Session::discover(".")?;
+//! let fail_on = session.fail_on();
+//!
+//! let result = session.run()?;
+//! print!("{}", render(&result, Format::default())?);
+//!
+//! if result.has_violations_at(fail_on) {
+//!     // decide what a failure means for your tool
+//! }
+//! # Ok(())
+//! # }
 //! ```
+//!
+//! Tree-sitter based analysis of non-Rust languages has its own driver,
+//! `arch_lint_ts::TsSession`.
 
 #![forbid(unsafe_code)]
 
@@ -57,6 +71,11 @@ pub use arch_lint_macros::check;
 pub mod rules {
     pub use arch_lint_rules::*;
 }
+
+pub mod report;
+pub mod session;
+
+pub use session::{ConfigSource, Session, SessionError};
 
 mod runner;
 

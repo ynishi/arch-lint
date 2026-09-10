@@ -45,7 +45,7 @@ pub mod utils;
 #[doc(hidden)]
 pub mod test_utils;
 
-pub use analyzer::{Analyzer, AnalyzerBuilder};
+pub use analyzer::{Analyzer, AnalyzerBuilder, AnalyzerError};
 pub use config::{AnalyzerConfig, Config, ConfigError, RuleConfig};
 pub use context::{FileContext, ProjectContext};
 pub use required_crate::{DetectionPattern, RequiredCrateRule};

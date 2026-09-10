@@ -14,20 +14,15 @@ name = "arch-lint"
 path = "src/main.rs"
 
 [dependencies]
+arch-lint.workspace = true
 arch-lint-core.workspace = true
 arch-lint-rules.workspace = true
 arch-lint-ts.workspace = true
-ignore.workspace = true
 clap.workspace = true
-serde_json.workspace = true
 toml.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-home.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true

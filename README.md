@@ -1005,41 +1005,75 @@ let analyzer = Analyzer::builder()
 
 ## Programmatic Usage
 
-For direct API access without the `check!()` macro:
+`Session` is the SDK entry point. It runs the same pipeline as `check!()` and
+the CLI — find the config, resolve the preset and `fail_on`, build the preset
+and declarative rules, analyze — but it never panics and never exits the
+process.
 
 ```bash
-cargo add arch-lint-core arch-lint-rules --dev
+cargo add arch-lint
 ```
 
 ```rust
-use arch_lint_core::Analyzer;
-use arch_lint_rules::{
-    NoUnwrapExpect, NoSyncIo, HandlerComplexity, RequireTracing,
-    TracingEnvInit, AsyncTraitSendCheck, RuntimeMode, PreferFromOverInto,
-    NoPanicInLib, RequireDocComments,
-};
+use arch_lint::report::{render, Format};
+use arch_lint::Session;
 
-let analyzer = Analyzer::builder()
-    .root("./src")
-    .rule(NoUnwrapExpect::new().allow_in_tests(true))
-    .rule(NoSyncIo::new())
-    .rule(HandlerComplexity::new().max_match_arms(15))
-    .rule(RequireTracing::new())
-    .rule(TracingEnvInit::new())
-    .rule(AsyncTraitSendCheck::new().runtime_mode(RuntimeMode::SingleThread))
-    .rule(PreferFromOverInto::new())
-    .rule(NoPanicInLib::new())
-    .rule(RequireDocComments::new())
-    .exclude("**/generated/**")
-    .build()?;
+// Config lookup: <root>/arch-lint.toml -> <root>/.arch-lint.toml ->
+// $ARCH_LINT_CONFIG_DIR (or ~/.arch-lint/) config.toml -> built-in defaults.
+let session = Session::discover(".")?;
+println!("config: {:?}", session.config_source());
 
-let result = analyzer.analyze()?;
+let fail_on = session.fail_on();
+let result = session.run()?;
 
-if result.has_errors() {
-    result.print_report();
+print!("{}", render(&result, Format::default())?);   // no ANSI unless asked
+print!("{}", render(&result, Format::Json)?);        // same JSON as --format json
+
+if result.has_violations_at(fail_on) {
     std::process::exit(1);
 }
 ```
+
+Overrides are builder-style, and every failure is a `SessionError`:
+
+```rust
+use arch_lint::rules::Preset;
+use arch_lint::{Session, Severity};
+
+let session = Session::from_config_path(".", "ci/arch-lint.toml")?
+    .with_preset(Preset::Strict)
+    .with_fail_on(Severity::Warning)
+    .with_exclude("**/generated/**")
+    .with_rule_filter(&["no-unwrap-expect", "AL002"])?;   // unknown name -> Err
+
+let result = session.run()?;
+```
+
+`Session::from_config_str(root, toml)` takes configuration from memory, and
+`Session::find_workspace_root(path)` performs the `[workspace]` walk that
+`check!()` uses. For rules assembled by hand, `Analyzer::builder()` from
+`arch-lint-core` is still available and is what `Session` drives underneath.
+
+### Cross-language (tree-sitter)
+
+`TsSession` is the same shape for the tree-sitter engine:
+
+```rust
+use arch_lint::report::{render, Format};
+use arch_lint_ts::{ArchConfig, TsSession};
+use std::path::Path;
+
+let config = ArchConfig::from_file(Path::new("arch-lint.toml"))?;
+
+let result = TsSession::new(config, ".")
+    .respect_gitignore(true)     // default; also read from [analyzer]
+    .run()?;
+
+print!("{}", render(&result, Format::Compact)?);
+```
+
+Register additional languages with `.with_extractor(Box::new(MyExtractor))`;
+the built-in Kotlin extractor stays registered.
 
 ## CLI Usage
 
