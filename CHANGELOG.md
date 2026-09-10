@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **ALD004 `[[layering]]`** - declare an ordered stack of scopes
+  (`order = ["handler", "domain", "infra"]`); a layer may only depend on layers
+  below it, and `adjacent_only = true` also forbids skipping a layer. Replaces
+  the hand-written `[[deny-scope-dep]]` matrix
+- **ALD005 `[[deny-attr]]` / ALD006 `[[require-attr]]`** - forbid or require
+  attributes on items of a scope (`attrs = ["derive(sqlx::FromRow)"]`,
+  `attrs = ["tracing::instrument"]`), narrowed by `on = ["struct", "fn", ...]`
+  and, for `require-attr`, by `visibility`. `deny-attr` defaults to `error`,
+  `require-attr` to `warning`
+- **ALD007 `[[naming]]`** - require identifiers of one item kind to match a
+  regex (`item = "trait"`, `pattern = "^[A-Z][A-Za-z0-9]*(Repository|Port)$"`);
+  defaults to `warning`
+- **ALD008 `[[require-return]]`** - require functions to return a type matching
+  a regex, with optional `async` and `visibility` filters; the return type is
+  normalized (`Result < T , E >` → `Result<T, E>`, no return type → `()`)
+  before matching
+- **`except` on `[[restrict-use]]`** - a path matching it is not reported even
+  when it matches `deny`
+- **`exclude` on `[[scopes]]`** - a file matching it is not part of the scope
+  even when it matches `paths`; applies to every rule kind using that scope
+
 - **Per-rule options are now honored** - `[rules.<name>]` keys documented in the README
   (`allow_in_tests`, `allow_expect`, `allow_patterns`, `max_handler_lines`, `max_match_arms`,
   `max_enum_variants`, `patterns`, `runtime_mode`, `require_*_docs`, `allow_ok`,

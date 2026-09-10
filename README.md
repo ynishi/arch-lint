@@ -126,6 +126,119 @@ inline qualified paths (e.g. `sqlx::query(...)` or `crate::infra::Db::new()`
 written without a `use`). To restrict a rule to `use` statements only, set
 `check-inline = false` on that rule.
 
+`[[restrict-use]]` accepts an `except` list — a path that matches it is never
+reported, even when it matches `deny`. `[[scopes]]` accepts an `exclude` list —
+a file matching it is not part of the scope even when it matches `paths`, and
+that applies to every rule kind that uses the scope:
+
+```toml
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+exclude = ["src/**/tests/**"]   # test helpers are not domain code
+
+[[restrict-use]]
+name = "no-db-in-domain"
+scope = "domain"
+deny = ["sqlx::**"]
+except = ["sqlx::types::*"]     # the type wrappers are fine
+message = "Database access belongs in the infra layer."
+```
+
+### Ordered Layers
+
+```toml
+[[layering]]
+name = "clean-arch"                    # optional, defaults to "layering"
+order = ["handler", "domain", "infra"] # scope names, top to bottom
+adjacent_only = false                  # optional, default false
+message = "Layers may only depend downward."
+severity = "error"                     # optional, default error
+check-inline = true                    # optional, default true
+```
+
+Each entry of `order` must be a declared `[[scopes]]` name; at least two,
+no duplicates. A layer may depend on any layer **below** it — referencing a
+layer above it is a violation (ALD004), and with `adjacent_only = true` so is
+skipping past the next layer down. One `[[layering]]` replaces the
+`[[deny-scope-dep]]` matrix you would otherwise write by hand.
+
+> Use `[[layering]]`, not `[[layers]]`: the latter key selects the
+> tree-sitter engine.
+
+### Attributes on Items
+
+```toml
+[[deny-attr]]
+name = "no-orm-derives-in-domain"
+scope = "domain"                       # or files = [...]
+attrs = ["derive(sqlx::FromRow)", "serde::Serialize"]
+on = ["struct", "enum"]                # optional, default: every kind
+message = "Domain types must stay ORM-agnostic."
+severity = "error"
+
+[[require-attr]]
+name = "instrument-handlers"
+scope = "handler"
+attrs = ["tracing::instrument"]        # the item must carry at least one
+on = ["fn"]
+visibility = "pub"                     # optional: "pub" (default) | "any"
+message = "Handlers must be instrumented."
+severity = "warning"                   # optional, default warning (deny-attr defaults to error)
+```
+
+`on` accepts `struct`, `enum`, `fn`, `trait`, `impl`, `mod`, `type`, `const`,
+`static`, `union`. Only module-level and impl-level items are inspected —
+items declared inside a function body are ignored.
+
+**How an attribute pattern matches.** The attribute's own path is rendered with
+`::` (`#[tracing::instrument]` → `tracing::instrument`, `#[derive(..)]` →
+`derive`) and compared to the pattern. A pattern written as `derive(P)` matches
+only derive lists; a bare pattern matches the attribute path *or* an entry of a
+derive list. A derive entry matches when it equals the pattern in full or when
+its **last segment** equals the pattern — so `FromRow` matches both
+`#[derive(FromRow)]` and `#[derive(sqlx::FromRow)]`, while `sqlx::FromRow`
+matches only `#[derive(sqlx::FromRow)]`.
+
+**Visibility.** `visibility = "pub"` selects items declared `pub`. Items of a
+trait definition inherit the trait's visibility, and items of a `impl Trait for
+T` block (and `impl` blocks themselves) count as public.
+
+### Naming
+
+```toml
+[[naming]]
+name = "domain-ports"
+scope = "domain"
+item = "trait"                          # struct|enum|trait|fn|mod|type|const|static
+pattern = "^[A-Z][A-Za-z0-9]*(Repository|Port)$"
+visibility = "pub"                      # optional: "pub" (default) | "any"
+message = "Domain traits are ports: name them *Repository or *Port."
+severity = "warning"                    # optional, default warning
+```
+
+Every item of that kind whose identifier does not match the regex is reported
+(ALD007). An invalid regex is a config error, not a silent skip.
+
+### Return Types
+
+```toml
+[[require-return]]
+name = "handlers-return-app-result"
+scope = "handler"
+visibility = "pub"                      # optional, default "pub"
+async = true                            # optional: only async (or only sync) fns
+pattern = "^Result<.*,\\s*AppError>$"
+message = "Handlers must return Result<_, AppError>."
+severity = "error"
+```
+
+The return type is rendered from the AST and normalized before matching: no
+spaces around `<`, `>` and `::`, exactly one space after `,`. So
+`Result < Vec < u8 > , AppError >` is matched as `Result<Vec<u8>, AppError>`,
+and a function with no return type is matched as `()`. Free functions and
+impl/trait methods are checked; nested functions are not.
+
 ### Crate Preference Enforcement
 
 ```toml
@@ -194,6 +307,11 @@ Declarative rules defined in `arch-lint.toml` (see [Declarative Rules](#declarat
 | ALD001 | `[[restrict-use]]` | Forbids `use` paths (and inline qualified paths) within a scope |
 | ALD002 | `[[require-use]]` | Requires a preferred crate over alternatives within a file set |
 | ALD003 | `[[deny-scope-dep]]` | Forbids one scope from depending on another |
+| ALD004 | `[[layering]]` | Forbids upward (and, with `adjacent_only`, layer-skipping) dependencies in an ordered layer stack |
+| ALD005 | `[[deny-attr]]` | Forbids given attributes on items of a scope |
+| ALD006 | `[[require-attr]]` | Requires at least one of the given attributes on items of a scope |
+| ALD007 | `[[naming]]` | Requires identifiers of one item kind to match a regex |
+| ALD008 | `[[require-return]]` | Requires functions to return a type matching a regex |
 
 ### Rule Details
 
@@ -574,6 +692,11 @@ paths = ["src/domain/**"]
 name = "infra"
 paths = ["src/infra/**"]
 
+[[scopes]]
+name = "handler"
+paths = ["src/handler/**"]
+exclude = ["src/**/tests/**"]
+
 [[deny-scope-dep]]
 from = "domain"
 to = ["infra"]
@@ -591,6 +714,38 @@ files = ["src/**"]
 prefer = "tracing"
 over = ["log"]
 message = "Use tracing instead of log."
+
+[[layering]]
+order = ["handler", "domain", "infra"]
+message = "Layers may only depend downward."
+
+[[deny-attr]]
+name = "no-orm-derives-in-domain"
+scope = "domain"
+attrs = ["derive(sqlx::FromRow)"]
+on = ["struct", "enum"]
+message = "Domain types must stay ORM-agnostic."
+
+[[require-attr]]
+name = "instrument-handlers"
+scope = "handler"
+attrs = ["tracing::instrument"]
+on = ["fn"]
+message = "Handlers must be instrumented."
+
+[[naming]]
+name = "domain-ports"
+scope = "domain"
+item = "trait"
+pattern = "^[A-Z][A-Za-z0-9]*(Repository|Port)$"
+message = "Domain traits are ports."
+
+[[require-return]]
+name = "handlers-return-app-result"
+scope = "handler"
+async = true
+pattern = "^Result<.*,\\s*AppError>$"
+message = "Handlers must return Result<_, AppError>."
 ```
 
 ## Suppression

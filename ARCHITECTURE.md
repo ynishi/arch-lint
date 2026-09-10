@@ -6,7 +6,7 @@ Architecture linter with dual engines: syn (Rust AST) and Tree-sitter (cross-lan
 
 arch-lint is designed to catch architectural violations and enforce coding patterns that are often missed by both humans and AI during code review. It provides two complementary engines:
 
-- **syn engine** - Per-file Rust AST analysis: built-in rules (AL001-AL013) and TOML-declared rules (ALD001-ALD003)
+- **syn engine** - Per-file Rust AST analysis: built-in rules (AL001-AL013) and TOML-declared rules (ALD001-ALD008)
 - **tree-sitter engine** - Cross-language layer dependency enforcement (LAYER001, PATTERN001, NAMING001)
 
 ## Crate Structure
@@ -33,7 +33,7 @@ The foundation of the linting framework. Provides:
 - **`Analyzer`** - Orchestrates file discovery and rule execution
 - **`Violation`** - Represents lint findings with location and suggestions
 - **`Config`** - TOML-based configuration (`preset`, `fail_on`, `[analyzer]`, `[rules.*]` with `enabled` / `severity` / `exclude_files` / rule options)
-- **`declarative`** - TOML-declared rules: `[[scopes]]` + `[[restrict-use]]` (ALD001), `[[require-use]]` (ALD002), `[[deny-scope-dep]]` (ALD003). Pipeline: `config_dto` (serde) → `loader` (validation) → `model` (domain) → `rules` (visitors)
+- **`declarative`** - TOML-declared rules: `[[scopes]]` + `[[restrict-use]]` (ALD001), `[[require-use]]` (ALD002), `[[deny-scope-dep]]` (ALD003), `[[layering]]` (ALD004), `[[deny-attr]]` (ALD005), `[[require-attr]]` (ALD006), `[[naming]]` (ALD007), `[[require-return]]` (ALD008). Pipeline: `config_dto` (serde) → `loader` (validation) → `model` (domain) → `rules` (visitors)
 - **`utils`** - Helpers for attribute parsing, allowance directives, path matching
 
 ### arch-lint-rules

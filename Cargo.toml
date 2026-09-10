@@ -41,6 +41,9 @@ clap = { version = "4", features = ["derive", "env"] }
 glob = "0.3"
 ignore = "0.4"
 
+# Pattern matching
+regex = "1"
+
 # Testing
 tempfile = "3"
 

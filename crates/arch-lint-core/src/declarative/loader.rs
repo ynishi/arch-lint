@@ -3,11 +3,13 @@
 use crate::types::Severity;
 
 use super::config_dto::{
-    DeclarativeConfigDto, RequireUseDto, RestrictUseDto, ScopeDepDto, ScopeDto,
+    DeclarativeConfigDto, DenyAttrDto, LayeringDto, NamingDto, RequireAttrDto, RequireReturnDto,
+    RequireUseDto, RestrictUseDto, ScopeDepDto, ScopeDto,
 };
 use super::model::{
-    DeclarativeConfig, GlobPattern, ModelError, RequireUse, RestrictUse, Scope, ScopeDep,
-    ScopeName, ScopeRef, UsePattern,
+    AttrPattern, DeclarativeConfig, DenyAttr, GlobPattern, ItemKind, Layering, ModelError, Naming,
+    RegexPattern, RequireAttr, RequireReturn, RequireUse, RestrictUse, Scope, ScopeDep, ScopeName,
+    ScopeRef, UsePattern, VisibilityFilter,
 };
 
 /// Errors during DTO → Domain conversion.
@@ -83,7 +85,48 @@ pub fn load(dto: DeclarativeConfigDto) -> Result<DeclarativeConfig, LoadError> {
         .map(|(i, d)| convert_scope_dep(d, i))
         .collect::<Result<Vec<_>, _>>()?;
 
-    DeclarativeConfig::new(scopes, restrict_uses, require_uses, scope_deps)
+    let layerings = dto
+        .layering
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| convert_layering(l, i))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let deny_attrs = dto
+        .deny_attr
+        .into_iter()
+        .map(convert_deny_attr)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let require_attrs = dto
+        .require_attr
+        .into_iter()
+        .map(convert_require_attr)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let namings = dto
+        .naming
+        .into_iter()
+        .map(convert_naming)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let require_returns = dto
+        .require_return
+        .into_iter()
+        .map(convert_require_return)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    DeclarativeConfig::builder()
+        .scopes(scopes)
+        .restrict_uses(restrict_uses)
+        .require_uses(require_uses)
+        .scope_deps(scope_deps)
+        .layerings(layerings)
+        .deny_attrs(deny_attrs)
+        .require_attrs(require_attrs)
+        .namings(namings)
+        .require_returns(require_returns)
+        .build()
         .map_err(LoadError::CrossRef)
 }
 
@@ -106,7 +149,19 @@ fn convert_scope(dto: &ScopeDto, index: usize) -> Result<Scope, LoadError> {
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(Scope::new(name, patterns))
+    let excludes = dto
+        .exclude
+        .iter()
+        .enumerate()
+        .map(|(j, p)| {
+            GlobPattern::new(p).map_err(|e| LoadError::Validation {
+                context: format!("{ctx}.exclude[{j}]"),
+                source: e,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(Scope::new(name, patterns).with_excludes(excludes))
 }
 
 fn resolve_scope_ref(
@@ -156,11 +211,24 @@ fn convert_restrict_use(dto: RestrictUseDto) -> Result<RestrictUse, LoadError> {
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let except = dto
+        .except
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            UsePattern::new(p).map_err(|e| LoadError::Validation {
+                context: format!("restrict-use '{}' except[{i}]", dto.name),
+                source: e,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let severity = parse_severity(&dto.severity, &format!("restrict-use '{}'", dto.name))?;
 
     Ok(
         RestrictUse::new(dto.name, scope, deny, dto.message, dto.doc, severity)
-            .with_check_inline(dto.check_inline),
+            .with_check_inline(dto.check_inline)
+            .with_except(except),
     )
 }
 
@@ -203,6 +271,151 @@ fn convert_scope_dep(dto: ScopeDepDto, index: usize) -> Result<ScopeDep, LoadErr
     Ok(
         ScopeDep::new(dto.name, from, to, dto.message, dto.doc, severity)
             .with_check_inline(dto.check_inline),
+    )
+}
+
+fn convert_layering(dto: LayeringDto, index: usize) -> Result<Layering, LoadError> {
+    let ctx = dto.name.clone().map_or_else(
+        || format!("layering[{index}]"),
+        |n| format!("layering '{n}'"),
+    );
+
+    let order = dto
+        .order
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            ScopeName::new(name).map_err(|e| LoadError::Validation {
+                context: format!("{ctx}.order[{i}]"),
+                source: e,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let severity = parse_severity(&dto.severity, &ctx)?;
+
+    let layering = Layering::new(dto.name, order, dto.message, dto.doc, severity).map_err(|e| {
+        LoadError::Validation {
+            context: format!("{ctx}.order"),
+            source: e,
+        }
+    })?;
+
+    Ok(layering
+        .with_adjacent_only(dto.adjacent_only)
+        .with_check_inline(dto.check_inline))
+}
+
+/// Parses the optional `on` list, defaulting to every item kind.
+fn parse_item_kinds(on: Option<Vec<String>>, ctx: &str) -> Result<Vec<ItemKind>, LoadError> {
+    match on {
+        None => Ok(ItemKind::ALL.to_vec()),
+        Some(values) => values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                ItemKind::parse(v).map_err(|e| LoadError::Validation {
+                    context: format!("{ctx}.on[{i}]"),
+                    source: e,
+                })
+            })
+            .collect(),
+    }
+}
+
+fn parse_attr_patterns(attrs: &[String], ctx: &str) -> Result<Vec<AttrPattern>, LoadError> {
+    attrs
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            AttrPattern::new(a).map_err(|e| LoadError::Validation {
+                context: format!("{ctx}.attrs[{i}]"),
+                source: e,
+            })
+        })
+        .collect()
+}
+
+fn parse_visibility(value: &str, ctx: &str) -> Result<VisibilityFilter, LoadError> {
+    VisibilityFilter::parse(value).map_err(|e| LoadError::Validation {
+        context: format!("{ctx}.visibility"),
+        source: e,
+    })
+}
+
+fn parse_regex(pattern: &str, ctx: &str) -> Result<RegexPattern, LoadError> {
+    RegexPattern::new(pattern).map_err(|e| LoadError::Validation {
+        context: format!("{ctx}.pattern"),
+        source: e,
+    })
+}
+
+fn convert_deny_attr(dto: DenyAttrDto) -> Result<DenyAttr, LoadError> {
+    let ctx = format!("deny-attr '{}'", dto.name);
+    let scope = resolve_scope_ref(dto.scope, dto.files, &dto.name)?;
+    let attrs = parse_attr_patterns(&dto.attrs, &ctx)?;
+    let on = parse_item_kinds(dto.on, &ctx)?;
+    let severity = parse_severity(&dto.severity, &ctx)?;
+
+    Ok(DenyAttr::new(
+        dto.name,
+        scope,
+        attrs,
+        on,
+        dto.message,
+        dto.doc,
+        severity,
+    ))
+}
+
+fn convert_require_attr(dto: RequireAttrDto) -> Result<RequireAttr, LoadError> {
+    let ctx = format!("require-attr '{}'", dto.name);
+    let scope = resolve_scope_ref(dto.scope, dto.files, &dto.name)?;
+    let attrs = parse_attr_patterns(&dto.attrs, &ctx)?;
+    let on = parse_item_kinds(dto.on, &ctx)?;
+    let visibility = parse_visibility(&dto.visibility, &ctx)?;
+    let severity = parse_severity(&dto.severity, &ctx)?;
+
+    Ok(
+        RequireAttr::new(dto.name, scope, attrs, on, dto.message, dto.doc, severity)
+            .with_visibility(visibility),
+    )
+}
+
+fn convert_naming(dto: NamingDto) -> Result<Naming, LoadError> {
+    let ctx = format!("naming '{}'", dto.name);
+    let scope = resolve_scope_ref(dto.scope, dto.files, &dto.name)?;
+    let item = ItemKind::parse_named(&dto.item).map_err(|e| LoadError::Validation {
+        context: format!("{ctx}.item"),
+        source: e,
+    })?;
+    let pattern = parse_regex(&dto.pattern, &ctx)?;
+    let visibility = parse_visibility(&dto.visibility, &ctx)?;
+    let severity = parse_severity(&dto.severity, &ctx)?;
+
+    Ok(Naming::new(
+        dto.name,
+        scope,
+        item,
+        pattern,
+        dto.message,
+        dto.doc,
+        severity,
+    )
+    .with_visibility(visibility))
+}
+
+fn convert_require_return(dto: RequireReturnDto) -> Result<RequireReturn, LoadError> {
+    let ctx = format!("require-return '{}'", dto.name);
+    let scope = resolve_scope_ref(dto.scope, dto.files, &dto.name)?;
+    let visibility = parse_visibility(&dto.visibility, &ctx)?;
+    let pattern = parse_regex(&dto.pattern, &ctx)?;
+    let severity = parse_severity(&dto.severity, &ctx)?;
+
+    Ok(
+        RequireReturn::new(dto.name, scope, pattern, dto.message, dto.doc, severity)
+            .with_visibility(visibility)
+            .with_asyncness(dto.is_async),
     )
 }
 
@@ -365,5 +578,328 @@ message = "msg"
 "#,
         );
         assert!(matches!(result, Err(LoadError::CrossRef(_))));
+    }
+
+    // -- New rule kinds: happy path --
+
+    const SCOPES: &str = r#"
+[[scopes]]
+name = "handler"
+paths = ["src/handler/**"]
+
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+exclude = ["src/domain/tests/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+"#;
+
+    fn load_with_scopes(extra: &str) -> Result<DeclarativeConfig, LoadError> {
+        parse_and_load(&format!("{SCOPES}{extra}"))
+    }
+
+    #[test]
+    fn load_all_new_rule_kinds() {
+        let config = load_with_scopes(
+            r#"
+[[layering]]
+name = "clean-arch"
+order = ["handler", "domain", "infra"]
+adjacent_only = true
+message = "Layers may only depend downward."
+
+[[deny-attr]]
+name = "no-orm-derives-in-domain"
+scope = "domain"
+attrs = ["derive(sqlx::FromRow)", "serde::Serialize"]
+on = ["struct", "enum"]
+message = "Domain types must stay ORM-agnostic."
+
+[[require-attr]]
+name = "instrument-handlers"
+scope = "handler"
+attrs = ["tracing::instrument"]
+on = ["fn"]
+severity = "warning"
+message = "Handlers must be instrumented."
+
+[[naming]]
+name = "domain-ports"
+scope = "domain"
+item = "trait"
+pattern = "^[A-Z][A-Za-z0-9]*(Repository|Port)$"
+severity = "warning"
+message = "Domain traits are ports."
+
+[[require-return]]
+name = "handlers-return-app-result"
+scope = "handler"
+async = true
+pattern = "^Result<.*,\\s*AppError>$"
+message = "Handlers must return Result<_, AppError>."
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.layerings().len(), 1);
+        assert!(config.layerings()[0].adjacent_only());
+        assert_eq!(config.deny_attrs().len(), 1);
+        assert_eq!(config.deny_attrs()[0].on().len(), 2);
+        assert_eq!(config.require_attrs().len(), 1);
+        assert_eq!(config.require_attrs()[0].severity(), Severity::Warning);
+        assert_eq!(config.namings().len(), 1);
+        assert_eq!(config.require_returns().len(), 1);
+        assert_eq!(config.require_returns()[0].asyncness(), Some(true));
+        assert!(!config.is_empty());
+    }
+
+    #[test]
+    fn load_defaults_on_to_every_item_kind() {
+        let config = load_with_scopes(
+            r#"
+[[deny-attr]]
+name = "no-serde"
+scope = "domain"
+attrs = ["serde::Serialize"]
+message = "msg"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.deny_attrs()[0].on().len(), 10);
+    }
+
+    #[test]
+    fn load_scope_exclude_applies() {
+        let config = load_with_scopes("").unwrap();
+        let domain = config.scope(&ScopeName::new("domain").unwrap()).unwrap();
+        assert!(domain.contains(std::path::Path::new("src/domain/entity.rs")));
+        assert!(!domain.contains(std::path::Path::new("src/domain/tests/it.rs")));
+    }
+
+    // -- New rule kinds: validation errors --
+
+    #[test]
+    fn load_rejects_unknown_layer_scope() {
+        let result = load_with_scopes(
+            r#"
+[[layering]]
+order = ["handler", "nonexistent"]
+message = "msg"
+"#,
+        );
+        assert!(matches!(result, Err(LoadError::CrossRef(_))));
+    }
+
+    #[test]
+    fn load_rejects_short_layer_order() {
+        let result = load_with_scopes(
+            r#"
+[[layering]]
+order = ["handler"]
+message = "msg"
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("at least 2 scopes"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_empty_layer_order() {
+        let result = load_with_scopes(
+            r#"
+[[layering]]
+order = []
+message = "msg"
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("at least 2 scopes"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_duplicate_layers() {
+        let result = load_with_scopes(
+            r#"
+[[layering]]
+name = "dup"
+order = ["handler", "domain", "handler"]
+message = "msg"
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_unknown_layering_severity() {
+        let result = load_with_scopes(
+            r#"
+[[layering]]
+order = ["handler", "domain"]
+severity = "critical"
+message = "msg"
+"#,
+        );
+        assert!(matches!(result, Err(LoadError::UnknownSeverity { .. })));
+    }
+
+    #[test]
+    fn load_rejects_invalid_item_kind_in_on() {
+        let result = load_with_scopes(
+            r#"
+[[deny-attr]]
+name = "bad"
+scope = "domain"
+attrs = ["serde::Serialize"]
+on = ["struct", "macro"]
+message = "msg"
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown item kind `macro`"), "{err}");
+        assert!(err.contains("deny-attr 'bad'.on[1]"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_invalid_naming_item() {
+        let result = load_with_scopes(
+            r#"
+[[naming]]
+name = "bad"
+scope = "domain"
+item = "impl"
+pattern = "^X$"
+message = "msg"
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown item kind `impl`"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_invalid_visibility() {
+        let result = load_with_scopes(
+            r#"
+[[require-attr]]
+name = "bad"
+scope = "handler"
+attrs = ["tracing::instrument"]
+visibility = "private"
+message = "msg"
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown visibility `private`"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_invalid_naming_regex() {
+        let result = load_with_scopes(
+            r#"
+[[naming]]
+name = "bad"
+scope = "domain"
+item = "struct"
+pattern = "([a-z"
+message = "msg"
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid regex"), "{err}");
+        assert!(err.contains("naming 'bad'.pattern"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_invalid_require_return_regex() {
+        let result = load_with_scopes(
+            r#"
+[[require-return]]
+name = "bad"
+scope = "handler"
+pattern = "Result<(.*"
+message = "msg"
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid regex"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_empty_attr_pattern() {
+        let result = load_with_scopes(
+            r#"
+[[deny-attr]]
+name = "bad"
+scope = "domain"
+attrs = [""]
+message = "msg"
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("attribute pattern must not be empty"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_empty_derive_attr_pattern() {
+        let result = load_with_scopes(
+            r#"
+[[deny-attr]]
+name = "bad"
+scope = "domain"
+attrs = ["derive()"]
+message = "msg"
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid attribute pattern"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_unknown_scope_for_new_kinds() {
+        for section in [
+            "[[deny-attr]]\nname = \"x\"\nscope = \"nope\"\nattrs = [\"serde::Serialize\"]\nmessage = \"m\"\n",
+            "[[require-attr]]\nname = \"x\"\nscope = \"nope\"\nattrs = [\"tracing::instrument\"]\nmessage = \"m\"\n",
+            "[[naming]]\nname = \"x\"\nscope = \"nope\"\nitem = \"struct\"\npattern = \"^A$\"\nmessage = \"m\"\n",
+            "[[require-return]]\nname = \"x\"\nscope = \"nope\"\npattern = \"^A$\"\nmessage = \"m\"\n",
+        ] {
+            let result = load_with_scopes(section);
+            assert!(
+                matches!(result, Err(LoadError::CrossRef(_))),
+                "expected CrossRef for {section}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_rejects_ambiguous_scope_for_new_kinds() {
+        let result = load_with_scopes(
+            r#"
+[[naming]]
+name = "bad"
+scope = "domain"
+files = ["src/**"]
+item = "struct"
+pattern = "^A$"
+message = "msg"
+"#,
+        );
+        assert!(matches!(result, Err(LoadError::AmbiguousScope { .. })));
+    }
+
+    #[test]
+    fn load_rejects_invalid_exclude_glob() {
+        let result = parse_and_load(
+            r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+exclude = [""]
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("scopes[0].exclude[0]"), "{err}");
     }
 }

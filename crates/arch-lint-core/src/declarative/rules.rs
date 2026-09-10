@@ -5,11 +5,15 @@
 
 use std::sync::Arc;
 
+use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
 use crate::context::FileContext;
-use crate::declarative::model::{DeclarativeConfig, RequireUse, RestrictUse, ScopeDep};
+use crate::declarative::model::{
+    DeclarativeConfig, DenyAttr, ItemKind, Naming, RequireAttr, RequireReturn, RequireUse,
+    RestrictUse, ScopeDep,
+};
 use crate::rule::Rule;
 use crate::types::{Location, Severity, Violation};
 
@@ -411,6 +415,7 @@ impl Rule for ScopeDepRule {
             ctx,
             config: &self.config,
             applicable,
+            code: SCOPE_DEP_CODE,
             violations: Vec::new(),
         };
         visitor.visit_file(ast);
@@ -418,10 +423,15 @@ impl Rule for ScopeDepRule {
     }
 }
 
+/// Shared visitor for scope-crossing dependencies.
+///
+/// Used by both [`ScopeDepRule`] (`ALD003`) and [`LayeringRule`] (`ALD004`);
+/// `code` selects which code the violations are reported under.
 struct ScopeDepVisitor<'a> {
     ctx: &'a FileContext<'a>,
     config: &'a DeclarativeConfig,
     applicable: Vec<&'a ScopeDep>,
+    code: &'static str,
     violations: Vec<Violation>,
 }
 
@@ -481,7 +491,7 @@ impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
                         );
 
                         let mut violation = Violation::new(
-                            SCOPE_DEP_CODE,
+                            self.code,
                             dep.display_name(),
                             dep.severity(),
                             location,
@@ -526,7 +536,7 @@ impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
                         );
 
                         let mut violation = Violation::new(
-                            SCOPE_DEP_CODE,
+                            self.code,
                             dep.display_name(),
                             dep.severity(),
                             location,
@@ -549,6 +559,696 @@ impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
         }
 
         syn::visit::visit_path(self, node);
+    }
+}
+
+// ────────────────────────────────────────────
+// LayeringRule
+// ────────────────────────────────────────────
+
+const LAYERING_NAME: &str = "layering";
+const LAYERING_CODE: &str = "ALD004";
+
+/// A per-file rule that enforces `[[layering]]` declarations.
+///
+/// Each layering is expanded into the equivalent [`ScopeDep`] constraints and
+/// checked with the same machinery as [`ScopeDepRule`], but reported as
+/// `ALD004`. A layer may depend on the layers below it; referencing a layer
+/// above it — or, with `adjacent_only`, skipping past the next one — is a
+/// violation.
+pub struct LayeringRule {
+    config: Arc<DeclarativeConfig>,
+    deps: Vec<ScopeDep>,
+}
+
+impl LayeringRule {
+    /// Creates a new layering rule backed by the given config.
+    #[must_use]
+    pub fn new(config: Arc<DeclarativeConfig>) -> Self {
+        let deps = config
+            .layerings()
+            .iter()
+            .flat_map(crate::declarative::model::Layering::expand)
+            .collect();
+        Self { config, deps }
+    }
+}
+
+impl Rule for LayeringRule {
+    fn name(&self) -> &'static str {
+        LAYERING_NAME
+    }
+
+    fn code(&self) -> &'static str {
+        LAYERING_CODE
+    }
+
+    fn description(&self) -> &'static str {
+        "Enforce ordered layer dependencies"
+    }
+
+    fn check(&self, ctx: &FileContext, ast: &syn::File) -> Vec<Violation> {
+        let file_scopes = self.config.scopes_for_path(&ctx.relative_path);
+        if file_scopes.is_empty() {
+            return vec![];
+        }
+
+        let applicable: Vec<&ScopeDep> = self
+            .deps
+            .iter()
+            .filter(|dep| file_scopes.contains(&dep.from_scope()))
+            .collect();
+
+        if applicable.is_empty() {
+            return vec![];
+        }
+
+        let mut visitor = ScopeDepVisitor {
+            ctx,
+            config: &self.config,
+            applicable,
+            code: LAYERING_CODE,
+            violations: Vec::new(),
+        };
+        visitor.visit_file(ast);
+        visitor.violations
+    }
+}
+
+// ────────────────────────────────────────────
+// Item walking (shared by the item-level rules)
+// ────────────────────────────────────────────
+
+/// One item seen by the attribute / naming / return-type rules.
+pub(crate) struct ItemView<'ast> {
+    /// What kind of item this is.
+    pub(crate) kind: ItemKind,
+    /// Display name (identifier, or the rendered self type of an `impl`).
+    pub(crate) name: String,
+    /// The identifier, when the item has one.
+    pub(crate) ident: Option<&'ast syn::Ident>,
+    /// Span used for reporting (the identifier where there is one).
+    pub(crate) span: proc_macro2::Span,
+    /// Outer attributes on the item.
+    pub(crate) attrs: &'ast [syn::Attribute],
+    /// Whether the item is publicly reachable (see [`walk_items`]).
+    pub(crate) is_pub: bool,
+    /// The signature, for functions.
+    pub(crate) sig: Option<&'ast syn::Signature>,
+}
+
+fn is_public(vis: &syn::Visibility) -> bool {
+    matches!(vis, syn::Visibility::Public(_))
+}
+
+/// Walks module-level and impl-level items, calling `f` for each.
+///
+/// Function bodies are never entered, so items declared inside a `fn` are not
+/// reported. Visibility is the item's own `pub` for free, module and inherent
+/// impl items; items of a trait definition inherit the trait's visibility, and
+/// items of a trait impl (and `impl` blocks themselves) count as public.
+pub(crate) fn walk_items<'ast>(items: &'ast [syn::Item], f: &mut impl FnMut(&ItemView<'ast>)) {
+    for item in items {
+        match item {
+            syn::Item::Struct(i) => emit_named(
+                f,
+                ItemKind::Struct,
+                &i.ident,
+                &i.attrs,
+                is_public(&i.vis),
+                None,
+            ),
+            syn::Item::Enum(i) => emit_named(
+                f,
+                ItemKind::Enum,
+                &i.ident,
+                &i.attrs,
+                is_public(&i.vis),
+                None,
+            ),
+            syn::Item::Union(i) => emit_named(
+                f,
+                ItemKind::Union,
+                &i.ident,
+                &i.attrs,
+                is_public(&i.vis),
+                None,
+            ),
+            syn::Item::Fn(i) => emit_named(
+                f,
+                ItemKind::Fn,
+                &i.sig.ident,
+                &i.attrs,
+                is_public(&i.vis),
+                Some(&i.sig),
+            ),
+            syn::Item::Type(i) => emit_named(
+                f,
+                ItemKind::Type,
+                &i.ident,
+                &i.attrs,
+                is_public(&i.vis),
+                None,
+            ),
+            syn::Item::Const(i) => emit_named(
+                f,
+                ItemKind::Const,
+                &i.ident,
+                &i.attrs,
+                is_public(&i.vis),
+                None,
+            ),
+            syn::Item::Static(i) => emit_named(
+                f,
+                ItemKind::Static,
+                &i.ident,
+                &i.attrs,
+                is_public(&i.vis),
+                None,
+            ),
+            syn::Item::Mod(i) => {
+                emit_named(
+                    f,
+                    ItemKind::Mod,
+                    &i.ident,
+                    &i.attrs,
+                    is_public(&i.vis),
+                    None,
+                );
+                if let Some((_, nested)) = &i.content {
+                    walk_items(nested, f);
+                }
+            }
+            syn::Item::Trait(i) => walk_trait(i, f),
+            syn::Item::Impl(i) => walk_impl(i, f),
+            _ => {}
+        }
+    }
+}
+
+/// Emits a trait and its associated items; items inherit the trait's visibility.
+fn walk_trait<'ast>(item: &'ast syn::ItemTrait, f: &mut impl FnMut(&ItemView<'ast>)) {
+    let trait_is_pub = is_public(&item.vis);
+    emit_named(
+        f,
+        ItemKind::Trait,
+        &item.ident,
+        &item.attrs,
+        trait_is_pub,
+        None,
+    );
+    for trait_item in &item.items {
+        match trait_item {
+            syn::TraitItem::Fn(m) => emit_named(
+                f,
+                ItemKind::Fn,
+                &m.sig.ident,
+                &m.attrs,
+                trait_is_pub,
+                Some(&m.sig),
+            ),
+            syn::TraitItem::Const(c) => {
+                emit_named(f, ItemKind::Const, &c.ident, &c.attrs, trait_is_pub, None);
+            }
+            syn::TraitItem::Type(t) => {
+                emit_named(f, ItemKind::Type, &t.ident, &t.attrs, trait_is_pub, None);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Emits an `impl` block and its items; items of a trait impl count as public.
+fn walk_impl<'ast>(item: &'ast syn::ItemImpl, f: &mut impl FnMut(&ItemView<'ast>)) {
+    f(&ItemView {
+        kind: ItemKind::Impl,
+        name: normalize_rendered(&item.self_ty.to_token_stream().to_string()),
+        ident: None,
+        span: item.self_ty.span(),
+        attrs: &item.attrs,
+        is_pub: true,
+        sig: None,
+    });
+
+    let is_trait_impl = item.trait_.is_some();
+    for impl_item in &item.items {
+        match impl_item {
+            syn::ImplItem::Fn(m) => emit_named(
+                f,
+                ItemKind::Fn,
+                &m.sig.ident,
+                &m.attrs,
+                is_trait_impl || is_public(&m.vis),
+                Some(&m.sig),
+            ),
+            syn::ImplItem::Const(c) => emit_named(
+                f,
+                ItemKind::Const,
+                &c.ident,
+                &c.attrs,
+                is_trait_impl || is_public(&c.vis),
+                None,
+            ),
+            syn::ImplItem::Type(t) => emit_named(
+                f,
+                ItemKind::Type,
+                &t.ident,
+                &t.attrs,
+                is_trait_impl || is_public(&t.vis),
+                None,
+            ),
+            _ => {}
+        }
+    }
+}
+
+fn emit_named<'ast>(
+    f: &mut impl FnMut(&ItemView<'ast>),
+    kind: ItemKind,
+    ident: &'ast syn::Ident,
+    attrs: &'ast [syn::Attribute],
+    is_pub: bool,
+    sig: Option<&'ast syn::Signature>,
+) {
+    f(&ItemView {
+        kind,
+        name: ident.to_string(),
+        ident: Some(ident),
+        span: ident.span(),
+        attrs,
+        is_pub,
+        sig,
+    });
+}
+
+/// Renders a path as `::` separated segments (generic arguments dropped).
+pub(crate) fn render_path(path: &syn::Path) -> String {
+    path.segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// Renders one attribute as its `::` separated path plus, for `#[derive(..)]`,
+/// the paths inside the derive list.
+pub(crate) fn render_attr(attr: &syn::Attribute) -> (String, Vec<String>) {
+    let path = render_path(attr.path());
+    let derives = if path == "derive" {
+        attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+        )
+        .map(|paths| paths.iter().map(render_path).collect())
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    (path, derives)
+}
+
+/// Normalizes a `ToTokens` rendering: no spaces around `<`, `>` and `::`,
+/// exactly one space after `,`.
+pub(crate) fn normalize_rendered(raw: &str) -> String {
+    let mut s = raw.replace(" ::", "::").replace(":: ", "::");
+    s = s.replace(" <", "<").replace("< ", "<");
+    s = s.replace(" >", ">").replace("> ", ">");
+    s = s.replace(" ,", ",").replace(", ", ",").replace(',', ", ");
+    while s.contains("  ") {
+        s = s.replace("  ", " ");
+    }
+    s.trim().to_string()
+}
+
+/// Renders a function's return type: `()` when there is none.
+pub(crate) fn render_return_type(sig: &syn::Signature) -> String {
+    match &sig.output {
+        syn::ReturnType::Default => "()".to_string(),
+        syn::ReturnType::Type(_, ty) => normalize_rendered(&ty.to_token_stream().to_string()),
+    }
+}
+
+fn build_violation(
+    code: &'static str,
+    rule_name: &str,
+    severity: Severity,
+    ctx: &FileContext,
+    span: proc_macro2::Span,
+    message: String,
+    doc_ref: Option<&str>,
+) -> Violation {
+    let start = span.start();
+    let location = Location::new(ctx.relative_path.clone(), start.line, start.column + 1);
+    let mut violation = Violation::new(code, rule_name, severity, location, message);
+    if let Some(doc) = doc_ref {
+        violation = violation.with_doc_ref(doc);
+    }
+    violation
+}
+
+// ────────────────────────────────────────────
+// DenyAttrRule
+// ────────────────────────────────────────────
+
+const DENY_ATTR_NAME: &str = "deny-attr";
+const DENY_ATTR_CODE: &str = "ALD005";
+
+/// A per-file rule that enforces `[[deny-attr]]` declarations.
+///
+/// Flags module-level and impl-level items of the configured kinds that carry
+/// one of the denied attributes.
+pub struct DenyAttrRule {
+    config: Arc<DeclarativeConfig>,
+}
+
+impl DenyAttrRule {
+    /// Creates a new deny-attr rule backed by the given config.
+    #[must_use]
+    pub fn new(config: Arc<DeclarativeConfig>) -> Self {
+        Self { config }
+    }
+}
+
+impl Rule for DenyAttrRule {
+    fn name(&self) -> &'static str {
+        DENY_ATTR_NAME
+    }
+
+    fn code(&self) -> &'static str {
+        DENY_ATTR_CODE
+    }
+
+    fn description(&self) -> &'static str {
+        "Deny specified attributes on items within a scope"
+    }
+
+    fn check(&self, ctx: &FileContext, ast: &syn::File) -> Vec<Violation> {
+        let applicable: Vec<&DenyAttr> = self
+            .config
+            .deny_attrs()
+            .iter()
+            .filter(|r| {
+                self.config
+                    .scope_ref_contains(r.scope(), &ctx.relative_path)
+            })
+            .collect();
+
+        if applicable.is_empty() {
+            return vec![];
+        }
+
+        let mut violations = Vec::new();
+        walk_items(&ast.items, &mut |view| {
+            let rendered: Vec<(String, Vec<String>)> = view.attrs.iter().map(render_attr).collect();
+
+            for rule in &applicable {
+                if !rule.applies_to(view.kind) {
+                    continue;
+                }
+                let hit = rule.attrs().iter().find(|pattern| {
+                    rendered
+                        .iter()
+                        .any(|(path, derives)| pattern.matches(path, derives))
+                });
+                if let Some(pattern) = hit {
+                    violations.push(build_violation(
+                        DENY_ATTR_CODE,
+                        rule.name(),
+                        rule.severity(),
+                        ctx,
+                        view.span,
+                        format!(
+                            "{}: `{} {}` has attribute `{}`",
+                            rule.message(),
+                            view.kind,
+                            view.name,
+                            pattern.as_str(),
+                        ),
+                        rule.doc_ref(),
+                    ));
+                }
+            }
+        });
+        violations
+    }
+}
+
+// ────────────────────────────────────────────
+// RequireAttrRule
+// ────────────────────────────────────────────
+
+const REQUIRE_ATTR_NAME: &str = "require-attr";
+const REQUIRE_ATTR_CODE: &str = "ALD006";
+
+/// A per-file rule that enforces `[[require-attr]]` declarations.
+///
+/// Flags items of the configured kinds and visibility that carry none of the
+/// required attributes.
+pub struct RequireAttrRule {
+    config: Arc<DeclarativeConfig>,
+}
+
+impl RequireAttrRule {
+    /// Creates a new require-attr rule backed by the given config.
+    #[must_use]
+    pub fn new(config: Arc<DeclarativeConfig>) -> Self {
+        Self { config }
+    }
+}
+
+impl Rule for RequireAttrRule {
+    fn name(&self) -> &'static str {
+        REQUIRE_ATTR_NAME
+    }
+
+    fn code(&self) -> &'static str {
+        REQUIRE_ATTR_CODE
+    }
+
+    fn description(&self) -> &'static str {
+        "Require specified attributes on items within a scope"
+    }
+
+    fn check(&self, ctx: &FileContext, ast: &syn::File) -> Vec<Violation> {
+        let applicable: Vec<&RequireAttr> = self
+            .config
+            .require_attrs()
+            .iter()
+            .filter(|r| {
+                self.config
+                    .scope_ref_contains(r.scope(), &ctx.relative_path)
+            })
+            .collect();
+
+        if applicable.is_empty() {
+            return vec![];
+        }
+
+        let mut violations = Vec::new();
+        walk_items(&ast.items, &mut |view| {
+            let rendered: Vec<(String, Vec<String>)> = view.attrs.iter().map(render_attr).collect();
+
+            for rule in &applicable {
+                if !rule.applies_to(view.kind) || !rule.visibility().matches(view.is_pub) {
+                    continue;
+                }
+                let present = rule.attrs().iter().any(|pattern| {
+                    rendered
+                        .iter()
+                        .any(|(path, derives)| pattern.matches(path, derives))
+                });
+                if !present {
+                    let expected = rule
+                        .attrs()
+                        .iter()
+                        .map(|p| format!("`{}`", p.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(" or ");
+                    violations.push(build_violation(
+                        REQUIRE_ATTR_CODE,
+                        rule.name(),
+                        rule.severity(),
+                        ctx,
+                        view.span,
+                        format!(
+                            "{}: `{} {}` is missing {}",
+                            rule.message(),
+                            view.kind,
+                            view.name,
+                            expected,
+                        ),
+                        rule.doc_ref(),
+                    ));
+                }
+            }
+        });
+        violations
+    }
+}
+
+// ────────────────────────────────────────────
+// NamingRule
+// ────────────────────────────────────────────
+
+const NAMING_NAME: &str = "naming";
+const NAMING_CODE: &str = "ALD007";
+
+/// A per-file rule that enforces `[[naming]]` declarations.
+///
+/// Flags identifiers of the configured item kind that do not match the regex.
+pub struct NamingRule {
+    config: Arc<DeclarativeConfig>,
+}
+
+impl NamingRule {
+    /// Creates a new naming rule backed by the given config.
+    #[must_use]
+    pub fn new(config: Arc<DeclarativeConfig>) -> Self {
+        Self { config }
+    }
+}
+
+impl Rule for NamingRule {
+    fn name(&self) -> &'static str {
+        NAMING_NAME
+    }
+
+    fn code(&self) -> &'static str {
+        NAMING_CODE
+    }
+
+    fn description(&self) -> &'static str {
+        "Require identifiers to match a naming pattern"
+    }
+
+    fn check(&self, ctx: &FileContext, ast: &syn::File) -> Vec<Violation> {
+        let applicable: Vec<&Naming> = self
+            .config
+            .namings()
+            .iter()
+            .filter(|r| {
+                self.config
+                    .scope_ref_contains(r.scope(), &ctx.relative_path)
+            })
+            .collect();
+
+        if applicable.is_empty() {
+            return vec![];
+        }
+
+        let mut violations = Vec::new();
+        walk_items(&ast.items, &mut |view| {
+            let Some(ident) = view.ident else {
+                return;
+            };
+            let name = ident.to_string();
+            for rule in &applicable {
+                if rule.item() != view.kind || !rule.visibility().matches(view.is_pub) {
+                    continue;
+                }
+                if !rule.pattern().is_match(&name) {
+                    violations.push(build_violation(
+                        NAMING_CODE,
+                        rule.name(),
+                        rule.severity(),
+                        ctx,
+                        view.span,
+                        format!(
+                            "{}: `{} {}` does not match `{}`",
+                            rule.message(),
+                            view.kind,
+                            name,
+                            rule.pattern().as_str(),
+                        ),
+                        rule.doc_ref(),
+                    ));
+                }
+            }
+        });
+        violations
+    }
+}
+
+// ────────────────────────────────────────────
+// RequireReturnRule
+// ────────────────────────────────────────────
+
+const REQUIRE_RETURN_NAME: &str = "require-return";
+const REQUIRE_RETURN_CODE: &str = "ALD008";
+
+/// A per-file rule that enforces `[[require-return]]` declarations.
+///
+/// Flags functions whose normalized return type does not match the regex.
+pub struct RequireReturnRule {
+    config: Arc<DeclarativeConfig>,
+}
+
+impl RequireReturnRule {
+    /// Creates a new require-return rule backed by the given config.
+    #[must_use]
+    pub fn new(config: Arc<DeclarativeConfig>) -> Self {
+        Self { config }
+    }
+}
+
+impl Rule for RequireReturnRule {
+    fn name(&self) -> &'static str {
+        REQUIRE_RETURN_NAME
+    }
+
+    fn code(&self) -> &'static str {
+        REQUIRE_RETURN_CODE
+    }
+
+    fn description(&self) -> &'static str {
+        "Require functions to return a matching type"
+    }
+
+    fn check(&self, ctx: &FileContext, ast: &syn::File) -> Vec<Violation> {
+        let applicable: Vec<&RequireReturn> = self
+            .config
+            .require_returns()
+            .iter()
+            .filter(|r| {
+                self.config
+                    .scope_ref_contains(r.scope(), &ctx.relative_path)
+            })
+            .collect();
+
+        if applicable.is_empty() {
+            return vec![];
+        }
+
+        let mut violations = Vec::new();
+        walk_items(&ast.items, &mut |view| {
+            let Some(sig) = view.sig else {
+                return;
+            };
+            let rendered = render_return_type(sig);
+            let is_async = sig.asyncness.is_some();
+            for rule in &applicable {
+                if !rule.visibility().matches(view.is_pub) || !rule.matches_asyncness(is_async) {
+                    continue;
+                }
+                if !rule.pattern().is_match(&rendered) {
+                    violations.push(build_violation(
+                        REQUIRE_RETURN_CODE,
+                        rule.name(),
+                        rule.severity(),
+                        ctx,
+                        view.span,
+                        format!(
+                            "{}: `fn {}` returns `{}`, expected `{}`",
+                            rule.message(),
+                            view.name,
+                            rendered,
+                            rule.pattern().as_str(),
+                        ),
+                        rule.doc_ref(),
+                    ));
+                }
+            }
+        });
+        violations
     }
 }
 
@@ -1236,5 +1936,604 @@ mod tests {
         let config = make_scope_dep_config();
         let scopes = resolve_target_scopes(&config, "self::utils::helper");
         assert!(scopes.is_empty());
+    }
+
+    // ── restrict-use `except` / scope `exclude` ──
+
+    #[test]
+    fn restrict_except_suppresses_denied_import() {
+        let scopes = vec![Scope::new(
+            ScopeName::new("domain").unwrap(),
+            vec![GlobPattern::new("src/domain/**").unwrap()],
+        )];
+        let restrict = vec![RestrictUse::new(
+            "no-sqlx-in-domain".to_string(),
+            ScopeRef::Named(ScopeName::new("domain").unwrap()),
+            vec![UsePattern::new("sqlx::**").unwrap()],
+            "Domain must be DB-agnostic.".to_string(),
+            None,
+            Severity::Error,
+        )
+        .with_except(vec![UsePattern::new("sqlx::types::*").unwrap()])];
+        let config = Arc::new(DeclarativeConfig::new(scopes, restrict, vec![], vec![]).unwrap());
+        let rule = RestrictUseRule::new(config);
+        let code = "use sqlx::types::Json;\nuse sqlx::Pool;";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("sqlx::Pool"));
+    }
+
+    #[test]
+    fn scope_exclude_takes_file_out_of_every_rule() {
+        let scopes = vec![Scope::new(
+            ScopeName::new("domain").unwrap(),
+            vec![GlobPattern::new("src/domain/**").unwrap()],
+        )
+        .with_excludes(vec![GlobPattern::new("src/domain/tests/**").unwrap()])];
+        let restrict = vec![RestrictUse::new(
+            "no-sqlx-in-domain".to_string(),
+            ScopeRef::Named(ScopeName::new("domain").unwrap()),
+            vec![UsePattern::new("sqlx::*").unwrap()],
+            "Domain must be DB-agnostic.".to_string(),
+            None,
+            Severity::Error,
+        )];
+        let config = Arc::new(DeclarativeConfig::new(scopes, restrict, vec![], vec![]).unwrap());
+        let rule = RestrictUseRule::new(config);
+        let code = "use sqlx::Pool;";
+        let ast = parse_file(code);
+
+        assert_eq!(
+            rule.check(&make_ctx("src/domain/service.rs", code), &ast)
+                .len(),
+            1
+        );
+        assert!(rule
+            .check(&make_ctx("src/domain/tests/service_test.rs", code), &ast)
+            .is_empty());
+    }
+
+    // ── LayeringRule ──
+
+    fn make_layering_config(adjacent_only: bool) -> Arc<DeclarativeConfig> {
+        let scopes = vec![
+            Scope::new(
+                ScopeName::new("handler").unwrap(),
+                vec![GlobPattern::new("src/handler/**").unwrap()],
+            ),
+            Scope::new(
+                ScopeName::new("domain").unwrap(),
+                vec![GlobPattern::new("src/domain/**").unwrap()],
+            ),
+            Scope::new(
+                ScopeName::new("infra").unwrap(),
+                vec![GlobPattern::new("src/infra/**").unwrap()],
+            ),
+        ];
+        let layering = Layering::new(
+            Some("clean-arch".to_string()),
+            vec![
+                ScopeName::new("handler").unwrap(),
+                ScopeName::new("domain").unwrap(),
+                ScopeName::new("infra").unwrap(),
+            ],
+            "Layers may only depend downward.".to_string(),
+            Some("ARCHITECTURE.md L20".to_string()),
+            Severity::Error,
+        )
+        .unwrap()
+        .with_adjacent_only(adjacent_only);
+
+        Arc::new(
+            DeclarativeConfig::builder()
+                .scopes(scopes)
+                .layerings(vec![layering])
+                .build()
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn layering_denies_upward_dependency() {
+        let rule = LayeringRule::new(make_layering_config(false));
+        let code = "use crate::handler::api::Router;";
+        let ctx = make_ctx("src/infra/db.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].code, LAYERING_CODE);
+        assert_eq!(violations[0].rule, "clean-arch");
+        assert!(violations[0].message.contains("scope `infra`"));
+        assert!(violations[0].message.contains("scope `handler`"));
+        assert_eq!(
+            violations[0].doc_ref.as_deref(),
+            Some("ARCHITECTURE.md L20")
+        );
+    }
+
+    #[test]
+    fn layering_allows_downward_dependency() {
+        let rule = LayeringRule::new(make_layering_config(false));
+        let code = "use crate::infra::db::Pool;\nuse crate::domain::entity::User;";
+        let ctx = make_ctx("src/handler/api.rs", code);
+        let ast = parse_file(code);
+
+        assert!(rule.check(&ctx, &ast).is_empty());
+    }
+
+    #[test]
+    fn layering_adjacent_only_denies_skipping_a_layer() {
+        let rule = LayeringRule::new(make_layering_config(true));
+        let code = "use crate::infra::db::Pool;";
+        let ctx = make_ctx("src/handler/api.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("scope `handler`"));
+        assert!(violations[0].message.contains("scope `infra`"));
+    }
+
+    #[test]
+    fn layering_adjacent_only_allows_next_layer() {
+        let rule = LayeringRule::new(make_layering_config(true));
+        let code = "use crate::domain::entity::User;";
+        let ctx = make_ctx("src/handler/api.rs", code);
+        let ast = parse_file(code);
+
+        assert!(rule.check(&ctx, &ast).is_empty());
+    }
+
+    #[test]
+    fn layering_detects_inline_path() {
+        let rule = LayeringRule::new(make_layering_config(false));
+        let code = "fn f() { crate::handler::api::route(); }";
+        let ctx = make_ctx("src/infra/db.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("crate::handler::api::route"));
+    }
+
+    #[test]
+    fn layering_check_inline_false_skips_inline_path() {
+        let scopes = vec![
+            Scope::new(
+                ScopeName::new("handler").unwrap(),
+                vec![GlobPattern::new("src/handler/**").unwrap()],
+            ),
+            Scope::new(
+                ScopeName::new("infra").unwrap(),
+                vec![GlobPattern::new("src/infra/**").unwrap()],
+            ),
+        ];
+        let layering = Layering::new(
+            None,
+            vec![
+                ScopeName::new("handler").unwrap(),
+                ScopeName::new("infra").unwrap(),
+            ],
+            "Layers may only depend downward.".to_string(),
+            None,
+            Severity::Error,
+        )
+        .unwrap()
+        .with_check_inline(false);
+        let config = Arc::new(
+            DeclarativeConfig::builder()
+                .scopes(scopes)
+                .layerings(vec![layering])
+                .build()
+                .unwrap(),
+        );
+        let rule = LayeringRule::new(config);
+        let code = "use crate::handler::api::Router;\nfn f() { crate::handler::api::route(); }";
+        let ctx = make_ctx("src/infra/db.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rule, "layering");
+    }
+
+    #[test]
+    fn layering_skips_file_outside_every_layer() {
+        let rule = LayeringRule::new(make_layering_config(false));
+        let code = "use crate::handler::api::Router;";
+        let ctx = make_ctx("src/util/misc.rs", code);
+        let ast = parse_file(code);
+
+        assert!(rule.check(&ctx, &ast).is_empty());
+    }
+
+    // ── DenyAttrRule ──
+
+    fn deny_attr_rule(attrs: Vec<&str>, on: Vec<ItemKind>) -> DenyAttrRule {
+        let config = DeclarativeConfig::builder()
+            .deny_attrs(vec![DenyAttr::new(
+                "no-orm-derives-in-domain".to_string(),
+                ScopeRef::Inline(vec![GlobPattern::new("**/*.rs").unwrap()]),
+                attrs
+                    .into_iter()
+                    .map(|a| AttrPattern::new(a).unwrap())
+                    .collect(),
+                on,
+                "Domain types must stay ORM-agnostic.".to_string(),
+                None,
+                Severity::Error,
+            )])
+            .build()
+            .unwrap();
+        DenyAttrRule::new(Arc::new(config))
+    }
+
+    #[test]
+    fn deny_attr_flags_derive_on_struct() {
+        let rule = deny_attr_rule(
+            vec!["derive(sqlx::FromRow)"],
+            vec![ItemKind::Struct, ItemKind::Enum],
+        );
+        let violations = crate::test_utils::check_rule(
+            &rule,
+            "#[derive(Debug, sqlx::FromRow)]\npub struct User;",
+        );
+
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].code, DENY_ATTR_CODE);
+        assert_eq!(violations[0].rule, "no-orm-derives-in-domain");
+        assert!(violations[0].message.contains("struct User"));
+        assert!(violations[0].message.contains("derive(sqlx::FromRow)"));
+    }
+
+    #[test]
+    fn deny_attr_reports_once_per_item_even_with_several_matches() {
+        let rule = deny_attr_rule(
+            vec!["sqlx::FromRow", "serde::Serialize"],
+            ItemKind::ALL.to_vec(),
+        );
+        let violations = crate::test_utils::check_rule(
+            &rule,
+            "#[derive(sqlx::FromRow, serde::Serialize)]\npub struct User;",
+        );
+        // reported once per rule, at the item's identifier, naming the first match
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].location.line, 2);
+        assert!(violations[0].message.contains("sqlx::FromRow"));
+    }
+
+    #[test]
+    fn deny_attr_respects_on_filter() {
+        let rule = deny_attr_rule(vec!["tracing::instrument"], vec![ItemKind::Struct]);
+        let violations =
+            crate::test_utils::check_rule(&rule, "#[tracing::instrument]\npub fn handler() {}");
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn deny_attr_matches_plain_attribute_path() {
+        let rule = deny_attr_rule(vec!["tracing::instrument"], vec![ItemKind::Fn]);
+        let violations =
+            crate::test_utils::check_rule(&rule, "#[tracing::instrument]\npub fn handler() {}");
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("fn handler"));
+    }
+
+    #[test]
+    fn deny_attr_ignores_items_inside_fn_body() {
+        let rule = deny_attr_rule(vec!["sqlx::FromRow"], ItemKind::ALL.to_vec());
+        let violations = crate::test_utils::check_rule(
+            &rule,
+            "pub fn f() { #[derive(sqlx::FromRow)] struct Inner; }",
+        );
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn deny_attr_skips_file_outside_scope() {
+        let config = DeclarativeConfig::builder()
+            .deny_attrs(vec![DenyAttr::new(
+                "no-orm".to_string(),
+                ScopeRef::Inline(vec![GlobPattern::new("src/domain/**").unwrap()]),
+                vec![AttrPattern::new("sqlx::FromRow").unwrap()],
+                ItemKind::ALL.to_vec(),
+                "msg".to_string(),
+                None,
+                Severity::Error,
+            )])
+            .build()
+            .unwrap();
+        let rule = DenyAttrRule::new(Arc::new(config));
+        let code = "#[derive(sqlx::FromRow)]\npub struct User;";
+        let ctx = make_ctx("src/infra/db.rs", code);
+        let ast = parse_file(code);
+
+        assert!(rule.check(&ctx, &ast).is_empty());
+    }
+
+    #[test]
+    fn deny_attr_checks_impl_methods() {
+        let rule = deny_attr_rule(vec!["tracing::instrument"], vec![ItemKind::Fn]);
+        let violations = crate::test_utils::check_rule(
+            &rule,
+            "struct S;\nimpl S {\n    #[tracing::instrument]\n    pub fn go() {}\n}",
+        );
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("fn go"));
+    }
+
+    // ── RequireAttrRule ──
+
+    fn require_attr_rule(visibility: VisibilityFilter, on: Vec<ItemKind>) -> RequireAttrRule {
+        let config = DeclarativeConfig::builder()
+            .require_attrs(vec![RequireAttr::new(
+                "instrument-handlers".to_string(),
+                ScopeRef::Inline(vec![GlobPattern::new("**/*.rs").unwrap()]),
+                vec![AttrPattern::new("tracing::instrument").unwrap()],
+                on,
+                "Handlers must be instrumented.".to_string(),
+                None,
+                Severity::Warning,
+            )
+            .with_visibility(visibility)])
+            .build()
+            .unwrap();
+        RequireAttrRule::new(Arc::new(config))
+    }
+
+    #[test]
+    fn require_attr_flags_missing_attribute() {
+        let rule = require_attr_rule(VisibilityFilter::Pub, vec![ItemKind::Fn]);
+        let violations = crate::test_utils::check_rule(&rule, "pub fn handler() {}");
+
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].code, REQUIRE_ATTR_CODE);
+        assert_eq!(violations[0].severity, Severity::Warning);
+        assert!(violations[0].message.contains("`tracing::instrument`"));
+    }
+
+    #[test]
+    fn require_attr_accepts_present_attribute() {
+        let rule = require_attr_rule(VisibilityFilter::Pub, vec![ItemKind::Fn]);
+        let violations =
+            crate::test_utils::check_rule(&rule, "#[tracing::instrument]\npub fn handler() {}");
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn require_attr_pub_visibility_skips_private_fn() {
+        let rule = require_attr_rule(VisibilityFilter::Pub, vec![ItemKind::Fn]);
+        let violations = crate::test_utils::check_rule(&rule, "fn helper() {}");
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn require_attr_any_visibility_flags_private_fn() {
+        let rule = require_attr_rule(VisibilityFilter::Any, vec![ItemKind::Fn]);
+        let violations = crate::test_utils::check_rule(&rule, "fn helper() {}");
+        assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn require_attr_treats_trait_impl_methods_as_public() {
+        let rule = require_attr_rule(VisibilityFilter::Pub, vec![ItemKind::Fn]);
+        let violations = crate::test_utils::check_rule(
+            &rule,
+            "struct S;\ntrait T { fn go(); }\nimpl T for S {\n    fn go() {}\n}",
+        );
+        // the trait declaration is private (`trait T`), the impl method counts as public
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].location.line, 4);
+    }
+
+    // ── NamingRule ──
+
+    fn naming_rule(item: ItemKind, pattern: &str, visibility: VisibilityFilter) -> NamingRule {
+        let config = DeclarativeConfig::builder()
+            .namings(vec![Naming::new(
+                "domain-ports".to_string(),
+                ScopeRef::Inline(vec![GlobPattern::new("**/*.rs").unwrap()]),
+                item,
+                RegexPattern::new(pattern).unwrap(),
+                "Domain traits are ports.".to_string(),
+                None,
+                Severity::Warning,
+            )
+            .with_visibility(visibility)])
+            .build()
+            .unwrap();
+        NamingRule::new(Arc::new(config))
+    }
+
+    #[test]
+    fn naming_flags_non_matching_trait() {
+        let rule = naming_rule(
+            ItemKind::Trait,
+            "^[A-Z][A-Za-z0-9]*(Repository|Port)$",
+            VisibilityFilter::Pub,
+        );
+        let violations = crate::test_utils::check_rule(&rule, "pub trait UserService {}");
+
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].code, NAMING_CODE);
+        assert!(violations[0].message.contains("trait UserService"));
+        assert!(violations[0].message.contains("Repository|Port"));
+    }
+
+    #[test]
+    fn naming_accepts_matching_trait() {
+        let rule = naming_rule(
+            ItemKind::Trait,
+            "^[A-Z][A-Za-z0-9]*(Repository|Port)$",
+            VisibilityFilter::Pub,
+        );
+        let violations = crate::test_utils::check_rule(&rule, "pub trait UserRepository {}");
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn naming_ignores_other_item_kinds() {
+        let rule = naming_rule(ItemKind::Trait, "^X$", VisibilityFilter::Pub);
+        let violations = crate::test_utils::check_rule(&rule, "pub struct UserService;");
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn naming_pub_visibility_skips_private_item() {
+        let rule = naming_rule(ItemKind::Trait, "^X$", VisibilityFilter::Pub);
+        assert!(crate::test_utils::check_rule(&rule, "trait UserService {}").is_empty());
+
+        let any = naming_rule(ItemKind::Trait, "^X$", VisibilityFilter::Any);
+        assert_eq!(
+            crate::test_utils::check_rule(&any, "trait UserService {}").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn naming_checks_nested_module_items() {
+        let rule = naming_rule(ItemKind::Struct, "^Dto[A-Z]", VisibilityFilter::Pub);
+        let violations =
+            crate::test_utils::check_rule(&rule, "pub mod inner {\n    pub struct User;\n}");
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].location.line, 2);
+    }
+
+    // ── RequireReturnRule ──
+
+    fn require_return_rule(
+        pattern: &str,
+        visibility: VisibilityFilter,
+        asyncness: Option<bool>,
+    ) -> RequireReturnRule {
+        let config = DeclarativeConfig::builder()
+            .require_returns(vec![RequireReturn::new(
+                "handlers-return-app-result".to_string(),
+                ScopeRef::Inline(vec![GlobPattern::new("**/*.rs").unwrap()]),
+                RegexPattern::new(pattern).unwrap(),
+                "Handlers must return Result<_, AppError>.".to_string(),
+                None,
+                Severity::Error,
+            )
+            .with_visibility(visibility)
+            .with_asyncness(asyncness)])
+            .build()
+            .unwrap();
+        RequireReturnRule::new(Arc::new(config))
+    }
+
+    const APP_RESULT: &str = r"^Result<.*,\s*AppError>$";
+
+    #[test]
+    fn require_return_flags_wrong_return_type() {
+        let rule = require_return_rule(APP_RESULT, VisibilityFilter::Pub, Some(true));
+        let violations =
+            crate::test_utils::check_rule(&rule, "pub async fn handler() -> String { todo!() }");
+
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].code, REQUIRE_RETURN_CODE);
+        assert!(violations[0].message.contains("returns `String`"));
+    }
+
+    #[test]
+    fn require_return_accepts_matching_return_type() {
+        let rule = require_return_rule(APP_RESULT, VisibilityFilter::Pub, Some(true));
+        let violations = crate::test_utils::check_rule(
+            &rule,
+            "pub async fn handler() -> Result<Json<User>, AppError> { todo!() }",
+        );
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn require_return_async_filter_skips_sync_fn() {
+        let rule = require_return_rule(APP_RESULT, VisibilityFilter::Pub, Some(true));
+        let violations =
+            crate::test_utils::check_rule(&rule, "pub fn helper() -> String { todo!() }");
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn require_return_without_async_filter_checks_every_fn() {
+        let rule = require_return_rule(APP_RESULT, VisibilityFilter::Pub, None);
+        let violations =
+            crate::test_utils::check_rule(&rule, "pub fn helper() -> String { todo!() }");
+        assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn require_return_missing_return_type_renders_as_unit() {
+        let rule = require_return_rule(APP_RESULT, VisibilityFilter::Pub, None);
+        let violations = crate::test_utils::check_rule(&rule, "pub fn handler() {}");
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("returns `()`"));
+    }
+
+    #[test]
+    fn require_return_checks_impl_methods() {
+        let rule = require_return_rule(APP_RESULT, VisibilityFilter::Pub, None);
+        let violations = crate::test_utils::check_rule(
+            &rule,
+            "struct S;\nimpl S {\n    pub fn go() -> String { todo!() }\n}",
+        );
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].location.line, 3);
+    }
+
+    #[test]
+    fn require_return_private_fn_skipped_by_default_visibility() {
+        let rule = require_return_rule(APP_RESULT, VisibilityFilter::Pub, None);
+        assert!(
+            crate::test_utils::check_rule(&rule, "fn helper() -> String { todo!() }").is_empty()
+        );
+    }
+
+    // ── rendering helpers ──
+
+    #[test]
+    fn normalize_rendered_collapses_token_spacing() {
+        assert_eq!(normalize_rendered("Result < T , E >"), "Result<T, E>");
+        assert_eq!(
+            normalize_rendered("Result < Vec < u8 > , AppError >"),
+            "Result<Vec<u8>, AppError>"
+        );
+        assert_eq!(
+            normalize_rendered("std :: string :: String"),
+            "std::string::String"
+        );
+    }
+
+    #[test]
+    fn render_return_type_normalizes_generic_args() {
+        let item: syn::ItemFn =
+            syn::parse_str("fn f() -> Result<Vec<u8>, AppError> { todo!() }").unwrap();
+        assert_eq!(render_return_type(&item.sig), "Result<Vec<u8>, AppError>");
+
+        let unit: syn::ItemFn = syn::parse_str("fn f() {}").unwrap();
+        assert_eq!(render_return_type(&unit.sig), "()");
+    }
+
+    #[test]
+    fn render_attr_extracts_derive_paths() {
+        let item: syn::ItemStruct =
+            syn::parse_str("#[derive(Debug, sqlx::FromRow)]\nstruct S;").unwrap();
+        let (path, derives) = render_attr(&item.attrs[0]);
+        assert_eq!(path, "derive");
+        assert_eq!(
+            derives,
+            vec!["Debug".to_string(), "sqlx::FromRow".to_string()]
+        );
+
+        let f: syn::ItemFn = syn::parse_str("#[tracing::instrument]\nfn f() {}").unwrap();
+        let (path, derives) = render_attr(&f.attrs[0]);
+        assert_eq!(path, "tracing::instrument");
+        assert!(derives.is_empty());
     }
 }

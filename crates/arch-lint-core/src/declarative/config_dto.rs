@@ -8,7 +8,8 @@ use serde::Deserialize;
 /// Raw TOML representation of declarative rules.
 ///
 /// Extends the base `Config` with `[[scopes]]`, `[[restrict-use]]`,
-/// `[[require-use]]`, and `[[deny-scope-dep]]` sections.
+/// `[[require-use]]`, `[[deny-scope-dep]]`, `[[layering]]`, `[[deny-attr]]`,
+/// `[[require-attr]]`, `[[naming]]`, and `[[require-return]]` sections.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DeclarativeConfigDto {
     /// Named scope definitions.
@@ -26,6 +27,26 @@ pub struct DeclarativeConfigDto {
     /// Scope dependency constraints.
     #[serde(rename = "deny-scope-dep", default)]
     pub deny_scope_dep: Vec<ScopeDepDto>,
+
+    /// Ordered layer stacks.
+    #[serde(rename = "layering", default)]
+    pub layering: Vec<LayeringDto>,
+
+    /// Attribute-denial rules.
+    #[serde(rename = "deny-attr", default)]
+    pub deny_attr: Vec<DenyAttrDto>,
+
+    /// Attribute-requirement rules.
+    #[serde(rename = "require-attr", default)]
+    pub require_attr: Vec<RequireAttrDto>,
+
+    /// Identifier naming rules.
+    #[serde(rename = "naming", default)]
+    pub naming: Vec<NamingDto>,
+
+    /// Return-type rules.
+    #[serde(rename = "require-return", default)]
+    pub require_return: Vec<RequireReturnDto>,
 }
 
 /// TOML representation of a named scope.
@@ -35,6 +56,9 @@ pub struct ScopeDto {
     pub name: String,
     /// Glob patterns for file paths.
     pub paths: Vec<String>,
+    /// Glob patterns subtracted from `paths`.
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 /// TOML representation of a restrict-use rule.
@@ -50,6 +74,9 @@ pub struct RestrictUseDto {
     pub files: Option<Vec<String>>,
     /// Denied use-path patterns.
     pub deny: Vec<String>,
+    /// Exceptions to `deny`, same pattern syntax.
+    #[serde(default)]
+    pub except: Vec<String>,
     /// Violation message.
     pub message: String,
     /// Document reference.
@@ -111,8 +138,148 @@ pub struct ScopeDepDto {
     pub check_inline: bool,
 }
 
+/// TOML representation of an ordered layer stack.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LayeringDto {
+    /// Optional rule name (e.g., "clean-arch").
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Scope names, top layer first.
+    pub order: Vec<String>,
+    /// Allow only the immediately-next layer (default: false).
+    #[serde(rename = "adjacent_only", default)]
+    pub adjacent_only: bool,
+    /// Violation message.
+    pub message: String,
+    /// Document reference.
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Severity (default: "error").
+    #[serde(default = "default_severity_str")]
+    pub severity: String,
+    /// Also check inline qualified paths (default: true).
+    #[serde(rename = "check-inline", default = "default_true")]
+    pub check_inline: bool,
+}
+
+/// TOML representation of an attribute-denial rule.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DenyAttrDto {
+    /// Rule name (e.g., "no-orm-derives-in-domain").
+    pub name: String,
+    /// Named scope reference (mutually exclusive with `files`).
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Inline file patterns (mutually exclusive with `scope`).
+    #[serde(default)]
+    pub files: Option<Vec<String>>,
+    /// Denied attribute patterns.
+    pub attrs: Vec<String>,
+    /// Item kinds to check (default: all).
+    #[serde(default)]
+    pub on: Option<Vec<String>>,
+    /// Violation message.
+    pub message: String,
+    /// Document reference.
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Severity (default: "error").
+    #[serde(default = "default_severity_str")]
+    pub severity: String,
+}
+
+/// TOML representation of an attribute-requirement rule.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RequireAttrDto {
+    /// Rule name (e.g., "instrument-handlers").
+    pub name: String,
+    /// Named scope reference (mutually exclusive with `files`).
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Inline file patterns (mutually exclusive with `scope`).
+    #[serde(default)]
+    pub files: Option<Vec<String>>,
+    /// Required attribute patterns (at least one must be present).
+    pub attrs: Vec<String>,
+    /// Item kinds to check (default: all).
+    #[serde(default)]
+    pub on: Option<Vec<String>>,
+    /// Visibility filter: "pub" (default) or "any".
+    #[serde(default = "default_visibility_str")]
+    pub visibility: String,
+    /// Violation message.
+    pub message: String,
+    /// Document reference.
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Severity (default: "warning").
+    #[serde(default = "default_severity_warning_str")]
+    pub severity: String,
+}
+
+/// TOML representation of an identifier naming rule.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NamingDto {
+    /// Rule name (e.g., "domain-ports").
+    pub name: String,
+    /// Named scope reference (mutually exclusive with `files`).
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Inline file patterns (mutually exclusive with `scope`).
+    #[serde(default)]
+    pub files: Option<Vec<String>>,
+    /// Item kind to check.
+    pub item: String,
+    /// Regex the identifier must match.
+    pub pattern: String,
+    /// Visibility filter: "pub" (default) or "any".
+    #[serde(default = "default_visibility_str")]
+    pub visibility: String,
+    /// Violation message.
+    pub message: String,
+    /// Document reference.
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Severity (default: "warning").
+    #[serde(default = "default_severity_warning_str")]
+    pub severity: String,
+}
+
+/// TOML representation of a return-type rule.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RequireReturnDto {
+    /// Rule name (e.g., "handlers-return-app-result").
+    pub name: String,
+    /// Named scope reference (mutually exclusive with `files`).
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Inline file patterns (mutually exclusive with `scope`).
+    #[serde(default)]
+    pub files: Option<Vec<String>>,
+    /// Visibility filter: "pub" (default) or "any".
+    #[serde(default = "default_visibility_str")]
+    pub visibility: String,
+    /// When set, only functions with this asyncness are checked.
+    #[serde(rename = "async", default)]
+    pub is_async: Option<bool>,
+    /// Regex the normalized return type must match.
+    pub pattern: String,
+    /// Violation message.
+    pub message: String,
+    /// Document reference.
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Severity (default: "error").
+    #[serde(default = "default_severity_str")]
+    pub severity: String,
+}
+
 fn default_severity_str() -> String {
     "error".to_string()
+}
+
+fn default_visibility_str() -> String {
+    "pub".to_string()
 }
 
 fn default_severity_warning_str() -> String {
@@ -196,6 +363,112 @@ check-inline = false
         let dto: DeclarativeConfigDto = toml::from_str(toml_str).unwrap();
         assert!(!dto.restrict_use[0].check_inline);
         assert!(!dto.deny_scope_dep[0].check_inline);
+    }
+
+    #[test]
+    fn deserialize_new_rule_kinds() {
+        let toml_str = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+exclude = ["src/**/tests/**"]
+
+[[restrict-use]]
+name = "no-sqlx-in-domain"
+scope = "domain"
+deny = ["sqlx::**"]
+except = ["sqlx::types::*"]
+message = "msg"
+
+[[layering]]
+name = "clean-arch"
+order = ["handler", "domain", "infra"]
+message = "Layers may only depend downward."
+
+[[deny-attr]]
+name = "no-orm-derives-in-domain"
+scope = "domain"
+attrs = ["derive(sqlx::FromRow)"]
+on = ["struct", "enum"]
+message = "msg"
+
+[[require-attr]]
+name = "instrument-handlers"
+scope = "handler"
+attrs = ["tracing::instrument"]
+on = ["fn"]
+severity = "warning"
+message = "msg"
+
+[[naming]]
+name = "domain-ports"
+scope = "domain"
+item = "trait"
+pattern = "^[A-Z][A-Za-z0-9]*(Repository|Port)$"
+message = "msg"
+
+[[require-return]]
+name = "handlers-return-app-result"
+scope = "handler"
+async = true
+pattern = "^Result<.*, AppError>$"
+message = "msg"
+"#;
+        let dto: DeclarativeConfigDto = toml::from_str(toml_str).unwrap();
+        assert_eq!(dto.scopes[0].exclude, vec!["src/**/tests/**".to_string()]);
+        assert_eq!(
+            dto.restrict_use[0].except,
+            vec!["sqlx::types::*".to_string()]
+        );
+        assert_eq!(dto.layering.len(), 1);
+        assert_eq!(dto.layering[0].order.len(), 3);
+        assert!(!dto.layering[0].adjacent_only);
+        assert!(dto.layering[0].check_inline);
+        assert_eq!(dto.layering[0].severity, "error");
+        assert_eq!(
+            dto.deny_attr[0].on,
+            Some(vec!["struct".into(), "enum".into()])
+        );
+        assert_eq!(dto.require_attr[0].visibility, "pub");
+        assert_eq!(dto.require_attr[0].severity, "warning");
+        assert_eq!(dto.naming[0].item, "trait");
+        assert_eq!(dto.require_return[0].is_async, Some(true));
+        assert_eq!(dto.require_return[0].visibility, "pub");
+    }
+
+    #[test]
+    fn deserialize_defaults_for_optional_fields() {
+        let toml_str = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[restrict-use]]
+name = "no-sqlx"
+scope = "domain"
+deny = ["sqlx::*"]
+message = "msg"
+
+[[layering]]
+order = ["a", "b"]
+adjacent_only = true
+check-inline = false
+message = "msg"
+
+[[deny-attr]]
+name = "d"
+files = ["src/**"]
+attrs = ["serde::Serialize"]
+message = "msg"
+"#;
+        let dto: DeclarativeConfigDto = toml::from_str(toml_str).unwrap();
+        assert!(dto.scopes[0].exclude.is_empty());
+        assert!(dto.restrict_use[0].except.is_empty());
+        assert!(dto.layering[0].name.is_none());
+        assert!(dto.layering[0].adjacent_only);
+        assert!(!dto.layering[0].check_inline);
+        assert!(dto.deny_attr[0].on.is_none());
+        assert_eq!(dto.deny_attr[0].severity, "error");
     }
 
     #[test]
