@@ -73,6 +73,7 @@ impl Config {
 
 /// Analyzer-level configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnalyzerConfig {
     /// Root directory to analyze (default: current directory).
     #[serde(default = "default_root")]
@@ -247,6 +248,22 @@ allow_in_tests = true
 
         let rule_config = config.rules.get("no-unwrap-expect").unwrap();
         assert!(rule_config.get_bool("allow_in_tests", false));
+    }
+
+    #[test]
+    fn test_unknown_analyzer_key_is_rejected() {
+        let err = match Config::parse("[analyzer]\nrespect_gitignor = false\n") {
+            Ok(_) => panic!("typo key must be rejected"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("respect_gitignor"), "{err}");
+
+        // Declarative sections and free-form rule options are still accepted.
+        let config = Config::parse(
+            "[[scopes]]\nname = \"d\"\npaths = [\"src/**\"]\n\n[rules.no-unwrap-expect]\nallow_expect = true\n",
+        )
+        .expect("declarative sections and rule options parse");
+        assert!(config.rules.contains_key("no-unwrap-expect"));
     }
 
     #[test]

@@ -51,6 +51,7 @@ pub struct DeclarativeConfigDto {
 
 /// TOML representation of a named scope.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScopeDto {
     /// Scope name (e.g., "domain").
     pub name: String,
@@ -63,6 +64,7 @@ pub struct ScopeDto {
 
 /// TOML representation of a restrict-use rule.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RestrictUseDto {
     /// Rule name (e.g., "no-sqlx-in-domain").
     pub name: String,
@@ -92,6 +94,7 @@ pub struct RestrictUseDto {
 
 /// TOML representation of a require-use rule.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequireUseDto {
     /// Rule name (e.g., "require-tracing-over-log").
     pub name: String,
@@ -117,6 +120,7 @@ pub struct RequireUseDto {
 
 /// TOML representation of a scope dependency constraint.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScopeDepDto {
     /// Optional rule name (e.g., "no-domain-to-infra").
     #[serde(default)]
@@ -140,6 +144,7 @@ pub struct ScopeDepDto {
 
 /// TOML representation of an ordered layer stack.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LayeringDto {
     /// Optional rule name (e.g., "clean-arch").
     #[serde(default)]
@@ -164,6 +169,7 @@ pub struct LayeringDto {
 
 /// TOML representation of an attribute-denial rule.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DenyAttrDto {
     /// Rule name (e.g., "no-orm-derives-in-domain").
     pub name: String,
@@ -190,6 +196,7 @@ pub struct DenyAttrDto {
 
 /// TOML representation of an attribute-requirement rule.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequireAttrDto {
     /// Rule name (e.g., "instrument-handlers").
     pub name: String,
@@ -219,6 +226,7 @@ pub struct RequireAttrDto {
 
 /// TOML representation of an identifier naming rule.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NamingDto {
     /// Rule name (e.g., "domain-ports").
     pub name: String,
@@ -247,6 +255,7 @@ pub struct NamingDto {
 
 /// TOML representation of a return-type rule.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequireReturnDto {
     /// Rule name (e.g., "handlers-return-app-result").
     pub name: String,
@@ -293,6 +302,47 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_key_in_rule_table_is_rejected() {
+        // A typo such as `denyy` must not be silently ignored.
+        let toml_str = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[restrict-use]]
+name = "no-sqlx"
+scope = "domain"
+denyy = ["sqlx::*"]
+deny = ["sqlx::*"]
+message = "No DB."
+"#;
+        let err = match toml::from_str::<DeclarativeConfigDto>(toml_str) {
+            Ok(_) => panic!("typo key must be rejected"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("denyy"), "{err}");
+
+        // Unknown keys in every other rule table are rejected too.
+        for (section, body) in [
+            ("scopes", "name = \"d\"\npaths = [\"src/**\"]\nexclud = []"),
+            ("layering", "order = [\"a\", \"b\"]\nmessage = \"m\"\nadjacent = true"),
+            ("deny-attr", "name = \"n\"\nscope = \"d\"\nattrs = [\"x\"]\nmessage = \"m\"\nons = []"),
+            ("naming", "name = \"n\"\nscope = \"d\"\nitem = \"trait\"\npattern = \".\"\nmessage = \"m\"\nvis = \"pub\""),
+        ] {
+            let doc = format!("[[{section}]]\n{body}\n");
+            assert!(
+                toml::from_str::<DeclarativeConfigDto>(&doc).is_err(),
+                "unknown key in [[{section}]] must be rejected"
+            );
+        }
+
+        // Keys that belong to the base `Config` (parsed separately from the
+        // same document) are still ignored at the top level.
+        let doc = "preset = \"strict\"\n[analyzer]\nroot = \"src\"\n";
+        assert!(toml::from_str::<DeclarativeConfigDto>(doc).is_ok());
+    }
 
     #[test]
     fn deserialize_empty() {

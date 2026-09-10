@@ -766,6 +766,12 @@ message = "Handlers must return Result<_, AppError>."
 | `exclude` | `["**/target/**", "**/vendor/**"]` | Glob patterns dropped from the result. |
 | `parallelism` | unset | **Reserved** — parsed, but analysis currently runs sequentially. |
 
+Unknown keys inside `[analyzer]` and inside any declarative rule table
+(`[[scopes]]`, `[[restrict-use]]`, ..., `[[require-return]]`) are a config
+error, so a typo such as `denyy = [...]` cannot silently disable a rule.
+Per-rule option tables (`[rules.<name>]`) stay free-form because each rule
+defines its own keys.
+
 File discovery runs in this order:
 
 1. Walk `root` (hidden files and directories are traversed, matching the

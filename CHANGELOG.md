@@ -98,6 +98,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Unknown keys in `[analyzer]` and in every declarative rule table (`[[scopes]]`,
+  `[[restrict-use]]`, ..., `[[require-return]]`) are now a config error instead of
+  being silently ignored, so a typo like `denyy = [...]` no longer disables a rule
 - AL002 `no-sync-io` no longer reports `is_file()` / `is_dir()` on `FileType` /
   `Metadata` values (results of `file_type()`, `metadata()`, `symlink_metadata()`,
   `fs::metadata(..)`, also through `?` / `unwrap()`, `let` bindings and closure
