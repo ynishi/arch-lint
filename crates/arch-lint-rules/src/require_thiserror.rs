@@ -230,18 +230,10 @@ fn has_thiserror_derive(attrs: &[syn::Attribute]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use arch_lint_core::test_utils::check_rule;
 
     fn check_code(code: &str) -> Vec<Violation> {
-        let ast = syn::parse_file(code).expect("Failed to parse");
-        let ctx = FileContext {
-            path: Path::new("test.rs"),
-            content: code,
-            is_test: false,
-            module_path: vec![],
-            relative_path: std::path::PathBuf::from("test.rs"),
-        };
-        RequireThiserror::new().check(&ctx, &ast)
+        check_rule(&RequireThiserror::new(), code)
     }
 
     #[test]

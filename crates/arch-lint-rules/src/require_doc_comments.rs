@@ -24,7 +24,7 @@
 //! ```
 
 use arch_lint_core::utils::allowance::check_allow_with_reason;
-use arch_lint_core::utils::check_arch_lint_allow;
+use arch_lint_core::utils::ScopeTracker;
 use arch_lint_core::{FileContext, Location, Rule, Severity, Suggestion, Violation};
 #[allow(unused_imports)]
 use syn::spanned::Spanned;
@@ -119,7 +119,7 @@ impl Rule for RequireDocComments {
             ctx,
             rule: self,
             violations: Vec::new(),
-            in_allowed_context: false,
+            scope: ScopeTracker::new(NAME),
         };
 
         visitor.visit_file(ast);
@@ -131,7 +131,7 @@ struct DocCommentsVisitor<'a> {
     ctx: &'a FileContext<'a>,
     rule: &'a RequireDocComments,
     violations: Vec<Violation>,
-    in_allowed_context: bool,
+    scope: ScopeTracker,
 }
 
 impl DocCommentsVisitor<'_> {
@@ -156,7 +156,7 @@ impl DocCommentsVisitor<'_> {
         span: proc_macro2::Span,
         attrs: &[Attribute],
     ) {
-        if self.in_allowed_context {
+        if self.scope.suppressed() {
             return;
         }
 
@@ -186,7 +186,7 @@ impl DocCommentsVisitor<'_> {
         }
 
         // Check for attribute-level allow
-        if check_arch_lint_allow(attrs, NAME).is_allowed() {
+        if self.scope.allows(attrs) {
             return;
         }
 
@@ -209,14 +209,9 @@ impl DocCommentsVisitor<'_> {
 
 impl<'ast> Visit<'ast> for DocCommentsVisitor<'_> {
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
-        let was_allowed = self.in_allowed_context;
-
-        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
-            self.in_allowed_context = true;
-        }
-
+        let scope = self.scope.enter_item_mod(&node.attrs);
         syn::visit::visit_item_mod(self, node);
-        self.in_allowed_context = was_allowed;
+        self.scope.exit(scope);
     }
 
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
@@ -259,18 +254,10 @@ impl<'ast> Visit<'ast> for DocCommentsVisitor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use arch_lint_core::test_utils::check_rule;
 
     fn check_code(code: &str) -> Vec<Violation> {
-        let ast = syn::parse_file(code).expect("Failed to parse");
-        let ctx = FileContext {
-            path: Path::new("test.rs"),
-            content: code,
-            is_test: false,
-            module_path: vec![],
-            relative_path: std::path::PathBuf::from("test.rs"),
-        };
-        RequireDocComments::new().check(&ctx, &ast)
+        check_rule(&RequireDocComments::new(), code)
     }
 
     #[test]

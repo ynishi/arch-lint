@@ -29,7 +29,7 @@
 //! ```
 
 use arch_lint_core::utils::allowance::check_allow_with_reason;
-use arch_lint_core::utils::check_arch_lint_allow;
+use arch_lint_core::utils::ScopeTracker;
 use arch_lint_core::{FileContext, Location, Rule, Severity, Suggestion, Violation};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
@@ -117,7 +117,7 @@ impl Rule for AsyncTraitSendCheck {
             ctx,
             rule: self,
             violations: Vec::new(),
-            in_allowed_context: false,
+            scope: ScopeTracker::new(NAME),
         };
 
         visitor.visit_file(ast);
@@ -129,24 +129,19 @@ struct AsyncTraitVisitor<'a> {
     ctx: &'a FileContext<'a>,
     rule: &'a AsyncTraitSendCheck,
     violations: Vec<Violation>,
-    in_allowed_context: bool,
+    scope: ScopeTracker,
 }
 
 impl<'ast> Visit<'ast> for AsyncTraitVisitor<'_> {
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
-        let was_allowed = self.in_allowed_context;
-
-        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
-            self.in_allowed_context = true;
-        }
-
+        let scope = self.scope.enter_item_mod(&node.attrs);
         syn::visit::visit_item_mod(self, node);
-        self.in_allowed_context = was_allowed;
+        self.scope.exit(scope);
     }
 
     fn visit_item_trait(&mut self, node: &'ast ItemTrait) {
         // Check if this trait is explicitly allowed
-        if self.in_allowed_context || check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
+        if self.scope.suppressed() || self.scope.allows(&node.attrs) {
             syn::visit::visit_item_trait(self, node);
             return;
         }
@@ -235,18 +230,10 @@ fn find_async_trait_attr(attrs: &[Attribute]) -> Option<(&Attribute, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use arch_lint_core::test_utils::{check_rule, file_ctx};
 
     fn check_code(code: &str) -> Vec<Violation> {
-        let ast = syn::parse_file(code).expect("Failed to parse");
-        let ctx = FileContext {
-            path: Path::new("test.rs"),
-            content: code,
-            is_test: false,
-            module_path: vec![],
-            relative_path: std::path::PathBuf::from("test.rs"),
-        };
-        AsyncTraitSendCheck::new().check(&ctx, &ast)
+        check_rule(&AsyncTraitSendCheck::new(), code)
     }
 
     #[test]
@@ -323,13 +310,7 @@ trait MyTrait {
         )
         .expect("Failed to parse");
 
-        let ctx = FileContext {
-            path: Path::new("test.rs"),
-            content: "",
-            is_test: false,
-            module_path: vec![],
-            relative_path: std::path::PathBuf::from("test.rs"),
-        };
+        let ctx = file_ctx("test.rs", "", false);
 
         let rule = AsyncTraitSendCheck::new().runtime_mode(RuntimeMode::MultiThread);
         let violations = rule.check(&ctx, &ast);

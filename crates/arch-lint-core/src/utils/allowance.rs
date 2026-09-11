@@ -130,13 +130,10 @@ fn parse_allow_directive(line: &str) -> Option<AllowDirective> {
     let line = line.trim();
 
     // Check for // or /// comment
-    let comment_content = if let Some(rest) = line.strip_prefix("///") {
-        rest.trim()
-    } else if let Some(rest) = line.strip_prefix("//") {
-        rest.trim()
-    } else {
-        return None;
-    };
+    let comment_content = line
+        .strip_prefix("///")
+        .or_else(|| line.strip_prefix("//"))?
+        .trim();
 
     // Check for arch-lint: allow(...) directive
     let directive = comment_content.strip_prefix("arch-lint:")?.trim();

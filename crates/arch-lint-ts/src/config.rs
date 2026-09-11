@@ -20,6 +20,10 @@ pub struct ArchConfig {
     #[serde(default)]
     pub exclude: Vec<String>,
 
+    /// Whether file discovery respects `.gitignore` files.
+    #[serde(default = "default_true")]
+    pub respect_gitignore: bool,
+
     /// Layer definitions.
     #[serde(rename = "layers", default)]
     pub layers: Vec<LayerDef>,
@@ -82,6 +86,10 @@ fn default_root() -> PathBuf {
     PathBuf::from(".")
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_severity() -> Severity {
     Severity::Error
 }
@@ -141,12 +149,24 @@ impl ArchConfig {
             constraints: Vec<Constraint>,
         }
 
-        #[derive(Deserialize, Default)]
+        #[derive(Deserialize)]
         struct AnalyzerSection {
             #[serde(default = "default_root")]
             root: PathBuf,
             #[serde(default)]
             exclude: Vec<String>,
+            #[serde(default = "default_true")]
+            respect_gitignore: bool,
+        }
+
+        impl Default for AnalyzerSection {
+            fn default() -> Self {
+                Self {
+                    root: default_root(),
+                    exclude: Vec::new(),
+                    respect_gitignore: true,
+                }
+            }
         }
 
         let raw: RawConfig = toml::from_str(content).map_err(|e| ConfigError::Parse {
@@ -156,6 +176,7 @@ impl ArchConfig {
         Ok(Self {
             root: raw.analyzer.root,
             exclude: raw.analyzer.exclude,
+            respect_gitignore: raw.analyzer.respect_gitignore,
             layers: raw.layers,
             dependencies: raw.dependencies,
             constraints: raw.constraints,
@@ -265,6 +286,23 @@ message = "No JDBC in domain"
         assert_eq!(config.constraints.len(), 1);
         assert_eq!(config.constraints[0].severity, Severity::Warning);
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn respect_gitignore_defaults_to_true() {
+        let config = ArchConfig::parse("[[layers]]\nname = \"d\"\npackages = [\"a\"]\n")
+            .expect("parse failed");
+        assert!(config.respect_gitignore);
+
+        let with_section = ArchConfig::parse("[analyzer]\nroot = \".\"\n").expect("parse failed");
+        assert!(with_section.respect_gitignore);
+    }
+
+    #[test]
+    fn respect_gitignore_can_be_disabled() {
+        let config =
+            ArchConfig::parse("[analyzer]\nrespect_gitignore = false\n").expect("parse failed");
+        assert!(!config.respect_gitignore);
     }
 
     #[test]

@@ -325,21 +325,15 @@ fn expr_span(expr: &Expr) -> proc_macro2::Span {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use arch_lint_core::test_utils::check_rule;
 
     fn check_code(code: &str) -> Vec<Violation> {
-        let ast = syn::parse_file(code).expect("Failed to parse");
-        let ctx = FileContext {
-            path: Path::new("test.rs"),
-            content: code,
-            is_test: false,
-            module_path: vec![],
-            relative_path: std::path::PathBuf::from("test.rs"),
-        };
-        HandlerComplexity::new()
-            .max_match_arms(3)
-            .max_enum_variants(3)
-            .check(&ctx, &ast)
+        check_rule(
+            &HandlerComplexity::new()
+                .max_match_arms(3)
+                .max_enum_variants(3),
+            code,
+        )
     }
 
     #[test]

@@ -49,7 +49,7 @@
 //! - `allow_let_underscore`: Allow `let _ = ...` (default: false)
 
 use arch_lint_core::utils::allowance::check_allow_with_reason;
-use arch_lint_core::utils::{check_arch_lint_allow, has_allow_attr, has_cfg_test, has_test_attr};
+use arch_lint_core::utils::ScopeTracker;
 use arch_lint_core::{FileContext, Location, Rule, Severity, Suggestion, Violation};
 use syn::visit::Visit;
 use syn::{ExprMethodCall, ItemFn, ItemImpl, ItemMod, Local, Pat};
@@ -149,8 +149,9 @@ impl Rule for NoSilentResultDrop {
             ctx,
             rule: self,
             violations: Vec::new(),
-            in_test_context: false,
-            in_allowed_context: false,
+            scope: ScopeTracker::new(NAME)
+                .with_fn_allow_lints(&["clippy::let_underscore_must_use"])
+                .with_allow_in_tests(self.allow_in_tests),
         };
 
         visitor.visit_file(ast);
@@ -162,13 +163,12 @@ struct SilentResultDropVisitor<'a> {
     ctx: &'a FileContext<'a>,
     rule: &'a NoSilentResultDrop,
     violations: Vec<Violation>,
-    in_test_context: bool,
-    in_allowed_context: bool,
+    scope: ScopeTracker,
 }
 
 impl SilentResultDropVisitor<'_> {
     fn is_skipped(&self) -> bool {
-        self.in_allowed_context || (self.rule.allow_in_tests && self.in_test_context)
+        self.scope.suppressed()
     }
 
     fn report_method_violation(&mut self, method_name: &str, span: proc_macro2::Span) {
@@ -278,52 +278,21 @@ impl SilentResultDropVisitor<'_> {
 
 impl<'ast> Visit<'ast> for SilentResultDropVisitor<'_> {
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
-        let was_in_test = self.in_test_context;
-        let was_allowed = self.in_allowed_context;
-
-        if has_cfg_test(&node.attrs) {
-            self.in_test_context = true;
-        }
-        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
-            self.in_allowed_context = true;
-        }
-
+        let scope = self.scope.enter_item_mod(&node.attrs);
         syn::visit::visit_item_mod(self, node);
-
-        self.in_test_context = was_in_test;
-        self.in_allowed_context = was_allowed;
+        self.scope.exit(scope);
     }
 
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        let was_in_test = self.in_test_context;
-        let was_allowed = self.in_allowed_context;
-
-        if has_test_attr(&node.attrs) {
-            self.in_test_context = true;
-        }
-        if has_allow_attr(&node.attrs, &["clippy::let_underscore_must_use"]) {
-            self.in_allowed_context = true;
-        }
-        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
-            self.in_allowed_context = true;
-        }
-
+        let scope = self.scope.enter_item_fn(&node.attrs);
         syn::visit::visit_item_fn(self, node);
-
-        self.in_test_context = was_in_test;
-        self.in_allowed_context = was_allowed;
+        self.scope.exit(scope);
     }
 
     fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
-        let was_allowed = self.in_allowed_context;
-
-        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
-            self.in_allowed_context = true;
-        }
-
+        let scope = self.scope.enter_item_impl(&node.attrs);
         syn::visit::visit_item_impl(self, node);
-
-        self.in_allowed_context = was_allowed;
+        self.scope.exit(scope);
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
@@ -368,42 +337,18 @@ impl<'ast> Visit<'ast> for SilentResultDropVisitor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use arch_lint_core::test_utils::{check_rule, check_rule_in_test_file};
 
     fn check_code(code: &str) -> Vec<Violation> {
-        let ast = syn::parse_file(code).expect("Failed to parse");
-        let ctx = FileContext {
-            path: Path::new("test.rs"),
-            content: code,
-            is_test: false,
-            module_path: vec![],
-            relative_path: std::path::PathBuf::from("test.rs"),
-        };
-        NoSilentResultDrop::new().check(&ctx, &ast)
+        check_rule(&NoSilentResultDrop::new(), code)
     }
 
-    fn check_code_with(code: &str, rule: NoSilentResultDrop) -> Vec<Violation> {
-        let ast = syn::parse_file(code).expect("Failed to parse");
-        let ctx = FileContext {
-            path: Path::new("test.rs"),
-            content: code,
-            is_test: false,
-            module_path: vec![],
-            relative_path: std::path::PathBuf::from("test.rs"),
-        };
-        rule.check(&ctx, &ast)
+    fn check_code_with(code: &str, rule: &NoSilentResultDrop) -> Vec<Violation> {
+        check_rule(rule, code)
     }
 
     fn check_test_code(code: &str) -> Vec<Violation> {
-        let ast = syn::parse_file(code).expect("Failed to parse");
-        let ctx = FileContext {
-            path: Path::new("tests/test.rs"),
-            content: code,
-            is_test: true,
-            module_path: vec![],
-            relative_path: std::path::PathBuf::from("tests/test.rs"),
-        };
-        NoSilentResultDrop::new().check(&ctx, &ast)
+        check_rule_in_test_file(&NoSilentResultDrop::new(), code)
     }
 
     // ── .unwrap_or() ──
@@ -480,7 +425,7 @@ fn foo() -> Option<String> {
     result.ok()
 }
 "#,
-            NoSilentResultDrop::new().allow_ok(true),
+            &NoSilentResultDrop::new().allow_ok(true),
         );
         assert!(violations.is_empty());
     }
@@ -508,7 +453,7 @@ fn foo() {
     let _ = fallible_operation();
 }
 "#,
-            NoSilentResultDrop::new().allow_let_underscore(true),
+            &NoSilentResultDrop::new().allow_let_underscore(true),
         );
         assert!(violations.is_empty());
     }

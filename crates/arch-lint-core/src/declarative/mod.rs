@@ -3,6 +3,11 @@
 //! This module provides a scope-based model for defining architecture
 //! constraints without writing Rust rule code.
 //!
+//! Sections: `[[scopes]]`, `[[restrict-use]]` (ALD001), `[[require-use]]`
+//! (ALD002), `[[deny-scope-dep]]` (ALD003), `[[layering]]` (ALD004),
+//! `[[deny-attr]]` (ALD005), `[[require-attr]]` (ALD006), `[[naming]]`
+//! (ALD007) and `[[require-return]]` (ALD008).
+//!
 //! # Architecture
 //!
 //! ```text
@@ -66,7 +71,22 @@ pub fn create_rules(config: model::DeclarativeConfig) -> Vec<crate::rule::RuleBo
         result.push(Box::new(rules::RequireUseRule::new(Arc::clone(&config))));
     }
     if !config.scope_deps().is_empty() {
-        result.push(Box::new(rules::ScopeDepRule::new(config)));
+        result.push(Box::new(rules::ScopeDepRule::new(Arc::clone(&config))));
+    }
+    if !config.layerings().is_empty() {
+        result.push(Box::new(rules::LayeringRule::new(Arc::clone(&config))));
+    }
+    if !config.deny_attrs().is_empty() {
+        result.push(Box::new(rules::DenyAttrRule::new(Arc::clone(&config))));
+    }
+    if !config.require_attrs().is_empty() {
+        result.push(Box::new(rules::RequireAttrRule::new(Arc::clone(&config))));
+    }
+    if !config.namings().is_empty() {
+        result.push(Box::new(rules::NamingRule::new(Arc::clone(&config))));
+    }
+    if !config.require_returns().is_empty() {
+        result.push(Box::new(rules::RequireReturnRule::new(config)));
     }
 
     result

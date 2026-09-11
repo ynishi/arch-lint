@@ -9,6 +9,10 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# Test helpers for rule crates (`arch_lint_core::test_utils`).
+test-utils = []
+
 [dependencies]
 syn.workspace = true
 quote.workspace = true
@@ -17,13 +21,13 @@ serde.workspace = true
 thiserror.workspace = true
 miette.workspace = true
 glob.workspace = true
-walkdir.workspace = true
 ignore.workspace = true
+regex.workspace = true
 tracing.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
-insta.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

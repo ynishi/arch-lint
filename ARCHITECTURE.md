@@ -6,20 +6,23 @@ Architecture linter with dual engines: syn (Rust AST) and Tree-sitter (cross-lan
 
 arch-lint is designed to catch architectural violations and enforce coding patterns that are often missed by both humans and AI during code review. It provides two complementary engines:
 
-- **syn engine** - Per-file Rust AST analysis (AL001-AL012 rules)
-- **tree-sitter engine** - Cross-language layer dependency enforcement (LAYER001, PATTERN001)
+- **syn engine** - Per-file Rust AST analysis: built-in rules (AL001-AL013) and TOML-declared rules (ALD001-ALD008)
+- **tree-sitter engine** - Cross-language layer dependency enforcement (LAYER001, PATTERN001, NAMING001)
 
 ## Crate Structure
 
 ```
 arch-lint/
 ├── crates/
-│   ├── arch-lint-core/       # Core framework (shared types)
-│   ├── arch-lint-rules/      # Built-in syn rules (AL001-AL012)
-│   ├── arch-lint-ts/         # Tree-sitter engine (layer enforcement)
-│   ├── arch-lint-cli/        # CLI binary (dual engine dispatch)
-│   └── arch-lint-macros/     # Procedural macros (future)
+│   ├── arch-lint/            # Facade + driver: Session, report, check!() runner
+│   ├── arch-lint-core/       # Core framework (traits, analyzer, config, declarative rules)
+│   ├── arch-lint-rules/      # Built-in syn rules (AL001-AL013) + presets/registry
+│   ├── arch-lint-ts/         # Tree-sitter engine (layer enforcement) + TsSession driver
+│   ├── arch-lint-cli/        # CLI binary (argument parsing, engine dispatch)
+│   └── arch-lint-macros/     # Procedural macros: #[arch_lint::allow], arch_lint::check!()
 ```
+
+Dependency order (also the publish order): `macros` → `core` → `rules` → `ts` → `arch-lint` → `cli`.
 
 ### arch-lint-core
 
@@ -29,7 +32,8 @@ The foundation of the linting framework. Provides:
 - **`ProjectRule` trait** - Project-wide structural rules
 - **`Analyzer`** - Orchestrates file discovery and rule execution
 - **`Violation`** - Represents lint findings with location and suggestions
-- **`Config`** - TOML-based configuration system
+- **`Config`** - TOML-based configuration (`preset`, `fail_on`, `[analyzer]`, `[rules.*]` with `enabled` / `severity` / `exclude_files` / rule options)
+- **`declarative`** - TOML-declared rules: `[[scopes]]` + `[[restrict-use]]` (ALD001), `[[require-use]]` (ALD002), `[[deny-scope-dep]]` (ALD003), `[[layering]]` (ALD004), `[[deny-attr]]` (ALD005), `[[require-attr]]` (ALD006), `[[naming]]` (ALD007), `[[require-return]]` (ALD008). Pipeline: `config_dto` (serde) → `loader` (validation) → `model` (domain) → `rules` (visitors)
 - **`utils`** - Helpers for attribute parsing, allowance directives, path matching
 
 ### arch-lint-rules
@@ -43,11 +47,22 @@ Collection of general-purpose rules:
 | AL003 | `no-error-swallowing` | Forbids catching errors with only logging |
 | AL004 | `handler-complexity` | Limits handler function complexity |
 | AL005 | `require-thiserror` | Requires `thiserror` for error types |
+| AL006 | `require-tracing` | Requires `tracing` instead of `log` |
+| AL007 | `tracing-env-init` | Prevents hardcoded log levels in tracing init |
+| AL009 | `async-trait-send-check` | Checks `async_trait` Send bounds |
+| AL010 | `prefer-from-over-into` | Prefers `From` over `Into` impls |
+| AL011 | `no-panic-in-lib` | Forbids panic macros in library code |
+| AL012 | `require-doc-comments` | Requires docs on public items |
+| AL013 | `no-silent-result-drop` | Forbids silently discarding `Result` errors |
+
+`presets.rs` is the registry: it maps names/codes to constructors, applies
+`[rules.<name>]` options, and defines the presets. Every rule must be
+registered there to be reachable from `list-rules`, `--rules`, and `strict`.
 
 Presets:
-- `Recommended` - AL001, AL002, AL003, AL005 (default)
-- `Strict` - All rules with stricter settings
-- `Minimal` - AL001 only for gradual adoption
+- `Recommended` - AL001, AL002, AL003, AL005, AL006, AL007, AL013 (default)
+- `Strict` - All rules; no test exceptions, `.expect()` and `.ok()` forbidden
+- `Minimal` - AL001 only (`.expect()` allowed) for gradual adoption
 
 ### arch-lint-ts
 
@@ -57,19 +72,31 @@ Tree-sitter based cross-language layer enforcement. Provides:
 - **`KotlinExtractor`** - Kotlin import/class extraction via Tree-sitter
 - **`LayerResolver`** - Package-to-layer mapping (longest-prefix-match)
 - **`ArchRuleEngine`** - Layer dependency (LAYER001), pattern constraint (PATTERN001), naming convention (NAMING001) checks
-- **`ArchConfig`** - TOML deserialization for `[[layers]]`, `[dependencies]`, `[[constraints]]`
+- **`ArchConfig`** - TOML deserialization for `[analyzer]` (`root`, `exclude`, `respect_gitignore`), `[[layers]]`, `[dependencies]`, `[[constraints]]`
+- **`TsSession`** - The driver: validates the config, discovers files, runs the engine over each one, sorts the result
 
 Internal data flow:
 
 ```
 Source (.kt) → KotlinExtractor → FileAnalysis → ArchRuleEngine → Vec<Violation>
+                            ↑ TsSession drives this loop and collects LintResult
 ```
+
+`TsSession::new(config, root)` starts with the Kotlin extractor registered;
+`.with_extractor(..)` adds more and `.respect_gitignore(bool)` overrides
+`[analyzer] respect_gitignore`. File discovery walks the analysis root with the
+`ignore` crate (`require_git(false)`, hidden entries kept) and applies
+`[analyzer] exclude` as globs against the root-relative path, falling back to
+substring matching for patterns that do not match as globs.
 
 See [docs/tree-sitter-engine.md](docs/tree-sitter-engine.md) for full documentation.
 
 ### arch-lint-cli
 
-Command-line interface with dual engine dispatch:
+Command-line interface with dual engine dispatch. It is a thin wrapper: the
+pipeline itself lives in the `arch-lint` facade (`Session`, `report::render`)
+and in `arch-lint-ts` (`TsSession`). The CLI owns argument parsing, engine
+detection, colour policy and the exit code.
 
 ```bash
 arch-lint check [PATH]           # Run lint checks (auto-detect engine)
@@ -80,12 +107,56 @@ arch-lint init                   # Create syn config
 arch-lint init --ts              # Create tree-sitter config (with [[layers]])
 ```
 
-Engine auto-detection: if `[[layers]]` is present in config, the tree-sitter engine is used.
+Engine auto-detection: the config is parsed as TOML and the tree-sitter engine
+is used when a non-empty `[[layers]]` array is present.
+
+`check` (syn engine) selects rules the same way `check!()` does:
+`--rules` > `preset` in config > `recommended`, then adds declarative rules
+from the config. Both paths go through `Session`, so the selection logic exists
+once. It exits non-zero when a violation at or above `fail_on` (config, default
+`error`) is found.
+
+ANSI colours in `--format text` are emitted only when stdout is a terminal
+(`std::io::IsTerminal`); the same applies to the `tracing` log lines. Redirected
+and piped output is plain.
 
 ### arch-lint-macros
 
-Procedural macros for rule definition (planned):
-- `#[derive(LintRule)]` - Auto-implement boilerplate
+Procedural macros:
+- `#[arch_lint::allow(rule, reason = "...")]` - Block-level suppression attribute
+- `arch_lint::check!()` - Generates a `#[test]` that runs the analyzer via `arch_lint::__internal::run_check`
+
+### arch-lint (facade + driver)
+
+Re-exports `arch-lint-core`, `arch-lint-rules` (as `arch_lint::rules`), and the
+macros, and hosts the driver layer that turns "root + config" into a
+`LintResult`:
+
+- **`session::Session`** - the SDK entry point. `discover(root)` walks the
+  config lookup order (`<root>/arch-lint.toml` → `<root>/.arch-lint.toml` →
+  `$ARCH_LINT_CONFIG_DIR` or `~/.arch-lint/` `config.toml` → defaults) and
+  records the winner in `ConfigSource`; `from_config_path` and
+  `from_config_str` cover explicit and in-memory configuration. It resolves
+  preset and `fail_on`, loads the declarative rules from the same document,
+  applies `with_preset` / `with_fail_on` / `with_rules` / `with_rule_filter` /
+  `with_exclude` overrides, and `run()` builds the `Analyzer` and analyzes.
+  Every failure is a `SessionError` — the driver never panics and never exits.
+- **`session::Session::find_workspace_root`** - the `[workspace]` walk used by
+  `check!()`, public and testable.
+- **`report::render`** - `LintResult` → text / JSON / compact string. ANSI
+  colours are opt-in (`Format::Text { color }`, default `false`), so a library
+  caller gets plain output unless it asks otherwise.
+
+`runner.rs` is what `check!()` calls. It is now only the `cargo test` contract:
+find the workspace root, build a `Session`, apply the macro's `preset` /
+`config` / `fail_on` arguments as overrides, run, and panic with the formatted
+report when violations reach `fail_on`.
+
+```
+check!()  ─┐
+           ├─→ Session::discover → run() → LintResult ─→ report::render
+CLI check ─┘
+```
 
 ## Core Abstractions
 
@@ -172,6 +243,7 @@ std::fs::read_to_string("config.toml")?;
 enabled = true
 severity = "warning"
 allow_in_tests = true
+exclude_files = ["src/cli/**"]   # skip this rule for matching files
 ```
 
 ## Configuration
@@ -179,10 +251,12 @@ allow_in_tests = true
 `arch-lint.toml`:
 
 ```toml
+preset = "recommended"   # or "strict" / "minimal"
+fail_on = "error"        # exit non-zero at this severity or above
+
 [analyzer]
 root = "./src"
 exclude = ["**/generated/**", "**/vendor/**"]
-respect_gitignore = true
 
 [rules.no-unwrap-expect]
 enabled = true
@@ -193,6 +267,14 @@ allow_in_tests = true
 enabled = true
 allow_patterns = ["tokio::", "async_std::"]
 ```
+
+`[analyzer].include` and `respect_gitignore` are honored by the syn engine.
+File discovery walks `root` with the `ignore` crate: gitignored paths are
+skipped unless `respect_gitignore = false`, then `include` (if non-empty) keeps
+only matching files, then `exclude` drops the rest. `include` and `exclude`
+patterns are matched against the path relative to `root` as well as the
+absolute path. `[analyzer].parallelism` is still parsed but not honored — file
+analysis runs sequentially.
 
 ## Extending with Custom Rules
 
@@ -256,20 +338,20 @@ Visitors maintain state as they traverse:
 1. **Auto-fix** - Generate code replacements for violations
 2. **LSP Integration** - IDE support via Language Server Protocol
 3. **Incremental Analysis** - Only re-analyze changed files
-4. **Parallel Execution** - Run rules concurrently
-5. **More Built-in Rules**:
-   - `no-error-swallowing` - Forbid catching errors without propagation
-   - `handler-complexity` - Limit handler function complexity
-   - `require-thiserror` - Require `thiserror` for error types
-   - `no-panic-in-lib` - Forbid `panic!` in library code
+4. **Parallel Execution** - Run rules concurrently (`[analyzer].parallelism`)
+5. **SARIF / GitHub annotations output** - CI-native reporting
+6. **More tree-sitter languages** - Kotlin is the only extractor today
 
 ## Testing
 
 ```bash
-cargo test                    # Run all tests
 cargo test -p arch-lint-core  # Core tests only
 cargo test -p arch-lint-rules # Rules tests only
+cargo test -p arch-lint       # check!() integration test on this repo
 ```
+
+CI (`.github/workflows/ci.yml`) runs rustfmt, clippy (`-D warnings` on lib/bin
+targets), per-crate tests, an MSRV check, rustdoc, and cargo-deny.
 
 Each rule includes unit tests with synthetic code examples.
 

@@ -192,13 +192,7 @@ mod tests {
     #[test]
     fn test_offset_calculation() {
         let content = "line1\nline2\nline3";
-        let ctx = FileContext {
-            path: Path::new("test.rs"),
-            content,
-            is_test: false,
-            module_path: vec![],
-            relative_path: PathBuf::from("test.rs"),
-        };
+        let ctx = crate::test_utils::file_ctx("test.rs", content, false);
 
         assert_eq!(ctx.offset_for(1, 1), 0); // Start of line 1
         assert_eq!(ctx.offset_for(2, 1), 6); // Start of line 2

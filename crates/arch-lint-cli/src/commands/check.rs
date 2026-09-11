@@ -1,91 +1,49 @@
 //! Check command implementation.
 
-use anyhow::{Context, Result};
-use arch_lint_core::{Analyzer, Config};
-use arch_lint_rules::{
-    recommended_rules, HandlerComplexity, NoErrorSwallowing, NoSilentResultDrop, NoSyncIo,
-    NoUnwrapExpect, RequireThiserror, RequireTracing, TracingEnvInit,
-};
+use anyhow::Result;
+use arch_lint::session::{ConfigSource, Session};
 use std::path::Path;
 
 use crate::OutputFormat;
 
 /// Runs the check command.
+///
+/// Rule selection mirrors `arch_lint::check!()`:
+/// `--rules` > `preset` in config > `recommended`. Declarative rules
+/// (`[[restrict-use]]`, `[[require-use]]`, `[[deny-scope-dep]]`) from the
+/// config file are always added. The process exits with status 1 when any
+/// violation at or above `fail_on` (config, default `error`) is found.
+///
+/// # Errors
+///
+/// Returns an error if the configuration cannot be loaded, a `--rules` name is
+/// unknown, or the analysis fails.
 pub fn run(
     path: &Path,
     format: OutputFormat,
     rules_filter: Option<String>,
     exclude: Vec<String>,
-    source: &crate::config_resolver::ConfigSource,
+    source: &ConfigSource,
 ) -> Result<()> {
-    let config = match source {
-        crate::config_resolver::ConfigSource::Default => Config::default(),
-        other => {
-            // Invariant: non-Default variants always have a path
-            let p = other.path().context("resolved config has no path")?;
-            if source.is_global() {
-                tracing::info!("Using global config: {}", p.display());
-            }
-            Config::from_file(p)
-                .with_context(|| format!("Failed to load config: {}", p.display()))?
-        }
-    };
+    let mut session = Session::from_source(path, source.clone())?;
 
-    // Build analyzer
-    let mut builder = Analyzer::builder().root(path).config(config);
-
-    // Add exclude patterns
     for pattern in exclude {
-        builder = builder.exclude(pattern);
+        session = session.with_exclude(pattern);
     }
 
-    // Add rules based on filter
-    let rules_to_add = if let Some(filter) = rules_filter {
-        let rule_names: Vec<&str> = filter.split(',').map(str::trim).collect();
-        filter_rules(&rule_names)
-    } else {
-        recommended_rules()
-    };
-
-    for rule in rules_to_add {
-        builder = builder.rule_box(rule);
+    if let Some(filter) = rules_filter {
+        let names: Vec<&str> = filter.split(',').map(str::trim).collect();
+        session = session.with_rule_filter(&names)?;
     }
 
-    let analyzer = builder.build().context("Failed to build analyzer")?;
+    let fail_on = session.fail_on();
+    let result = session.run()?;
 
-    tracing::info!("Analyzing {:?} with {} rules", path, analyzer.rule_count());
+    super::print_result(&result, format)?;
 
-    let result = analyzer.analyze().context("Analysis failed")?;
-
-    // Output results
-    super::output::print(&result, format)?;
-
-    // Exit with error code if there are errors
-    if result.has_errors() {
+    if result.has_violations_at(fail_on) {
         std::process::exit(1);
     }
 
     Ok(())
-}
-
-fn filter_rules(names: &[&str]) -> Vec<arch_lint_core::RuleBox> {
-    let mut rules: Vec<arch_lint_core::RuleBox> = Vec::new();
-
-    for name in names {
-        match *name {
-            "no-unwrap-expect" | "AL001" => rules.push(Box::new(NoUnwrapExpect::new())),
-            "no-sync-io" | "AL002" => rules.push(Box::new(NoSyncIo::new())),
-            "no-error-swallowing" | "AL003" => rules.push(Box::new(NoErrorSwallowing::new())),
-            "handler-complexity" | "AL004" => rules.push(Box::new(HandlerComplexity::new())),
-            "require-thiserror" | "AL005" => rules.push(Box::new(RequireThiserror::new())),
-            "require-tracing" | "AL006" => rules.push(Box::new(RequireTracing::new())),
-            "tracing-env-init" | "AL007" => rules.push(Box::new(TracingEnvInit::new())),
-            "no-silent-result-drop" | "AL013" => {
-                rules.push(Box::new(NoSilentResultDrop::new()));
-            }
-            _ => tracing::warn!("Unknown rule: {}", name),
-        }
-    }
-
-    rules
 }

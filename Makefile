@@ -55,6 +55,8 @@ publish-dry-run:
 	cargo publish -p arch-lint-macros --dry-run
 	cargo publish -p arch-lint-core --dry-run
 	cargo publish -p arch-lint-rules --dry-run
+	cargo publish -p arch-lint-ts --dry-run
+	cargo publish -p arch-lint --dry-run
 	cargo publish -p arch-lint-cli --dry-run
 
 # Publish to crates.io (all crates in dependency order)
@@ -66,15 +68,25 @@ publish:
 	sleep 30
 	cargo publish -p arch-lint-rules
 	sleep 30
+	cargo publish -p arch-lint-ts
+	sleep 30
+	cargo publish -p arch-lint
+	sleep 30
 	cargo publish -p arch-lint-cli
 
 # Bump version (usage: make bump-version VERSION=0.2.0)
+# Updates [workspace.package].version and the internal crate versions in
+# [workspace.dependencies]. Portable across GNU and BSD sed.
 bump-version:
 ifndef VERSION
 	$(error VERSION is required. Usage: make bump-version VERSION=0.2.0)
 endif
 	@echo "Bumping version to $(VERSION)"
-	sed -i '' 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml
+	sed -i.bak \
+		-e 's/^version = ".*"/version = "$(VERSION)"/' \
+		-e 's/^\(arch-lint[a-z-]* = { path = "[^"]*", version = "\)[^"]*"/\1$(VERSION)"/' \
+		Cargo.toml
+	rm -f Cargo.toml.bak
 	cargo check --workspace
 	@echo "Version bumped to $(VERSION). Don't forget to commit!"
 

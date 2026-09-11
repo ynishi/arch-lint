@@ -3,7 +3,8 @@
 Architecture linter for Rust projects and cross-language layer enforcement.
 
 [![Crates.io](https://img.shields.io/crates/v/arch-lint.svg)](https://crates.io/crates/arch-lint)
-[![License](https://img.shields.io/crates/l/arch-lint.svg)](LICENSE)
+[![License](https://img.shields.io/crates/l/arch-lint.svg)](LICENSE-MIT)
+[![CI](https://github.com/ynishi/arch-lint/actions/workflows/ci.yml/badge.svg)](https://github.com/ynishi/arch-lint/actions/workflows/ci.yml)
 
 ## Why arch-lint?
 
@@ -125,6 +126,119 @@ inline qualified paths (e.g. `sqlx::query(...)` or `crate::infra::Db::new()`
 written without a `use`). To restrict a rule to `use` statements only, set
 `check-inline = false` on that rule.
 
+`[[restrict-use]]` accepts an `except` list — a path that matches it is never
+reported, even when it matches `deny`. `[[scopes]]` accepts an `exclude` list —
+a file matching it is not part of the scope even when it matches `paths`, and
+that applies to every rule kind that uses the scope:
+
+```toml
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+exclude = ["src/**/tests/**"]   # test helpers are not domain code
+
+[[restrict-use]]
+name = "no-db-in-domain"
+scope = "domain"
+deny = ["sqlx::**"]
+except = ["sqlx::types::*"]     # the type wrappers are fine
+message = "Database access belongs in the infra layer."
+```
+
+### Ordered Layers
+
+```toml
+[[layering]]
+name = "clean-arch"                    # optional, defaults to "layering"
+order = ["handler", "domain", "infra"] # scope names, top to bottom
+adjacent_only = false                  # optional, default false
+message = "Layers may only depend downward."
+severity = "error"                     # optional, default error
+check-inline = true                    # optional, default true
+```
+
+Each entry of `order` must be a declared `[[scopes]]` name; at least two,
+no duplicates. A layer may depend on any layer **below** it — referencing a
+layer above it is a violation (ALD004), and with `adjacent_only = true` so is
+skipping past the next layer down. One `[[layering]]` replaces the
+`[[deny-scope-dep]]` matrix you would otherwise write by hand.
+
+> Use `[[layering]]`, not `[[layers]]`: the latter key selects the
+> tree-sitter engine.
+
+### Attributes on Items
+
+```toml
+[[deny-attr]]
+name = "no-orm-derives-in-domain"
+scope = "domain"                       # or files = [...]
+attrs = ["derive(sqlx::FromRow)", "serde::Serialize"]
+on = ["struct", "enum"]                # optional, default: every kind
+message = "Domain types must stay ORM-agnostic."
+severity = "error"
+
+[[require-attr]]
+name = "instrument-handlers"
+scope = "handler"
+attrs = ["tracing::instrument"]        # the item must carry at least one
+on = ["fn"]
+visibility = "pub"                     # optional: "pub" (default) | "any"
+message = "Handlers must be instrumented."
+severity = "warning"                   # optional, default warning (deny-attr defaults to error)
+```
+
+`on` accepts `struct`, `enum`, `fn`, `trait`, `impl`, `mod`, `type`, `const`,
+`static`, `union`. Only module-level and impl-level items are inspected —
+items declared inside a function body are ignored.
+
+**How an attribute pattern matches.** The attribute's own path is rendered with
+`::` (`#[tracing::instrument]` → `tracing::instrument`, `#[derive(..)]` →
+`derive`) and compared to the pattern. A pattern written as `derive(P)` matches
+only derive lists; a bare pattern matches the attribute path *or* an entry of a
+derive list. A derive entry matches when it equals the pattern in full or when
+its **last segment** equals the pattern — so `FromRow` matches both
+`#[derive(FromRow)]` and `#[derive(sqlx::FromRow)]`, while `sqlx::FromRow`
+matches only `#[derive(sqlx::FromRow)]`.
+
+**Visibility.** `visibility = "pub"` selects items declared `pub`. Items of a
+trait definition inherit the trait's visibility, and items of a `impl Trait for
+T` block (and `impl` blocks themselves) count as public.
+
+### Naming
+
+```toml
+[[naming]]
+name = "domain-ports"
+scope = "domain"
+item = "trait"                          # struct|enum|trait|fn|mod|type|const|static
+pattern = "^[A-Z][A-Za-z0-9]*(Repository|Port)$"
+visibility = "pub"                      # optional: "pub" (default) | "any"
+message = "Domain traits are ports: name them *Repository or *Port."
+severity = "warning"                    # optional, default warning
+```
+
+Every item of that kind whose identifier does not match the regex is reported
+(ALD007). An invalid regex is a config error, not a silent skip.
+
+### Return Types
+
+```toml
+[[require-return]]
+name = "handlers-return-app-result"
+scope = "handler"
+visibility = "pub"                      # optional, default "pub"
+async = true                            # optional: only async (or only sync) fns
+pattern = "^Result<.*,\\s*AppError>$"
+message = "Handlers must return Result<_, AppError>."
+severity = "error"
+```
+
+The return type is rendered from the AST and normalized before matching: no
+spaces around `<`, `>` and `::`, exactly one space after `,`. So
+`Result < Vec < u8 > , AppError >` is matched as `Result<Vec<u8>, AppError>`,
+and a function with no return type is matched as `()`. Free functions and
+impl/trait methods are checked; nested functions are not.
+
 ### Crate Preference Enforcement
 
 ```toml
@@ -184,6 +298,20 @@ The goal: the AI learns from the same rule set that humans follow, and neither n
 | AL010 | `prefer-from-over-into` | Prefers `From` trait implementation over `Into` | Warning |
 | AL011 | `no-panic-in-lib` | Forbids panic macros in library code | Error |
 | AL012 | `require-doc-comments` | Requires documentation comments on public items | Warning |
+| AL013 | `no-silent-result-drop` | Forbids silently discarding `Result` error information | Warning |
+
+Declarative rules defined in `arch-lint.toml` (see [Declarative Rules](#declarative-rules-no-code-required)):
+
+| Code | Section | Description |
+|------|---------|-------------|
+| ALD001 | `[[restrict-use]]` | Forbids `use` paths (and inline qualified paths) within a scope |
+| ALD002 | `[[require-use]]` | Requires a preferred crate over alternatives within a file set |
+| ALD003 | `[[deny-scope-dep]]` | Forbids one scope from depending on another |
+| ALD004 | `[[layering]]` | Forbids upward (and, with `adjacent_only`, layer-skipping) dependencies in an ordered layer stack |
+| ALD005 | `[[deny-attr]]` | Forbids given attributes on items of a scope |
+| ALD006 | `[[require-attr]]` | Requires at least one of the given attributes on items of a scope |
+| ALD007 | `[[naming]]` | Requires identifiers of one item kind to match a regex |
+| ALD008 | `[[require-return]]` | Requires functions to return a type matching a regex |
 
 ### Rule Details
 
@@ -222,6 +350,13 @@ if path.exists() { /* ... */ }
 let content = tokio::fs::read_to_string("file.txt").await?;
 if tokio::fs::try_exists(&path).await? { /* ... */ }
 ```
+
+`is_file()` / `is_dir()` are reported only when the receiver is a path. On a
+value that came from `file_type()`, `metadata()`, `symlink_metadata()` or
+`fs::metadata(..)` (directly, through `?` / `unwrap()` / `ok()`, a `let`
+binding in the same block, or a closure parameter such as
+`entry.file_type().is_some_and(|ft| ft.is_file())`) they are pure accessors
+and are not reported — the `metadata()` call itself still is.
 
 **Configuration:**
 ```toml
@@ -484,6 +619,31 @@ require_struct_docs = true # Require docs for public structs
 require_enum_docs = true   # Require docs for public enums
 ```
 
+#### AL013: no-silent-result-drop
+
+Detects `Result` values whose error is discarded without being handled or logged.
+
+```rust
+// BAD
+let _ = save(&data);
+save(&data).ok();
+
+// GOOD
+save(&data)?;
+if let Err(e) = save(&data) {
+    tracing::warn!(error = %e, "save failed, continuing");
+}
+```
+
+**Configuration:**
+```toml
+[rules.no-silent-result-drop]
+allow_in_tests = true        # Allow in test code (default: true; `strict` sets false)
+allow_ok = false             # Allow `.ok()` conversion (default: false)
+allow_let_underscore = false # Allow `let _ = result` (default: false)
+severity = "warning"
+```
+
 ## Configuration
 
 Create `arch-lint.toml` in your project root:
@@ -503,6 +663,7 @@ exclude = [
     "**/vendor/**",
 ]
 respect_gitignore = true
+# include = ["src/app/**", "src/domain/**"]
 
 [rules.no-unwrap-expect]
 enabled = true
@@ -539,6 +700,11 @@ paths = ["src/domain/**"]
 name = "infra"
 paths = ["src/infra/**"]
 
+[[scopes]]
+name = "handler"
+paths = ["src/handler/**"]
+exclude = ["src/**/tests/**"]
+
 [[deny-scope-dep]]
 from = "domain"
 to = ["infra"]
@@ -556,7 +722,78 @@ files = ["src/**"]
 prefer = "tracing"
 over = ["log"]
 message = "Use tracing instead of log."
+
+[[layering]]
+order = ["handler", "domain", "infra"]
+message = "Layers may only depend downward."
+
+[[deny-attr]]
+name = "no-orm-derives-in-domain"
+scope = "domain"
+attrs = ["derive(sqlx::FromRow)"]
+on = ["struct", "enum"]
+message = "Domain types must stay ORM-agnostic."
+
+[[require-attr]]
+name = "instrument-handlers"
+scope = "handler"
+attrs = ["tracing::instrument"]
+on = ["fn"]
+message = "Handlers must be instrumented."
+
+[[naming]]
+name = "domain-ports"
+scope = "domain"
+item = "trait"
+pattern = "^[A-Z][A-Za-z0-9]*(Repository|Port)$"
+message = "Domain traits are ports."
+
+[[require-return]]
+name = "handlers-return-app-result"
+scope = "handler"
+async = true
+pattern = "^Result<.*,\\s*AppError>$"
+message = "Handlers must return Result<_, AppError>."
 ```
+
+### `[analyzer]` options
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `root` | `"."` | Directory to walk. |
+| `respect_gitignore` | `true` | Skip files git ignores. |
+| `include` | `[]` (all `*.rs`) | Glob patterns; when non-empty, only matching files are analyzed. |
+| `exclude` | `["**/target/**", "**/vendor/**"]` | Glob patterns dropped from the result. |
+| `parallelism` | unset | **Reserved** — parsed, but analysis currently runs sequentially. |
+
+Unknown keys inside `[analyzer]` and inside any declarative rule table
+(`[[scopes]]`, `[[restrict-use]]`, ..., `[[require-return]]`) are a config
+error, so a typo such as `denyy = [...]` cannot silently disable a rule.
+Per-rule option tables (`[rules.<name>]`) stay free-form because each rule
+defines its own keys.
+
+File discovery runs in this order:
+
+1. Walk `root` (hidden files and directories are traversed, matching the
+   historical `**/*.rs` glob behavior).
+2. If `respect_gitignore = true`, skip anything ignored by a `.gitignore` at
+   any level, by `.git/info/exclude`, or by the global gitignore. Ignore rules
+   are applied even when `root` is **not** inside a git repository, so a
+   scaffolded project or a fixture directory carrying a `.gitignore` is
+   filtered the same way a checked-out repository is. Non-git ignore files
+   (`.ignore`, `.rgignore`) are never consulted.
+3. Keep `*.rs` files matching at least one `include` pattern (all of them when
+   `include` is empty).
+4. Drop files matching any `exclude` pattern.
+
+`include` and `exclude` patterns are matched against each file's path
+**relative to `root`** as well as against its absolute path, so both
+`exclude = ["src/generated/**"]` and `exclude = ["**/generated/**"]` work. A
+leading `./` on a pattern is accepted (`./src/**` ≡ `src/**`).
+
+`Cargo.toml` discovery — used by project-wide rules such as `required-crate` —
+follows the same `respect_gitignore` and `exclude` settings, but ignores
+`include`, which scopes source files only.
 
 ## Suppression
 
@@ -570,6 +807,11 @@ arch-lint provides multiple ways to suppress violations at different scopes.
 | Block | `#[arch_lint::allow(...)]` | Function, impl, module |
 | File | Configuration (`exclude_files`) | Entire file |
 | Global | Configuration (`enabled = false`) | Project-wide exclusion |
+
+Both directives apply to the built-in rules (AL001-AL013) **and** to the
+declarative rules from `arch-lint.toml` (ALD001-ALD008); see
+[Declarative rules](#declarative-rules-ald001-ald008) below for the names a
+declarative rule answers to.
 
 ### Line-level (Comment)
 
@@ -617,6 +859,46 @@ fn good() { ... }
 
 This ensures that critical suppressions are always documented and justified.
 
+The reason is required on the **comment** path: a comment directive without a
+reason on an error rule suppresses the violation and reports a warning
+(`Allow directive for '<rule>' is missing required reason`) in its place. An
+attribute without a reason suppresses silently.
+
+### Declarative rules (ALD001-ALD008)
+
+The declarative rules honor the same two directives, with the same semantics.
+A declarative rule answers to three names, each in kebab-case or `snake_case`:
+
+| Name | Example | Suppresses |
+|------|---------|------------|
+| Rule kind | `restrict-use` / `restrict_use` | every `[[restrict-use]]` rule |
+| TOML `name` | `no-sqlx-in-domain` | only that one TOML rule |
+| Rule code | `ALD001` | every rule reported under that code |
+
+`allow(all)` suppresses everything, as it does for the built-in rules.
+
+```rust
+// Comment on the violating line or the line above it
+// arch-lint: allow(no-sqlx-in-domain) reason="legacy row mapping"
+use sqlx::Pool;
+
+// Attribute on the offending item
+#[arch_lint::allow(no_orm_derives_in_domain, reason = "legacy row mapping")]
+#[derive(sqlx::FromRow)]
+pub struct User { pub id: i64 }
+
+// Attribute on an enclosing mod / fn / impl, covering everything inside it
+#[arch_lint::allow(layering, reason = "composition root wires the layers")]
+pub fn wire() {
+    let _ = crate::handler::api::list_users;
+}
+```
+
+Unlike some built-in rules, declarative rules are **not** switched off inside
+`#[cfg(test)]` modules or `#[test]` functions: they express architecture
+constraints, so test code is held to them too. Take a directory out of a scope
+with `exclude` on `[[scopes]]` if that is not what you want.
+
 ### Clippy Compatibility
 
 Standard Clippy attributes are also recognized:
@@ -646,9 +928,13 @@ Use presets for quick configuration:
 
 | Preset | Rules | Description |
 |--------|-------|-------------|
-| `recommended` | AL001, AL002, AL003, AL005, AL006, AL007 | Sensible defaults |
-| `strict` | All rules | Maximum safety |
-| `minimal` | AL001 (relaxed) | Gradual adoption |
+| `recommended` | AL001, AL002, AL003, AL005, AL006, AL007, AL013 | Sensible defaults |
+| `strict` | All rules (AL001-AL013), no test exceptions, `.expect()` and `.ok()` forbidden | Maximum safety |
+| `minimal` | AL001 (relaxed, `.expect()` allowed) | Gradual adoption |
+
+Declarative rules from `arch-lint.toml` always run in addition to the preset.
+Per-rule options under `[rules.<name>]` override the preset defaults, and
+`exclude_files` skips a rule for matching files (globs relative to the analyzer root).
 
 ## Writing Custom Rules
 
@@ -719,41 +1005,75 @@ let analyzer = Analyzer::builder()
 
 ## Programmatic Usage
 
-For direct API access without the `check!()` macro:
+`Session` is the SDK entry point. It runs the same pipeline as `check!()` and
+the CLI — find the config, resolve the preset and `fail_on`, build the preset
+and declarative rules, analyze — but it never panics and never exits the
+process.
 
 ```bash
-cargo add arch-lint-core arch-lint-rules --dev
+cargo add arch-lint
 ```
 
 ```rust
-use arch_lint_core::Analyzer;
-use arch_lint_rules::{
-    NoUnwrapExpect, NoSyncIo, HandlerComplexity, RequireTracing,
-    TracingEnvInit, AsyncTraitSendCheck, RuntimeMode, PreferFromOverInto,
-    NoPanicInLib, RequireDocComments,
-};
+use arch_lint::report::{render, Format};
+use arch_lint::Session;
 
-let analyzer = Analyzer::builder()
-    .root("./src")
-    .rule(NoUnwrapExpect::new().allow_in_tests(true))
-    .rule(NoSyncIo::new())
-    .rule(HandlerComplexity::new().max_match_arms(15))
-    .rule(RequireTracing::new())
-    .rule(TracingEnvInit::new())
-    .rule(AsyncTraitSendCheck::new().runtime_mode(RuntimeMode::SingleThread))
-    .rule(PreferFromOverInto::new())
-    .rule(NoPanicInLib::new())
-    .rule(RequireDocComments::new())
-    .exclude("**/generated/**")
-    .build()?;
+// Config lookup: <root>/arch-lint.toml -> <root>/.arch-lint.toml ->
+// $ARCH_LINT_CONFIG_DIR (or ~/.arch-lint/) config.toml -> built-in defaults.
+let session = Session::discover(".")?;
+println!("config: {:?}", session.config_source());
 
-let result = analyzer.analyze()?;
+let fail_on = session.fail_on();
+let result = session.run()?;
 
-if result.has_errors() {
-    result.print_report();
+print!("{}", render(&result, Format::default())?);   // no ANSI unless asked
+print!("{}", render(&result, Format::Json)?);        // same JSON as --format json
+
+if result.has_violations_at(fail_on) {
     std::process::exit(1);
 }
 ```
+
+Overrides are builder-style, and every failure is a `SessionError`:
+
+```rust
+use arch_lint::rules::Preset;
+use arch_lint::{Session, Severity};
+
+let session = Session::from_config_path(".", "ci/arch-lint.toml")?
+    .with_preset(Preset::Strict)
+    .with_fail_on(Severity::Warning)
+    .with_exclude("**/generated/**")
+    .with_rule_filter(&["no-unwrap-expect", "AL002"])?;   // unknown name -> Err
+
+let result = session.run()?;
+```
+
+`Session::from_config_str(root, toml)` takes configuration from memory, and
+`Session::find_workspace_root(path)` performs the `[workspace]` walk that
+`check!()` uses. For rules assembled by hand, `Analyzer::builder()` from
+`arch-lint-core` is still available and is what `Session` drives underneath.
+
+### Cross-language (tree-sitter)
+
+`TsSession` is the same shape for the tree-sitter engine:
+
+```rust
+use arch_lint::report::{render, Format};
+use arch_lint_ts::{ArchConfig, TsSession};
+use std::path::Path;
+
+let config = ArchConfig::from_file(Path::new("arch-lint.toml"))?;
+
+let result = TsSession::new(config, ".")
+    .respect_gitignore(true)     // default; also read from [analyzer]
+    .run()?;
+
+print!("{}", render(&result, Format::Compact)?);
+```
+
+Register additional languages with `.with_extractor(Box::new(MyExtractor))`;
+the built-in Kotlin extractor stays registered.
 
 ## CLI Usage
 

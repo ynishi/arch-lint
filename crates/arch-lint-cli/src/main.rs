@@ -8,12 +8,13 @@
 //! ```
 
 use anyhow::Result;
+use arch_lint::session::ConfigSource;
 use clap::{Parser, Subcommand};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
 mod commands;
-mod config_resolver;
 
 /// Architecture linter for Rust projects and cross-language layer enforcement
 #[derive(Parser)]
@@ -106,6 +107,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
 
     match cli.command {
@@ -116,7 +118,7 @@ fn main() -> Result<()> {
             exclude,
             engine,
         } => {
-            let source = config_resolver::resolve(&path, cli.config.as_deref());
+            let source = ConfigSource::resolve(&path, cli.config.as_deref());
             let engine = engine.unwrap_or_else(|| detect_engine(&source));
             match engine {
                 EngineHint::Syn => commands::check::run(&path, format, rules, exclude, &source),
@@ -138,10 +140,10 @@ fn main() -> Result<()> {
 }
 
 /// Auto-detect engine from config: if `[[layers]]` present → ts, else → syn.
-fn detect_engine(source: &config_resolver::ConfigSource) -> EngineHint {
+fn detect_engine(source: &ConfigSource) -> EngineHint {
     if let Some(p) = source.path() {
         if let Ok(content) = std::fs::read_to_string(p) {
-            if content.contains("[[layers]]") {
+            if has_layers_table(&content) {
                 tracing::info!(
                     "Detected [[layers]] in {}, using tree-sitter engine",
                     p.display()
@@ -152,4 +154,39 @@ fn detect_engine(source: &config_resolver::ConfigSource) -> EngineHint {
     }
 
     EngineHint::Syn
+}
+
+/// Returns `true` if the TOML content defines a non-empty `[[layers]]` array.
+///
+/// Parses the document instead of substring-matching so that commented-out
+/// or quoted `[[layers]]` text does not switch engines.
+fn has_layers_table(content: &str) -> bool {
+    content
+        .parse::<toml::Table>()
+        .ok()
+        .and_then(|t| {
+            t.get("layers")
+                .and_then(toml::Value::as_array)
+                .map(|a| !a.is_empty())
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_layers_table;
+
+    #[test]
+    fn detects_real_layers_table() {
+        assert!(has_layers_table(
+            "[[layers]]\nname = \"domain\"\npackages = [\"com.example.domain\"]\n"
+        ));
+    }
+
+    #[test]
+    fn ignores_commented_or_quoted_layers() {
+        assert!(!has_layers_table("# [[layers]]\npreset = \"strict\"\n"));
+        assert!(!has_layers_table("note = \"[[layers]]\"\n"));
+        assert!(!has_layers_table("preset = \"strict\"\n"));
+    }
 }

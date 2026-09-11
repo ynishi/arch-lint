@@ -22,7 +22,7 @@ impl LayerResolver {
             }
         }
         // Longest prefix first for correct matching
-        map.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        map.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.len()));
         Self { map }
     }
 
@@ -47,6 +47,7 @@ mod tests {
         ArchConfig {
             root: ".".into(),
             exclude: vec![],
+            respect_gitignore: true,
             layers: vec![
                 LayerDef {
                     name: "domain".into(),

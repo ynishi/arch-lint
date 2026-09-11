@@ -4,24 +4,35 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 const DEFAULT_CONFIG: &str = r#"# arch-lint configuration
-# See https://github.com/example/arch-lint for documentation
+# See https://github.com/ynishi/arch-lint for documentation
+
+# Preset: "recommended" (default), "strict", or "minimal"
+# preset = "recommended"
+
+# Exit non-zero on violations at or above this severity: "error" (default), "warning", "info"
+# fail_on = "error"
 
 [analyzer]
 # Root directory to analyze (default: current directory)
 # root = "./src"
 
 # Glob patterns to exclude from analysis
+# Matched against each file's path relative to the root and its absolute path.
 exclude = [
     "**/target/**",
     "**/vendor/**",
     "**/generated/**",
 ]
 
-# Respect .gitignore files
-respect_gitignore = true
+# Skip files ignored by git (.gitignore, .git/info/exclude, global gitignore)
+# respect_gitignore = true
+
+# If set, only files matching one of these patterns are analyzed
+# include = ["src/**"]
 
 # Rule configurations
-# Each rule can be enabled/disabled and have its severity overridden
+# Each rule can be enabled/disabled, have its severity overridden,
+# and skip specific files via `exclude_files` (globs relative to the root).
 
 [rules.no-unwrap-expect]
 enabled = true
@@ -30,11 +41,13 @@ allow_in_tests = true
 
 [rules.no-sync-io]
 enabled = true
+# exclude_files = ["src/startup.rs", "src/cli/**"]
 
 # [rules.handler-complexity]
 # enabled = true
-# max_lines = 150
+# max_handler_lines = 150
 # max_match_arms = 20
+# max_enum_variants = 30
 "#;
 
 /// Runs the init command.

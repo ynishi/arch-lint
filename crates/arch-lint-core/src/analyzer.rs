@@ -42,6 +42,7 @@ pub struct AnalyzerBuilder {
     project_rules: Vec<ProjectRuleBox>,
     exclude_patterns: Vec<String>,
     include_patterns: Vec<String>,
+    respect_gitignore: Option<bool>,
     config: Option<Config>,
     fail_on_parse_error: bool,
 }
@@ -108,9 +109,44 @@ impl AnalyzerBuilder {
     }
 
     /// Adds an include glob pattern.
+    ///
+    /// Patterns are matched against each file's path *relative to the analyzer
+    /// root* (a leading `./` is accepted, and an absolute pattern is matched
+    /// against the absolute path as well). When no include pattern is set —
+    /// neither here nor via [`AnalyzerBuilder::config`] — every `*.rs` file
+    /// under the root is analyzed.
+    ///
+    /// Patterns added here are merged with `[analyzer] include` from the
+    /// configuration, the same way [`AnalyzerBuilder::exclude`] merges with
+    /// `[analyzer] exclude`.
     #[must_use]
     pub fn include(mut self, pattern: impl Into<String>) -> Self {
         self.include_patterns.push(pattern.into());
+        self
+    }
+
+    /// Adds multiple include glob patterns.
+    ///
+    /// See [`AnalyzerBuilder::include`] for the matching semantics.
+    #[must_use]
+    pub fn includes<I, S>(mut self, patterns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.include_patterns
+            .extend(patterns.into_iter().map(Into::into));
+        self
+    }
+
+    /// Sets whether file discovery honors `.gitignore` (default: `true`).
+    ///
+    /// Calling this method takes precedence over `[analyzer] respect_gitignore`
+    /// from the configuration; when it is not called, the configuration value
+    /// (which itself defaults to `true`) is used.
+    #[must_use]
+    pub fn respect_gitignore(mut self, respect: bool) -> Self {
+        self.respect_gitignore = Some(respect);
         self
     }
 
@@ -156,12 +192,28 @@ impl AnalyzerBuilder {
             exclude_patterns.extend(["**/target/**".to_string(), "**/vendor/**".to_string()]);
         }
 
+        // Merge include patterns from config (same flow as excludes)
+        let mut include_patterns = self.include_patterns;
+        if let Some(ref config) = self.config {
+            include_patterns.extend(config.analyzer.include.clone());
+        }
+
+        // An explicit builder call wins over the config value.
+        let respect_gitignore = match self.respect_gitignore {
+            Some(explicit) => explicit,
+            None => self
+                .config
+                .as_ref()
+                .is_none_or(|c| c.analyzer.respect_gitignore),
+        };
+
         Ok(Analyzer {
             root,
             rules: self.rules,
             project_rules: self.project_rules,
             exclude_patterns,
-            include_patterns: self.include_patterns,
+            include_patterns,
+            respect_gitignore,
             config: self.config.unwrap_or_default(),
             fail_on_parse_error: self.fail_on_parse_error,
         })
@@ -176,8 +228,8 @@ pub struct Analyzer {
     rules: Vec<RuleBox>,
     project_rules: Vec<ProjectRuleBox>,
     exclude_patterns: Vec<String>,
-    #[allow(dead_code)] // Reserved for future include pattern support
     include_patterns: Vec<String>,
+    respect_gitignore: bool,
     config: Config,
     fail_on_parse_error: bool,
 }
@@ -284,6 +336,20 @@ impl Analyzer {
                 continue;
             }
 
+            if self
+                .config
+                .rules
+                .get(rule.name())
+                .is_some_and(|c| c.excludes_file(&ctx.relative_path))
+            {
+                debug!(
+                    "Skipping rule {} for excluded file: {}",
+                    rule.name(),
+                    ctx.relative_path.display()
+                );
+                continue;
+            }
+
             let rule_violations = rule.check(&ctx, &ast);
             let rule_violations = self.apply_severity_override(rule.name(), rule_violations);
             violations.extend(rule_violations);
@@ -306,39 +372,138 @@ impl Analyzer {
         violations
     }
 
-    /// Discovers all Rust source files to analyze.
-    fn discover_files(&self) -> Result<Vec<PathBuf>, AnalyzerError> {
-        let pattern = format!("{}/**/*.rs", self.root.display());
+    /// Builds the directory walker used by both discovery passes.
+    ///
+    /// Visibility rules are chosen to stay compatible with the previous
+    /// `glob("<root>/**/*.rs")` implementation: the `glob` crate's default
+    /// [`MatchOptions`](glob::MatchOptions) has `require_literal_leading_dot =
+    /// false`, so hidden directories and dotfiles *were* traversed. The walker
+    /// therefore sets `hidden(false)` (i.e. "do not skip hidden entries").
+    ///
+    /// When `respect_gitignore` is on, only the git ignore sources are
+    /// consulted — `.gitignore` at any level, `.git/info/exclude`, and the
+    /// global gitignore — with `require_git(false)` so that a plain directory
+    /// carrying a `.gitignore` (a scaffolded project, a test fixture) is
+    /// filtered the same way a checked-out repository is. Non-git ignore files
+    /// (`.ignore`, `.rgignore`) are never honored.
+    fn walker(&self) -> ignore::Walk {
+        let mut builder = ignore::WalkBuilder::new(&self.root);
+        builder
+            .hidden(false)
+            .ignore(false)
+            .git_ignore(self.respect_gitignore)
+            .git_global(self.respect_gitignore)
+            .git_exclude(self.respect_gitignore)
+            .parents(self.respect_gitignore)
+            .require_git(false);
+        builder.build()
+    }
+
+    /// Walks the root and collects files accepted by `keep`.
+    ///
+    /// Results are sorted so that discovery order does not depend on the
+    /// order the filesystem hands directory entries back.
+    fn walk_files<F>(&self, keep: F) -> Result<Vec<PathBuf>, AnalyzerError>
+    where
+        F: Fn(&Path) -> bool,
+    {
         let mut files = Vec::new();
 
-        for entry in glob::glob(&pattern)? {
-            let path = entry.map_err(|e| AnalyzerError::Io(e.into_error()))?;
+        for entry in self.walker() {
+            let entry = entry.map_err(|e| {
+                let message = e.to_string();
+                match e.into_io_error() {
+                    Some(io) => AnalyzerError::Io(io),
+                    None => AnalyzerError::Io(std::io::Error::other(message)),
+                }
+            })?;
 
-            // Check exclude patterns
-            if self.should_exclude(&path) {
-                debug!("Excluding: {}", path.display());
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                 continue;
             }
 
-            files.push(path);
-        }
-
-        Ok(files)
-    }
-
-    /// Discovers Cargo.toml files in the project.
-    fn discover_cargo_files(&self) -> Result<Vec<PathBuf>, AnalyzerError> {
-        let pattern = format!("{}/**/Cargo.toml", self.root.display());
-        let mut files = Vec::new();
-
-        for entry in glob::glob(&pattern)? {
-            let path = entry.map_err(|e| AnalyzerError::Io(e.into_error()))?;
-            if !self.should_exclude(&path) {
+            let path = entry.into_path();
+            if keep(&path) {
                 files.push(path);
             }
         }
 
+        files.sort();
         Ok(files)
+    }
+
+    /// Returns `path` relative to the analyzer root, when it is under it.
+    fn relative_to_root<'a>(&self, path: &'a Path) -> &'a Path {
+        match path.strip_prefix(&self.root) {
+            Ok(relative) => relative,
+            Err(_) => path,
+        }
+    }
+
+    /// Matches a glob pattern against both the root-relative and the absolute
+    /// form of `path`.
+    ///
+    /// A leading `./` on the pattern is stripped so that `./src/**` and
+    /// `src/**` behave identically; matching the absolute form additionally
+    /// lets patterns be written as absolute paths.
+    fn matches_pattern(&self, pattern: &str, path: &Path) -> bool {
+        let normalized = match pattern.strip_prefix("./") {
+            Some(stripped) => stripped,
+            None => pattern,
+        };
+        let Ok(glob_pattern) = glob::Pattern::new(normalized) else {
+            return false;
+        };
+        glob_pattern.matches_path(self.relative_to_root(path)) || glob_pattern.matches_path(path)
+    }
+
+    /// Discovers all Rust source files to analyze.
+    ///
+    /// Ordered steps: walk the root (honoring `.gitignore` when
+    /// `respect_gitignore` is set), keep `*.rs` files, apply `include`
+    /// patterns when any are configured, then drop anything matching an
+    /// `exclude` pattern.
+    fn discover_files(&self) -> Result<Vec<PathBuf>, AnalyzerError> {
+        self.walk_files(|path| {
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                return false;
+            }
+
+            if !self.should_include(path) {
+                debug!("Not included: {}", path.display());
+                return false;
+            }
+
+            if self.should_exclude(path) {
+                debug!("Excluding: {}", path.display());
+                return false;
+            }
+
+            true
+        })
+    }
+
+    /// Discovers Cargo.toml files in the project.
+    ///
+    /// Follows the same `respect_gitignore` setting and the same `exclude`
+    /// patterns as [`Analyzer::discover_files`]. `include` is deliberately not
+    /// applied here: it scopes the *source files* that are linted, and
+    /// filtering manifests by it would hide crates from project-wide rules.
+    fn discover_cargo_files(&self) -> Result<Vec<PathBuf>, AnalyzerError> {
+        self.walk_files(|path| {
+            path.file_name().is_some_and(|name| name == "Cargo.toml") && !self.should_exclude(path)
+        })
+    }
+
+    /// Checks if a path is covered by the configured include patterns.
+    ///
+    /// An empty include list means "everything".
+    fn should_include(&self, path: &Path) -> bool {
+        self.include_patterns.is_empty()
+            || self
+                .include_patterns
+                .iter()
+                .any(|pattern| self.matches_pattern(pattern, path))
     }
 
     /// Checks if a path should be excluded.
@@ -346,7 +511,13 @@ impl Analyzer {
         let path_str = path.to_string_lossy();
 
         for pattern in &self.exclude_patterns {
-            // Simple glob matching
+            // Glob matching against the root-relative and the absolute path
+            if self.matches_pattern(pattern, path) {
+                return true;
+            }
+
+            // Legacy: match the absolute path as a plain string, so that
+            // patterns relying on `*` crossing separators keep working
             if let Ok(glob_pattern) = glob::Pattern::new(pattern) {
                 if glob_pattern.matches(&path_str) {
                     return true;
@@ -397,5 +568,203 @@ mod tests {
         assert!(analyzer.should_exclude(Path::new("/foo/target/debug/main.rs")));
         assert!(analyzer.should_exclude(Path::new("/foo/vendor/lib.rs")));
         assert!(!analyzer.should_exclude(Path::new("/foo/src/lib.rs")));
+    }
+
+    /// Writes `contents` to `root/rel`, creating parent directories.
+    fn write_file(root: &Path, rel: &str, contents: &str) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("Failed to create fixture directory");
+        }
+        std::fs::write(&path, contents).expect("Failed to write fixture file");
+    }
+
+    /// Returns discovered files as root-relative, slash-separated strings.
+    fn discovered(analyzer: &Analyzer) -> Vec<String> {
+        analyzer
+            .discover_files()
+            .expect("Discovery failed")
+            .iter()
+            .map(|p| {
+                p.strip_prefix(analyzer.root())
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    }
+
+    /// A tempdir with a `.gitignore` covering `gen/`, one kept and one ignored file.
+    fn gitignore_fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("Failed to create tempdir");
+        let root = dir.path();
+        write_file(root, ".gitignore", "gen/\n");
+        write_file(root, "src/app/kept.rs", "pub fn kept() {}\n");
+        write_file(root, "gen/ignored.rs", "pub fn ignored() {}\n");
+        dir
+    }
+
+    #[test]
+    fn test_gitignore_respected_by_default() {
+        let dir = gitignore_fixture();
+
+        let analyzer = Analyzer::builder()
+            .root(dir.path())
+            .build()
+            .expect("Failed to build analyzer");
+
+        assert_eq!(discovered(&analyzer), vec!["src/app/kept.rs".to_string()]);
+    }
+
+    #[test]
+    fn test_gitignore_ignored_when_disabled() {
+        let dir = gitignore_fixture();
+
+        let analyzer = Analyzer::builder()
+            .root(dir.path())
+            .respect_gitignore(false)
+            .build()
+            .expect("Failed to build analyzer");
+
+        assert_eq!(
+            discovered(&analyzer),
+            vec!["gen/ignored.rs".to_string(), "src/app/kept.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_respect_gitignore_flows_from_config() {
+        let dir = gitignore_fixture();
+
+        let mut config = Config::default();
+        config.analyzer.respect_gitignore = false;
+
+        let analyzer = Analyzer::builder()
+            .root(dir.path())
+            .config(config)
+            .build()
+            .expect("Failed to build analyzer");
+
+        assert_eq!(
+            discovered(&analyzer),
+            vec!["gen/ignored.rs".to_string(), "src/app/kept.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_include_restricts_to_matching_files() {
+        let dir = tempfile::tempdir().expect("Failed to create tempdir");
+        let root = dir.path();
+        write_file(root, "src/app/handler.rs", "pub fn handler() {}\n");
+        write_file(root, "src/infra/db.rs", "pub fn db() {}\n");
+        write_file(root, "tests/it.rs", "pub fn it() {}\n");
+
+        let analyzer = Analyzer::builder()
+            .root(root)
+            .include("src/app/**")
+            .build()
+            .expect("Failed to build analyzer");
+
+        assert_eq!(
+            discovered(&analyzer),
+            vec!["src/app/handler.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_include_flows_from_config_and_accepts_leading_dot_slash() {
+        let dir = tempfile::tempdir().expect("Failed to create tempdir");
+        let root = dir.path();
+        write_file(root, "src/app/handler.rs", "pub fn handler() {}\n");
+        write_file(root, "src/infra/db.rs", "pub fn db() {}\n");
+
+        let mut config = Config::default();
+        config.analyzer.include = vec!["./src/infra/**".to_string()];
+
+        let analyzer = Analyzer::builder()
+            .root(root)
+            .config(config)
+            .build()
+            .expect("Failed to build analyzer");
+
+        assert_eq!(discovered(&analyzer), vec!["src/infra/db.rs".to_string()]);
+    }
+
+    #[test]
+    fn test_relative_exclude_pattern() {
+        let dir = tempfile::tempdir().expect("Failed to create tempdir");
+        let root = dir.path();
+        write_file(root, "src/lib.rs", "pub fn lib() {}\n");
+        write_file(root, "src/generated/schema.rs", "pub fn schema() {}\n");
+
+        let analyzer = Analyzer::builder()
+            .root(root)
+            .exclude("src/generated/**")
+            .build()
+            .expect("Failed to build analyzer");
+
+        assert_eq!(discovered(&analyzer), vec!["src/lib.rs".to_string()]);
+        assert!(analyzer.should_exclude(&root.join("src/generated/schema.rs")));
+        assert!(!analyzer.should_exclude(&root.join("src/lib.rs")));
+    }
+
+    #[test]
+    fn test_discovery_outside_git_repository() {
+        let dir = tempfile::tempdir().expect("Failed to create tempdir");
+        let root = dir.path();
+        assert!(!root.join(".git").exists());
+        write_file(root, "src/lib.rs", "pub fn lib() {}\n");
+        write_file(root, "src/nested/deep/mod.rs", "pub fn deep() {}\n");
+        write_file(root, "Cargo.toml", "[package]\nname = \"fixture\"\n");
+
+        let analyzer = Analyzer::builder()
+            .root(root)
+            .build()
+            .expect("Failed to build analyzer");
+
+        assert_eq!(
+            discovered(&analyzer),
+            vec![
+                "src/lib.rs".to_string(),
+                "src/nested/deep/mod.rs".to_string()
+            ]
+        );
+
+        let cargo_files = analyzer
+            .discover_cargo_files()
+            .expect("Cargo discovery failed");
+        assert_eq!(cargo_files, vec![root.join("Cargo.toml")]);
+    }
+
+    #[test]
+    fn test_discover_cargo_files_follows_gitignore() {
+        let dir = tempfile::tempdir().expect("Failed to create tempdir");
+        let root = dir.path();
+        write_file(root, ".gitignore", "gen/\n");
+        write_file(root, "Cargo.toml", "[package]\nname = \"fixture\"\n");
+        write_file(root, "gen/Cargo.toml", "[package]\nname = \"gen\"\n");
+
+        let respecting = Analyzer::builder()
+            .root(root)
+            .build()
+            .expect("Failed to build analyzer");
+        assert_eq!(
+            respecting
+                .discover_cargo_files()
+                .expect("Cargo discovery failed"),
+            vec![root.join("Cargo.toml")]
+        );
+
+        let ignoring = Analyzer::builder()
+            .root(root)
+            .respect_gitignore(false)
+            .build()
+            .expect("Failed to build analyzer");
+        assert_eq!(
+            ignoring
+                .discover_cargo_files()
+                .expect("Cargo discovery failed"),
+            vec![root.join("Cargo.toml"), root.join("gen/Cargo.toml")]
+        );
     }
 }

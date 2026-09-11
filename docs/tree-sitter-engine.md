@@ -15,7 +15,7 @@ layer rules defined in TOML.
 |---|---|---|
 | Scope | Rust only | Any language with Tree-sitter grammar |
 | Parser | `syn` (Rust AST) | Tree-sitter (incremental, language-agnostic) |
-| Rules | Per-file AST lint rules (AL001-AL012) | Layer dependency + pattern + naming constraints (LAYER001, PATTERN001, NAMING001) |
+| Rules | Per-file AST lint rules (AL001-AL013) + declarative rules (ALD001-ALD003) | Layer dependency + pattern + naming constraints (LAYER001, PATTERN001, NAMING001) |
 | Config | `[rules.*]` sections | `[[layers]]` + `[dependencies]` + `[[constraints]]` |
 | Activation | Default (no `[[layers]]` in config) | Auto when `[[layers]]` present, or `--engine ts` |
 
@@ -141,7 +141,7 @@ message = "UseCase should not depend on other UseCases directly"
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `root` | string | `"."` | Project root directory (relative to config file location) |
+| `root` | string | `"."` | Project root directory. Relative values are joined to the `PATH` argument of `arch-lint check` (default: current directory), not to the config file location |
 | `exclude` | string[] | `[]` | Glob patterns for files/dirs to skip |
 
 #### `[[layers]]`

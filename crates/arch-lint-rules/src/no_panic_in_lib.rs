@@ -24,7 +24,7 @@
 //! ```
 
 use arch_lint_core::utils::allowance::check_allow_with_reason;
-use arch_lint_core::utils::{check_arch_lint_allow, has_cfg_test, has_test_attr, path_to_string};
+use arch_lint_core::utils::{path_to_string, ScopeTracker};
 use arch_lint_core::{FileContext, Location, Rule, Severity, Suggestion, Violation};
 use syn::visit::Visit;
 use syn::{ExprMacro, ItemFn, ItemImpl, ItemMod};
@@ -102,8 +102,7 @@ impl Rule for NoPanicInLib {
             ctx,
             rule: self,
             violations: Vec::new(),
-            in_test_context: false,
-            in_allowed_context: false,
+            scope: ScopeTracker::new(NAME).with_allow_in_tests(self.allow_in_tests),
         };
 
         visitor.visit_file(ast);
@@ -115,19 +114,13 @@ struct PanicVisitor<'a> {
     ctx: &'a FileContext<'a>,
     rule: &'a NoPanicInLib,
     violations: Vec<Violation>,
-    in_test_context: bool,
-    in_allowed_context: bool,
+    scope: ScopeTracker,
 }
 
 impl PanicVisitor<'_> {
     fn check_panic_macro(&mut self, path: &syn::Path) {
-        // Skip if in test context and tests are allowed
-        if self.rule.allow_in_tests && self.in_test_context {
-            return;
-        }
-
-        // Skip if in allowed context
-        if self.in_allowed_context {
+        // Skip if allowed, or in a test context where tests are allowed
+        if self.scope.suppressed() {
             return;
         }
 
@@ -201,51 +194,21 @@ impl PanicVisitor<'_> {
 
 impl<'ast> Visit<'ast> for PanicVisitor<'_> {
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
-        let was_in_test = self.in_test_context;
-        let was_allowed = self.in_allowed_context;
-
-        if has_cfg_test(&node.attrs) {
-            self.in_test_context = true;
-        }
-
-        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
-            self.in_allowed_context = true;
-        }
-
+        let scope = self.scope.enter_item_mod(&node.attrs);
         syn::visit::visit_item_mod(self, node);
-
-        self.in_test_context = was_in_test;
-        self.in_allowed_context = was_allowed;
+        self.scope.exit(scope);
     }
 
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        let was_in_test = self.in_test_context;
-        let was_allowed = self.in_allowed_context;
-
-        if has_test_attr(&node.attrs) {
-            self.in_test_context = true;
-        }
-
-        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
-            self.in_allowed_context = true;
-        }
-
+        let scope = self.scope.enter_item_fn(&node.attrs);
         syn::visit::visit_item_fn(self, node);
-
-        self.in_test_context = was_in_test;
-        self.in_allowed_context = was_allowed;
+        self.scope.exit(scope);
     }
 
     fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
-        let was_allowed = self.in_allowed_context;
-
-        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
-            self.in_allowed_context = true;
-        }
-
+        let scope = self.scope.enter_item_impl(&node.attrs);
         syn::visit::visit_item_impl(self, node);
-
-        self.in_allowed_context = was_allowed;
+        self.scope.exit(scope);
     }
 
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
@@ -262,18 +225,10 @@ impl<'ast> Visit<'ast> for PanicVisitor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use arch_lint_core::test_utils::check_rule;
 
     fn check_code(code: &str) -> Vec<Violation> {
-        let ast = syn::parse_file(code).expect("Failed to parse");
-        let ctx = FileContext {
-            path: Path::new("test.rs"),
-            content: code,
-            is_test: false,
-            module_path: vec![],
-            relative_path: std::path::PathBuf::from("test.rs"),
-        };
-        NoPanicInLib::new().check(&ctx, &ast)
+        check_rule(&NoPanicInLib::new(), code)
     }
 
     #[test]

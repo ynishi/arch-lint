@@ -14,10 +14,10 @@ arch-lint-core.workspace = true
 syn.workspace = true
 quote.workspace = true
 proc-macro2.workspace = true
-tracing.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-insta.workspace = true
+arch-lint-core = { workspace = true, features = ["test-utils"] }
 
 [lints]
 workspace = true

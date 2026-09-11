@@ -1,0 +1,58 @@
+[[scopes]]
+name = "handler"
+paths = ["src/handler/**"]
+
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+exclude = ["src/domain/tests/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[layering]]
+name = "clean-arch"
+order = ["handler", "domain", "infra"]
+message = "Layers may only depend downward."
+severity = "error"
+
+[[restrict-use]]
+name = "no-sqlx-in-domain"
+scope = "domain"
+deny = ["sqlx::**"]
+except = ["sqlx::types::*"]
+message = "Domain must be DB-agnostic."
+severity = "error"
+
+[[deny-attr]]
+name = "no-orm-derives-in-domain"
+scope = "domain"
+attrs = ["derive(sqlx::FromRow)"]
+on = ["struct", "enum"]
+message = "Domain types must stay ORM-agnostic."
+severity = "error"
+
+[[require-attr]]
+name = "instrument-handlers"
+scope = "handler"
+attrs = ["tracing::instrument"]
+on = ["fn"]
+message = "Handlers must be instrumented."
+severity = "warning"
+
+[[naming]]
+name = "domain-ports"
+scope = "domain"
+item = "trait"
+pattern = "^[A-Z][A-Za-z0-9]*(Repository|Port)$"
+message = "Domain traits are ports: name them *Repository or *Port."
+severity = "warning"
+
+[[require-return]]
+name = "handlers-return-app-result"
+scope = "handler"
+async = true
+pattern = "^Result<.*,\\s*AppError>$"
+message = "Handlers must return Result<_, AppError>."
+severity = "error"

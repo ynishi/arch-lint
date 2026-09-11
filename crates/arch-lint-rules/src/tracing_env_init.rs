@@ -26,7 +26,7 @@
 //! ```
 
 use arch_lint_core::utils::allowance::check_allow_with_reason;
-use arch_lint_core::utils::{check_arch_lint_allow, path_to_string};
+use arch_lint_core::utils::{path_to_string, ScopeTracker};
 use arch_lint_core::{FileContext, Location, Rule, Severity, Suggestion, Violation};
 use syn::visit::Visit;
 use syn::{Expr, ExprCall, ExprLit, ExprMethodCall, ExprPath, ItemFn, ItemImpl, ItemMod, Lit};
@@ -96,7 +96,7 @@ impl Rule for TracingEnvInit {
             ctx,
             rule: self,
             violations: Vec::new(),
-            in_allowed_context: false,
+            scope: ScopeTracker::new(NAME),
             in_env_fallback: false,
         };
 
@@ -109,7 +109,7 @@ struct EnvInitVisitor<'a> {
     ctx: &'a FileContext<'a>,
     rule: &'a TracingEnvInit,
     violations: Vec<Violation>,
-    in_allowed_context: bool,
+    scope: ScopeTracker,
     /// True when inside the fallback argument of
     /// `try_from_default_env().unwrap_or_else(|| ...)`.
     in_env_fallback: bool,
@@ -129,36 +129,21 @@ fn is_env_init_call(expr: &Expr) -> bool {
 
 impl<'ast> Visit<'ast> for EnvInitVisitor<'_> {
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
-        let was_allowed = self.in_allowed_context;
-
-        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
-            self.in_allowed_context = true;
-        }
-
+        let scope = self.scope.enter_item_mod(&node.attrs);
         syn::visit::visit_item_mod(self, node);
-        self.in_allowed_context = was_allowed;
+        self.scope.exit(scope);
     }
 
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        let was_allowed = self.in_allowed_context;
-
-        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
-            self.in_allowed_context = true;
-        }
-
+        let scope = self.scope.enter_item_fn(&node.attrs);
         syn::visit::visit_item_fn(self, node);
-        self.in_allowed_context = was_allowed;
+        self.scope.exit(scope);
     }
 
     fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
-        let was_allowed = self.in_allowed_context;
-
-        if check_arch_lint_allow(&node.attrs, NAME).is_allowed() {
-            self.in_allowed_context = true;
-        }
-
+        let scope = self.scope.enter_item_impl(&node.attrs);
         syn::visit::visit_item_impl(self, node);
-        self.in_allowed_context = was_allowed;
+        self.scope.exit(scope);
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
@@ -183,7 +168,7 @@ impl<'ast> Visit<'ast> for EnvInitVisitor<'_> {
     }
 
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
-        if self.in_allowed_context || self.in_env_fallback {
+        if self.scope.suppressed() || self.in_env_fallback {
             syn::visit::visit_expr_call(self, node);
             return;
         }
@@ -263,18 +248,10 @@ impl<'ast> Visit<'ast> for EnvInitVisitor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use arch_lint_core::test_utils::check_rule;
 
     fn check_code(code: &str) -> Vec<Violation> {
-        let ast = syn::parse_file(code).expect("Failed to parse");
-        let ctx = FileContext {
-            path: Path::new("test.rs"),
-            content: code,
-            is_test: false,
-            module_path: vec![],
-            relative_path: std::path::PathBuf::from("test.rs"),
-        };
-        TracingEnvInit::new().check(&ctx, &ast)
+        check_rule(&TracingEnvInit::new(), code)
     }
 
     #[test]
