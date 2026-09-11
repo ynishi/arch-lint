@@ -309,6 +309,31 @@ fn build_no_silent_result_drop(
         .allow_let_underscore(allow_let_underscore))
 }
 
+/// Validates every `[rules.<name>]` table in `config`, regardless of preset.
+///
+/// [`Preset::rules_with_config`] only parses the tables of the rules the active
+/// preset runs, so a typo in a table for a rule outside the preset would slip
+/// through unnoticed. This walks the whole map instead: every key that names a
+/// built-in rule (kebab-case name or `ALxxx` code) is parsed into that rule's
+/// options type.
+///
+/// Keys that do not name a built-in rule — custom rules registered through the
+/// builder API — are left alone.
+///
+/// # Errors
+///
+/// Returns [`RuleOptionsError`] for the first table that carries an option the
+/// rule does not accept, or a value of the wrong type.
+pub fn validate_rule_tables(config: &Config) -> Result<(), RuleOptionsError> {
+    for (key, rule_config) in &config.rules {
+        let Some(name) = canonical_rule_name(key) else {
+            continue;
+        };
+        build_rule(name, Preset::Recommended, Some(rule_config))?;
+    }
+    Ok(())
+}
+
 /// Returns the recommended set of rules.
 ///
 /// Includes:
@@ -518,12 +543,43 @@ mod tests {
     }
 
     #[test]
-    fn option_tables_of_rules_outside_the_preset_are_ignored() {
-        // `handler-complexity` is not in `recommended`, so its table is never
-        // parsed by that preset.
+    fn option_tables_of_rules_outside_the_preset_are_validated() {
+        // `handler-complexity` is not in `recommended`, so that preset never
+        // builds it — but the table is still checked by `validate_rule_tables`.
         let config = Config::parse("[rules.handler-complexity]\nnot_a_key = 1\n").expect("parse");
         assert!(Preset::Recommended.rules_with_config(&config).is_ok());
         assert!(Preset::Strict.rules_with_config(&config).is_err());
+
+        let err = validate_rule_tables(&config).expect_err("typo must be rejected");
+        assert_eq!(err.rule, "handler-complexity");
+        assert!(err.message.contains("not_a_key"), "{err}");
+    }
+
+    #[test]
+    fn tables_of_rules_that_are_not_built_in_are_left_alone() {
+        // Custom rules (registered through the builder API) keep their
+        // free-form tables: arch-lint knows nothing about their option keys.
+        let config = Config::parse(
+            "[rules.required-crate]\nenabled = true\ncrate_name = \"tracing\"\nanything = 1\n",
+        )
+        .expect("parse");
+
+        validate_rule_tables(&config).expect("custom rule tables are accepted");
+        assert!(Preset::Strict.rules_with_config(&config).is_ok());
+        assert!(config.is_rule_enabled("required-crate"));
+    }
+
+    #[test]
+    fn validate_rule_tables_accepts_valid_options_and_codes() {
+        let config = Config::parse(
+            "[rules.AL004]\nmax_match_arms = 3\n\n[rules.no-unwrap-expect]\nallow_expect = true\n",
+        )
+        .expect("parse");
+        validate_rule_tables(&config).expect("valid options parse");
+
+        let config = Config::parse("[rules.AL004]\nmax_match_arm = 3\n").expect("parse");
+        let err = validate_rule_tables(&config).expect_err("typo under a code key is rejected");
+        assert_eq!(err.rule, "handler-complexity");
     }
 
     /// Number of violations `code` reports for `src`, seen as the file `path`.

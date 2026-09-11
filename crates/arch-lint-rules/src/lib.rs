@@ -70,7 +70,7 @@ pub use options::{
 pub use prefer_from_over_into::PreferFromOverInto;
 pub use presets::{
     all_rules, canonical_rule_name, minimal_rules, recommended_rules, rule_by_name,
-    rule_from_config, strict_rules, ParsePresetError, Preset,
+    rule_from_config, strict_rules, validate_rule_tables, ParsePresetError, Preset,
 };
 pub use require_doc_comments::RequireDocComments;
 pub use require_thiserror::RequireThiserror;

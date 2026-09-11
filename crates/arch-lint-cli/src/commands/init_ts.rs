@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 use std::path::Path;
 
-const TS_CONFIG_TEMPLATE: &str = r#"# arch-lint configuration (tree-sitter engine)
+pub(crate) const TS_CONFIG_TEMPLATE: &str = r#"# arch-lint configuration (tree-sitter engine)
 # This config enables cross-language architecture enforcement.
 # The presence of [[layers]] activates the tree-sitter engine automatically.
 

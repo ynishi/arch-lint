@@ -35,7 +35,9 @@ use arch_lint_core::declarative::LoadRulesError;
 use arch_lint_core::{
     Analyzer, AnalyzerError, Config, ConfigError, LintResult, ParseSeverityError, RuleBox, Severity,
 };
-use arch_lint_rules::{rule_from_config, ParsePresetError, Preset, RuleOptionsError};
+use arch_lint_rules::{
+    rule_from_config, validate_rule_tables, ParsePresetError, Preset, RuleOptionsError,
+};
 use std::path::{Path, PathBuf};
 
 /// Project-level configuration file names, checked in order.
@@ -326,6 +328,9 @@ impl Session {
             })?;
             let declarative = arch_lint_core::declarative::load_rules_from_toml(content)
                 .map_err(|source| SessionError::Declarative { path, source })?;
+            // Every `[rules.<name>]` table is checked here, not only the ones
+            // the active preset builds, so a typo in any of them is an error.
+            validate_rule_tables(&config)?;
             (config, declarative)
         };
 
@@ -830,6 +835,26 @@ message = "m"
         assert!(err.to_string().contains("Invalid declarative rules"));
         let source = std::error::Error::source(&err).expect("source preserved");
         assert!(source.to_string().contains("denyy"), "{source}");
+    }
+
+    #[test]
+    fn rule_table_outside_the_preset_is_still_validated() {
+        // `handler-complexity` is not in `minimal`, but its table is checked.
+        let toml = "preset = \"minimal\"\n\n[rules.handler-complexity]\nmax_match_arm = 3\n";
+        let err = match Session::from_config_str(".", toml) {
+            Ok(_) => panic!("a typo in any rule table must fail"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("handler-complexity"), "{err}");
+        assert!(err.to_string().contains("max_match_arm"), "{err}");
+    }
+
+    #[test]
+    fn tables_of_unknown_rules_are_accepted() {
+        // Custom rules keep their own option keys.
+        let toml = "[rules.required-crate]\nenabled = true\ncrate_name = \"tracing\"\n";
+        let session = Session::from_config_str(".", toml).expect("custom rule table is accepted");
+        assert!(session.config().is_rule_enabled("required-crate"));
     }
 
     // ── Rule filter ──

@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 use std::path::Path;
 
-const DEFAULT_CONFIG: &str = r#"# arch-lint configuration
+pub(crate) const DEFAULT_CONFIG: &str = r#"# arch-lint configuration
 # See https://github.com/ynishi/arch-lint for documentation
 
 # Preset: "recommended" (default), "strict", or "minimal"

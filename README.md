@@ -798,6 +798,42 @@ leading `./` on a pattern is accepted (`./src/**` ≡ `src/**`).
 follows the same `respect_gitignore` and `exclude` settings, but ignores
 `include`, which scopes source files only.
 
+### JSON Schema
+
+`arch-lint schema` prints a JSON Schema (draft 2020-12) for the whole
+configuration file — the top-level keys, `[analyzer]`, every built-in rule's
+option keys with their documentation, and the declarative sections:
+
+```bash
+arch-lint schema > arch-lint.schema.json
+arch-lint schema --out arch-lint.schema.json   # same, written directly
+```
+
+Point your editor at the generated file with the schema directive that
+[taplo](https://taplo.tamasfe.dev/) and the
+[Even Better TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml)
+extension understand — the first line of `arch-lint.toml`:
+
+```toml
+#:schema ./arch-lint.schema.json
+
+preset = "recommended"
+
+[rules.no-unwrap-expect]
+allow_in_tests = true
+```
+
+You then get completion for rule names and option keys, and a warning on a
+misspelled key before the linter ever runs. `arch-lint list-rules --json`
+prints the same per-rule option schemas on their own, for tooling that wants
+the rule registry rather than the config file shape.
+
+Tables under `rules` whose name is not a built-in rule are left open, so
+configuration for custom rules still validates. Tree-sitter configuration
+(`[[layers]]`, `[dependencies]`, `[[constraints]]`) is not described by this
+schema; those keys are accepted because the top level of the document stays
+open.
+
 ## Suppression
 
 arch-lint provides multiple ways to suppress violations at different scopes.
@@ -1089,7 +1125,10 @@ arch-lint check                           # Run all checks
 arch-lint check --rules no-unwrap-expect  # Run specific rules
 arch-lint check --format json             # JSON output for CI
 arch-lint check --engine ts               # Force tree-sitter engine
-arch-lint list-rules                      # Show available rules
+arch-lint list-rules                      # Show available rules and their options
+arch-lint list-rules --json               # Same, as JSON (option schemas included)
+arch-lint schema                          # JSON Schema of arch-lint.toml
+arch-lint schema --out arch-lint.schema.json
 ```
 
 ### Cross-language (tree-sitter engine)
