@@ -448,6 +448,8 @@ pub enum MyError {
 ```toml
 [rules.require-thiserror]
 severity = "error"
+# Extra type-name suffixes treated as error types, on top of the built-in "Error"
+patterns = ["Failure"]
 ```
 
 #### AL006: require-tracing
@@ -766,11 +768,12 @@ message = "Handlers must return Result<_, AppError>."
 | `exclude` | `["**/target/**", "**/vendor/**"]` | Glob patterns dropped from the result. |
 | `parallelism` | unset | **Reserved** — parsed, but analysis currently runs sequentially. |
 
-Unknown keys inside `[analyzer]` and inside any declarative rule table
-(`[[scopes]]`, `[[restrict-use]]`, ..., `[[require-return]]`) are a config
-error, so a typo such as `denyy = [...]` cannot silently disable a rule.
-Per-rule option tables (`[rules.<name>]`) stay free-form because each rule
-defines its own keys.
+Unknown keys inside `[analyzer]`, inside any declarative rule table
+(`[[scopes]]`, `[[restrict-use]]`, ..., `[[require-return]]`) and inside any
+per-rule option table (`[rules.<name>]`) are a config error, so a typo such as
+`denyy = [...]` or `allow_in_test = true` cannot silently disable a rule or be
+ignored. Each rule declares its own option keys; `enabled`, `severity` and
+`exclude_files` are accepted next to them for every rule.
 
 File discovery runs in this order:
 

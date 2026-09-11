@@ -14,6 +14,9 @@ arch-lint-core.workspace = true
 syn.workspace = true
 quote.workspace = true
 proc-macro2.workspace = true
+serde.workspace = true
+schemars.workspace = true
+toml.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

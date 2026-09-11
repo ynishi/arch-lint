@@ -51,7 +51,10 @@ pub struct AsyncTraitSendCheck {
 }
 
 /// Runtime execution mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
 pub enum RuntimeMode {
     /// Single-threaded runtime (e.g., `LocalSet`, wasm).
     SingleThread,

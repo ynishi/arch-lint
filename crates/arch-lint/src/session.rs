@@ -35,7 +35,7 @@ use arch_lint_core::declarative::LoadRulesError;
 use arch_lint_core::{
     Analyzer, AnalyzerError, Config, ConfigError, LintResult, ParseSeverityError, RuleBox, Severity,
 };
-use arch_lint_rules::{rule_from_config, ParsePresetError, Preset};
+use arch_lint_rules::{rule_from_config, ParsePresetError, Preset, RuleOptionsError};
 use std::path::{Path, PathBuf};
 
 /// Project-level configuration file names, checked in order.
@@ -183,6 +183,10 @@ pub enum SessionError {
     /// The configured or requested `fail_on` severity does not exist.
     #[error(transparent)]
     Severity(#[from] ParseSeverityError),
+
+    /// A `[rules.<name>]` table carries an option the rule does not accept.
+    #[error(transparent)]
+    RuleOptions(#[from] RuleOptionsError),
 
     /// A rule name passed to [`Session::with_rule_filter`] is not known.
     #[error("Unknown rule `{0}`. Run `arch-lint list-rules` to see valid names.")]
@@ -404,11 +408,12 @@ impl Session {
     /// # Errors
     ///
     /// Returns [`SessionError::UnknownRule`] for the first name that does not
-    /// match a built-in rule.
+    /// match a built-in rule, and [`SessionError::RuleOptions`] if a
+    /// `[rules.<name>]` table carries an option that rule does not accept.
     pub fn with_rule_filter(mut self, names: &[&str]) -> Result<Self, SessionError> {
         let mut rules = Vec::with_capacity(names.len());
         for name in names {
-            match rule_from_config(name, &self.config) {
+            match rule_from_config(name, &self.config)? {
                 Some(rule) => rules.push(rule),
                 None => return Err(SessionError::UnknownRule((*name).to_string())),
             }
@@ -457,9 +462,10 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::Build`] if the analyzer rejects the
-    /// configuration, and [`SessionError::Analyze`] if the analysis itself
-    /// fails.
+    /// Returns [`SessionError::RuleOptions`] if a `[rules.<name>]` table
+    /// carries an option that rule does not accept,
+    /// [`SessionError::Build`] if the analyzer rejects the configuration, and
+    /// [`SessionError::Analyze`] if the analysis itself fails.
     pub fn run(self) -> Result<LintResult, SessionError> {
         let Self {
             root,
@@ -471,7 +477,10 @@ impl Session {
             ..
         } = self;
 
-        let rules = rules.unwrap_or_else(|| preset.rules_with_config(&config));
+        let rules = match rules {
+            Some(rules) => rules,
+            None => preset.rules_with_config(&config)?,
+        };
 
         let mut builder = Analyzer::builder().root(&root).config(config);
         for pattern in excludes {

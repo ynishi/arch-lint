@@ -4,10 +4,16 @@
 //! built-in rule from its kebab-case name (or `ALxxx` code) and from the
 //! per-rule options in `[rules.<name>]` of `arch-lint.toml`.
 
+use crate::options::{
+    parse_options, AsyncTraitSendCheckOptions, HandlerComplexityOptions, NoErrorSwallowingOptions,
+    NoPanicInLibOptions, NoSilentResultDropOptions, NoSyncIoOptions, NoUnwrapExpectOptions,
+    PreferFromOverIntoOptions, RequireDocCommentsOptions, RequireThiserrorOptions,
+    RequireTracingOptions, RuleOptionsError, TracingEnvInitOptions,
+};
 use crate::{
     AsyncTraitSendCheck, HandlerComplexity, HandlerComplexityConfig, NoErrorSwallowing,
     NoPanicInLib, NoSilentResultDrop, NoSyncIo, NoUnwrapExpect, PreferFromOverInto,
-    RequireDocComments, RequireThiserror, RequireTracing, RuntimeMode, TracingEnvInit,
+    RequireDocComments, RequireThiserror, RequireTracing, TracingEnvInit,
 };
 use arch_lint_core::{Config, RuleBox, RuleConfig};
 
@@ -44,7 +50,10 @@ impl Preset {
     /// Returns the rules for this preset with default options.
     #[must_use]
     pub fn rules(self) -> Vec<RuleBox> {
-        self.rules_with_config(&Config::default())
+        self.rule_names()
+            .iter()
+            .filter_map(|name| build_rule(name, self, None).ok().flatten())
+            .collect()
     }
 
     /// Returns the rules for this preset, applying per-rule options from `config`.
@@ -52,17 +61,21 @@ impl Preset {
     /// Options under `[rules.<name>]` (e.g. `allow_in_tests`, `max_match_arms`)
     /// override the preset defaults. `enabled` / `severity` / `exclude_files`
     /// are applied by the analyzer, not here.
-    #[must_use]
-    pub fn rules_with_config(self, config: &Config) -> Vec<RuleBox> {
-        let names: &[&str] = match self {
-            Self::Recommended => RECOMMENDED,
-            Self::Strict => ALL,
-            Self::Minimal => MINIMAL,
-        };
-        names
-            .iter()
-            .filter_map(|name| build_rule(name, self, config.rules.get(*name)))
-            .collect()
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuleOptionsError`] for the first `[rules.<name>]` table that
+    /// carries an option the rule does not accept, or a value of the wrong
+    /// type.
+    pub fn rules_with_config(self, config: &Config) -> Result<Vec<RuleBox>, RuleOptionsError> {
+        let names: &[&str] = self.rule_names();
+        let mut rules = Vec::with_capacity(names.len());
+        for name in names {
+            if let Some(rule) = build_rule(name, self, config.rules.get(*name))? {
+                rules.push(rule);
+            }
+        }
+        Ok(rules)
     }
 
     /// Returns the kebab-case names of the rules in this preset.
@@ -133,106 +146,167 @@ pub fn canonical_rule_name(name_or_code: &str) -> Option<&'static str> {
 #[must_use]
 pub fn rule_by_name(name_or_code: &str) -> Option<RuleBox> {
     let name = canonical_rule_name(name_or_code)?;
-    build_rule(name, Preset::Recommended, None)
+    build_rule(name, Preset::Recommended, None).ok().flatten()
 }
 
 /// Builds a single rule by name or code, applying `[rules.<name>]` options.
 ///
-/// Returns `None` for unknown names.
-#[must_use]
-pub fn rule_from_config(name_or_code: &str, config: &Config) -> Option<RuleBox> {
-    let name = canonical_rule_name(name_or_code)?;
+/// Returns `Ok(None)` for unknown names.
+///
+/// # Errors
+///
+/// Returns [`RuleOptionsError`] when the rule's `[rules.<name>]` table carries
+/// an option the rule does not accept, or a value of the wrong type.
+pub fn rule_from_config(
+    name_or_code: &str,
+    config: &Config,
+) -> Result<Option<RuleBox>, RuleOptionsError> {
+    let Some(name) = canonical_rule_name(name_or_code) else {
+        return Ok(None);
+    };
     build_rule(name, Preset::Recommended, config.rules.get(name))
 }
 
 /// Constructs a rule from its canonical name, preset-specific defaults, and
-/// optional per-rule config. Config keys match the README `[rules.*]` docs.
-fn build_rule(name: &str, preset: Preset, cfg: Option<&RuleConfig>) -> Option<RuleBox> {
+/// optional per-rule config.
+///
+/// The accepted option keys of each rule are defined by its options struct in
+/// [`crate::options`]; an unrecognized key is an error rather than a silent
+/// no-op.
+fn build_rule(
+    name: &str,
+    preset: Preset,
+    cfg: Option<&RuleConfig>,
+) -> Result<Option<RuleBox>, RuleOptionsError> {
     let strict = preset == Preset::Strict;
-    let minimal = preset == Preset::Minimal;
-    let get_bool = |key: &str, default: bool| cfg.map_or(default, |c| c.get_bool(key, default));
-    let get_usize = |key: &str, default: usize| {
-        cfg.and_then(|c| c.get_option::<usize>(key))
-            .unwrap_or(default)
-    };
-    let get_strs = |key: &str| cfg.map(|c| c.get_str_array(key)).unwrap_or_default();
 
     let rule: RuleBox = match name {
-        "no-unwrap-expect" => {
-            let base = NoUnwrapExpect::new();
-            let allow_in_tests = get_bool("allow_in_tests", !strict && base.allow_in_tests);
-            let allow_expect = get_bool("allow_expect", minimal || (!strict && base.allow_expect));
-            Box::new(
-                base.allow_in_tests(allow_in_tests)
-                    .allow_expect(allow_expect),
-            )
-        }
+        "no-unwrap-expect" => Box::new(build_no_unwrap_expect(name, preset, cfg)?),
         "no-sync-io" => {
-            let patterns = get_strs("allow_patterns");
+            let opts: NoSyncIoOptions = parse_options(name, cfg)?;
+            let patterns = opts.allow_patterns.unwrap_or_default();
             let refs: Vec<&str> = patterns.iter().map(String::as_str).collect();
             Box::new(NoSyncIo::new().allow_patterns(&refs))
         }
-        "no-error-swallowing" => Box::new(NoErrorSwallowing::new()),
-        "handler-complexity" => {
-            let defaults = HandlerComplexityConfig::default();
-            Box::new(
-                HandlerComplexity::new()
-                    .max_handler_lines(get_usize("max_handler_lines", defaults.max_handler_lines))
-                    .max_match_arms(get_usize("max_match_arms", defaults.max_match_arms))
-                    .max_enum_variants(get_usize("max_enum_variants", defaults.max_enum_variants)),
-            )
+        "no-error-swallowing" => {
+            let _: NoErrorSwallowingOptions = parse_options(name, cfg)?;
+            Box::new(NoErrorSwallowing::new())
         }
+        "handler-complexity" => Box::new(build_handler_complexity(name, cfg)?),
         "require-thiserror" => {
+            let opts: RequireThiserrorOptions = parse_options(name, cfg)?;
             let mut rule = RequireThiserror::new();
-            for pattern in get_strs("patterns") {
+            for pattern in opts.patterns.unwrap_or_default() {
                 rule = rule.add_pattern(pattern);
             }
             Box::new(rule)
         }
-        "require-tracing" => Box::new(RequireTracing::new()),
-        "tracing-env-init" => Box::new(TracingEnvInit::new()),
-        "async-trait-send-check" => {
-            let mode = cfg
-                .and_then(|c| c.get_option::<String>("runtime_mode"))
-                .and_then(|m| match m.as_str() {
-                    "single-thread" => Some(RuntimeMode::SingleThread),
-                    "multi-thread" => Some(RuntimeMode::MultiThread),
-                    _ => None,
-                })
-                .unwrap_or(AsyncTraitSendCheck::new().runtime_mode);
-            Box::new(AsyncTraitSendCheck::new().runtime_mode(mode))
+        "require-tracing" => {
+            let _: RequireTracingOptions = parse_options(name, cfg)?;
+            Box::new(RequireTracing::new())
         }
-        "prefer-from-over-into" => Box::new(PreferFromOverInto::new()),
+        "tracing-env-init" => {
+            let _: TracingEnvInitOptions = parse_options(name, cfg)?;
+            Box::new(TracingEnvInit::new())
+        }
+        "async-trait-send-check" => {
+            let opts: AsyncTraitSendCheckOptions = parse_options(name, cfg)?;
+            let base = AsyncTraitSendCheck::new();
+            let mode = opts.runtime_mode.unwrap_or(base.runtime_mode);
+            Box::new(base.runtime_mode(mode))
+        }
+        "prefer-from-over-into" => {
+            let _: PreferFromOverIntoOptions = parse_options(name, cfg)?;
+            Box::new(PreferFromOverInto::new())
+        }
         "no-panic-in-lib" => {
+            let opts: NoPanicInLibOptions = parse_options(name, cfg)?;
             let base = NoPanicInLib::new();
-            let allow_in_tests = get_bool("allow_in_tests", !strict && base.allow_in_tests);
+            let allow_in_tests = opts
+                .allow_in_tests
+                .unwrap_or(!strict && base.allow_in_tests);
             Box::new(base.allow_in_tests(allow_in_tests))
         }
-        "require-doc-comments" => {
-            let base = RequireDocComments::new();
-            let fn_docs = get_bool("require_fn_docs", base.require_fn_docs);
-            let struct_docs = get_bool("require_struct_docs", base.require_struct_docs);
-            let enum_docs = get_bool("require_enum_docs", base.require_enum_docs);
-            Box::new(
-                base.require_fn_docs(fn_docs)
-                    .require_struct_docs(struct_docs)
-                    .require_enum_docs(enum_docs),
-            )
-        }
-        "no-silent-result-drop" => {
-            let base = NoSilentResultDrop::new();
-            let allow_in_tests = get_bool("allow_in_tests", !strict && base.allow_in_tests);
-            let allow_ok = get_bool("allow_ok", !strict && base.allow_ok);
-            let allow_let_underscore = get_bool("allow_let_underscore", base.allow_let_underscore);
-            Box::new(
-                base.allow_in_tests(allow_in_tests)
-                    .allow_ok(allow_ok)
-                    .allow_let_underscore(allow_let_underscore),
-            )
-        }
-        _ => return None,
+        "require-doc-comments" => Box::new(build_require_doc_comments(name, cfg)?),
+        "no-silent-result-drop" => Box::new(build_no_silent_result_drop(name, preset, cfg)?),
+        _ => return Ok(None),
     };
-    Some(rule)
+    Ok(Some(rule))
+}
+
+/// `no-unwrap-expect`: both allowances relax outside `strict`, and `minimal`
+/// additionally tolerates `.expect()`.
+fn build_no_unwrap_expect(
+    name: &str,
+    preset: Preset,
+    cfg: Option<&RuleConfig>,
+) -> Result<NoUnwrapExpect, RuleOptionsError> {
+    let strict = preset == Preset::Strict;
+    let minimal = preset == Preset::Minimal;
+    let opts: NoUnwrapExpectOptions = parse_options(name, cfg)?;
+    let base = NoUnwrapExpect::new();
+    let allow_in_tests = opts
+        .allow_in_tests
+        .unwrap_or(!strict && base.allow_in_tests);
+    let allow_expect = opts
+        .allow_expect
+        .unwrap_or(minimal || (!strict && base.allow_expect));
+    Ok(base
+        .allow_in_tests(allow_in_tests)
+        .allow_expect(allow_expect))
+}
+
+/// `handler-complexity`: every limit defaults to [`HandlerComplexityConfig`],
+/// independent of the preset.
+fn build_handler_complexity(
+    name: &str,
+    cfg: Option<&RuleConfig>,
+) -> Result<HandlerComplexity, RuleOptionsError> {
+    let opts: HandlerComplexityOptions = parse_options(name, cfg)?;
+    let defaults = HandlerComplexityConfig::default();
+    Ok(HandlerComplexity::new()
+        .max_handler_lines(opts.max_handler_lines.unwrap_or(defaults.max_handler_lines))
+        .max_match_arms(opts.max_match_arms.unwrap_or(defaults.max_match_arms))
+        .max_enum_variants(opts.max_enum_variants.unwrap_or(defaults.max_enum_variants)))
+}
+
+/// `require-doc-comments`: every item kind is required by default, independent
+/// of the preset.
+fn build_require_doc_comments(
+    name: &str,
+    cfg: Option<&RuleConfig>,
+) -> Result<RequireDocComments, RuleOptionsError> {
+    let opts: RequireDocCommentsOptions = parse_options(name, cfg)?;
+    let base = RequireDocComments::new();
+    let fn_docs = opts.require_fn_docs.unwrap_or(base.require_fn_docs);
+    let struct_docs = opts.require_struct_docs.unwrap_or(base.require_struct_docs);
+    let enum_docs = opts.require_enum_docs.unwrap_or(base.require_enum_docs);
+    Ok(base
+        .require_fn_docs(fn_docs)
+        .require_struct_docs(struct_docs)
+        .require_enum_docs(enum_docs))
+}
+
+/// `no-silent-result-drop`: only the test allowance relaxes outside `strict`.
+fn build_no_silent_result_drop(
+    name: &str,
+    preset: Preset,
+    cfg: Option<&RuleConfig>,
+) -> Result<NoSilentResultDrop, RuleOptionsError> {
+    let strict = preset == Preset::Strict;
+    let opts: NoSilentResultDropOptions = parse_options(name, cfg)?;
+    let base = NoSilentResultDrop::new();
+    let allow_in_tests = opts
+        .allow_in_tests
+        .unwrap_or(!strict && base.allow_in_tests);
+    let allow_ok = opts.allow_ok.unwrap_or(!strict && base.allow_ok);
+    let allow_let_underscore = opts
+        .allow_let_underscore
+        .unwrap_or(base.allow_let_underscore);
+    Ok(base
+        .allow_in_tests(allow_in_tests)
+        .allow_ok(allow_ok)
+        .allow_let_underscore(allow_let_underscore))
 }
 
 /// Returns the recommended set of rules.
@@ -274,7 +348,7 @@ pub fn minimal_rules() -> Vec<RuleBox> {
 #[must_use]
 pub fn all_rules() -> Vec<RuleBox> {
     ALL.iter()
-        .filter_map(|name| build_rule(name, Preset::Recommended, None))
+        .filter_map(|name| build_rule(name, Preset::Recommended, None).ok().flatten())
         .collect()
 }
 
@@ -350,7 +424,9 @@ allow_patterns = ["my_io::"]
         )
         .expect("parse");
 
-        let rules = Preset::Strict.rules_with_config(&config);
+        let rules = Preset::Strict
+            .rules_with_config(&config)
+            .expect("options parse");
         let hc = rules
             .iter()
             .find(|r| r.name() == "handler-complexity")
@@ -408,5 +484,332 @@ mod tests {
             .find(|r| r.code() == "AL001")
             .expect("AL001");
         assert!(rule.check(&ctx, &ast).is_empty());
+    }
+
+    #[test]
+    fn unknown_rule_option_is_rejected_with_rule_and_key() {
+        let config =
+            Config::parse("[rules.no-unwrap-expect]\nallow_in_test = true\n").expect("parse");
+
+        let err = Preset::Recommended
+            .rules_with_config(&config)
+            .err()
+            .expect("typo key must be rejected");
+        let text = err.to_string();
+        assert_eq!(err.rule, "no-unwrap-expect");
+        assert!(text.contains("no-unwrap-expect"), "{text}");
+        assert!(text.contains("unknown field `allow_in_test`"), "{text}");
+
+        let err = rule_from_config("AL001", &config)
+            .err()
+            .expect("typo key must be rejected");
+        assert_eq!(err.rule, "no-unwrap-expect");
+    }
+
+    #[test]
+    fn invalid_runtime_mode_is_rejected() {
+        let config = Config::parse("[rules.async-trait-send-check]\nruntime_mode = \"green\"\n")
+            .expect("parse");
+        let err = Preset::Strict
+            .rules_with_config(&config)
+            .err()
+            .expect("unknown runtime_mode must be rejected");
+        assert_eq!(err.rule, "async-trait-send-check");
+    }
+
+    #[test]
+    fn option_tables_of_rules_outside_the_preset_are_ignored() {
+        // `handler-complexity` is not in `recommended`, so its table is never
+        // parsed by that preset.
+        let config = Config::parse("[rules.handler-complexity]\nnot_a_key = 1\n").expect("parse");
+        assert!(Preset::Recommended.rules_with_config(&config).is_ok());
+        assert!(Preset::Strict.rules_with_config(&config).is_err());
+    }
+
+    /// Number of violations `code` reports for `src`, seen as the file `path`.
+    fn violations(rules: &[RuleBox], code: &str, path: &str, src: &str) -> usize {
+        let rule = rules
+            .iter()
+            .find(|r| r.code() == code)
+            .unwrap_or_else(|| panic!("{code} is not in this preset"));
+        let ctx = arch_lint_core::FileContext::new(
+            std::path::Path::new(path),
+            src,
+            std::path::Path::new("."),
+        );
+        let ast = syn::parse_file(src).expect("parse");
+        rule.check(&ctx, &ast).len()
+    }
+
+    const UNWRAP_IN_TESTS: &str = r"
+#[cfg(test)]
+mod tests {
+    fn helper() { let x: Option<u8> = None; x.unwrap(); }
+}
+";
+    const EXPECT_IN_PROD: &str = r#"
+fn foo() { let x: Option<u8> = None; x.expect("should exist"); }
+"#;
+
+    #[test]
+    fn default_no_unwrap_expect_options_per_preset() {
+        // allow_in_tests: true under recommended/minimal, false under strict.
+        assert_eq!(
+            violations(
+                &Preset::Recommended.rules(),
+                "AL001",
+                "src/lib.rs",
+                UNWRAP_IN_TESTS
+            ),
+            0
+        );
+        assert_eq!(
+            violations(
+                &Preset::Minimal.rules(),
+                "AL001",
+                "src/lib.rs",
+                UNWRAP_IN_TESTS
+            ),
+            0
+        );
+        assert_eq!(
+            violations(
+                &Preset::Strict.rules(),
+                "AL001",
+                "src/lib.rs",
+                UNWRAP_IN_TESTS
+            ),
+            1
+        );
+
+        // allow_expect: true under minimal, false under recommended/strict.
+        assert_eq!(
+            violations(
+                &Preset::Minimal.rules(),
+                "AL001",
+                "src/lib.rs",
+                EXPECT_IN_PROD
+            ),
+            0
+        );
+        assert_eq!(
+            violations(
+                &Preset::Recommended.rules(),
+                "AL001",
+                "src/lib.rs",
+                EXPECT_IN_PROD
+            ),
+            1
+        );
+        assert_eq!(
+            violations(
+                &Preset::Strict.rules(),
+                "AL001",
+                "src/lib.rs",
+                EXPECT_IN_PROD
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn default_no_silent_result_drop_options_per_preset() {
+        // allow_in_tests: true under recommended, false under strict.
+        let in_tests = r"
+#[cfg(test)]
+mod tests {
+    fn helper() { let r: Result<u8, ()> = Ok(1); r.unwrap_or_default(); }
+}
+";
+        assert_eq!(
+            violations(
+                &Preset::Recommended.rules(),
+                "AL013",
+                "src/lib.rs",
+                in_tests
+            ),
+            0
+        );
+        assert_eq!(
+            violations(&Preset::Strict.rules(), "AL013", "src/lib.rs", in_tests),
+            1
+        );
+
+        // allow_ok: false under every preset.
+        let ok_call = r"
+fn foo() { let r: Result<u8, ()> = Ok(1); let _v = r.ok(); }
+";
+        assert_eq!(
+            violations(&Preset::Recommended.rules(), "AL013", "src/lib.rs", ok_call),
+            1
+        );
+        assert_eq!(
+            violations(&Preset::Strict.rules(), "AL013", "src/lib.rs", ok_call),
+            1
+        );
+    }
+
+    #[test]
+    fn default_no_panic_in_lib_allows_tests_outside_strict() {
+        let panic_in_tests = r#"
+#[cfg(test)]
+mod tests {
+    fn helper() { panic!("boom"); }
+}
+"#;
+        // `no-panic-in-lib` only ships in `strict`, where allow_in_tests is false.
+        assert_eq!(
+            violations(
+                &Preset::Strict.rules(),
+                "AL011",
+                "src/lib.rs",
+                panic_in_tests
+            ),
+            1
+        );
+        // Built outside a preset it keeps the base default (allow_in_tests = true).
+        let standalone = vec![rule_by_name("AL011").expect("AL011")];
+        assert_eq!(
+            violations(&standalone, "AL011", "src/lib.rs", panic_in_tests),
+            0
+        );
+    }
+
+    #[test]
+    fn default_handler_complexity_limits() {
+        use std::fmt::Write as _;
+        let strict = Preset::Strict.rules();
+
+        // max_match_arms = 20: 20 arms pass, 21 trip.
+        let arms = |n: usize| {
+            let mut body = String::new();
+            for i in 0..n {
+                let _ = writeln!(body, "        V{i} => {{}},");
+            }
+            format!("fn handle_action(action: Action) {{\n    match action {{\n{body}    }}\n}}\n")
+        };
+        assert_eq!(violations(&strict, "AL004", "src/handler.rs", &arms(20)), 0);
+        assert_eq!(violations(&strict, "AL004", "src/handler.rs", &arms(21)), 1);
+
+        // max_enum_variants = 30: 30 variants pass, 31 trip.
+        let variants = |n: usize| {
+            let mut body = String::new();
+            for i in 0..n {
+                let _ = writeln!(body, "    V{i},");
+            }
+            format!("enum UserAction {{\n{body}}}\n")
+        };
+        assert_eq!(
+            violations(&strict, "AL004", "src/handler.rs", &variants(30)),
+            0
+        );
+        assert_eq!(
+            violations(&strict, "AL004", "src/handler.rs", &variants(31)),
+            1
+        );
+
+        // max_handler_lines = 150: a 140-statement handler passes, 160 trips.
+        let handler = |n: usize| {
+            let mut body = String::new();
+            for i in 0..n {
+                let _ = writeln!(body, "    let v{i} = {i};");
+            }
+            format!("fn handle_request() {{\n{body}}}\n")
+        };
+        assert_eq!(
+            violations(&strict, "AL004", "src/handler.rs", &handler(140)),
+            0
+        );
+        assert_eq!(
+            violations(&strict, "AL004", "src/handler.rs", &handler(160)),
+            1
+        );
+    }
+
+    #[test]
+    fn default_require_doc_comments_requires_all_three_kinds() {
+        let strict = Preset::Strict.rules();
+        for src in [
+            "pub fn process_data() {}\n",
+            "pub struct Config { name: String }\n",
+            "pub enum Mode { A }\n",
+        ] {
+            assert_eq!(
+                violations(&strict, "AL012", "src/lib.rs", src),
+                1,
+                "expected a violation for {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_no_sync_io_keeps_only_the_built_in_allow_patterns() {
+        let recommended = Preset::Recommended.rules();
+        assert_eq!(
+            violations(
+                &recommended,
+                "AL002",
+                "src/lib.rs",
+                "fn foo() { let _ = std::fs::read_to_string(\"f.txt\"); }\n"
+            ),
+            1
+        );
+        assert_eq!(
+            violations(
+                &recommended,
+                "AL002",
+                "src/lib.rs",
+                "async fn foo() { let _ = tokio::fs::read_to_string(\"f.txt\").await; }\n"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn default_require_thiserror_matches_only_the_error_suffix() {
+        let recommended = Preset::Recommended.rules();
+        assert_eq!(
+            violations(
+                &recommended,
+                "AL005",
+                "src/lib.rs",
+                "#[derive(Debug)]\npub enum MyError { Io }\n"
+            ),
+            1
+        );
+        assert_eq!(
+            violations(
+                &recommended,
+                "AL005",
+                "src/lib.rs",
+                "#[derive(Debug)]\npub enum MyFailure { Io }\n"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn default_async_trait_send_check_runtime_mode_is_single_thread() {
+        // Under `single-thread` an `#[async_trait]` without `?Send` is flagged.
+        let src = r"
+use async_trait::async_trait;
+
+#[async_trait]
+trait MyTrait {
+    async fn foo(&self);
+}
+";
+        assert_eq!(
+            violations(&Preset::Strict.rules(), "AL009", "src/lib.rs", src),
+            1
+        );
+
+        let config =
+            Config::parse("[rules.async-trait-send-check]\nruntime_mode = \"multi-thread\"\n")
+                .expect("parse");
+        let configured = Preset::Strict
+            .rules_with_config(&config)
+            .expect("options parse");
+        assert_eq!(violations(&configured, "AL009", "src/lib.rs", src), 0);
     }
 }

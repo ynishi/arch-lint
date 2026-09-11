@@ -70,3 +70,21 @@ pub fn run(force: bool) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::DEFAULT_CONFIG;
+    use arch_lint_core::Config;
+    use arch_lint_rules::Preset;
+
+    #[test]
+    fn default_config_template_is_accepted_by_every_preset() {
+        let config = Config::parse(DEFAULT_CONFIG).expect("template is valid TOML");
+        for preset in [Preset::Recommended, Preset::Strict, Preset::Minimal] {
+            assert!(
+                preset.rules_with_config(&config).is_ok(),
+                "template holds an option {preset:?} rejects"
+            );
+        }
+    }
+}
