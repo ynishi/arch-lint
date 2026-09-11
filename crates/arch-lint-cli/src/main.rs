@@ -3,7 +3,8 @@
 //! Usage:
 //! ```bash
 //! arch-lint check [OPTIONS] [PATH]
-//! arch-lint list-rules
+//! arch-lint list-rules [--json]
+//! arch-lint schema [--out <PATH>]
 //! arch-lint init
 //! ```
 
@@ -60,7 +61,18 @@ enum Commands {
     },
 
     /// List available rules
-    ListRules,
+    ListRules {
+        /// Print the rule registry, option schemas included, as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Print the JSON Schema of arch-lint.toml
+    Schema {
+        /// Write the schema to this file instead of stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 
     /// Initialize configuration file
     Init {
@@ -125,10 +137,8 @@ fn main() -> Result<()> {
                 EngineHint::Ts => commands::check_ts::run(&path, format, &source),
             }
         }
-        Commands::ListRules => {
-            commands::list_rules::run();
-            Ok(())
-        }
+        Commands::ListRules { json } => commands::list_rules::run(json),
+        Commands::Schema { out } => commands::schema::run(out.as_deref()),
         Commands::Init { force, ts } => {
             if ts {
                 commands::init_ts::run(force)

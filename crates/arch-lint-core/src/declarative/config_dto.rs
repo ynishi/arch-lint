@@ -10,7 +10,7 @@ use serde::Deserialize;
 /// Extends the base `Config` with `[[scopes]]`, `[[restrict-use]]`,
 /// `[[require-use]]`, `[[deny-scope-dep]]`, `[[layering]]`, `[[deny-attr]]`,
 /// `[[require-attr]]`, `[[naming]]`, and `[[require-return]]` sections.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 pub struct DeclarativeConfigDto {
     /// Named scope definitions.
     #[serde(rename = "scopes", default)]
@@ -50,7 +50,7 @@ pub struct DeclarativeConfigDto {
 }
 
 /// TOML representation of a named scope.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeDto {
     /// Scope name (e.g., "domain").
@@ -63,7 +63,7 @@ pub struct ScopeDto {
 }
 
 /// TOML representation of a restrict-use rule.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RestrictUseDto {
     /// Rule name (e.g., "no-sqlx-in-domain").
@@ -93,7 +93,7 @@ pub struct RestrictUseDto {
 }
 
 /// TOML representation of a require-use rule.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RequireUseDto {
     /// Rule name (e.g., "require-tracing-over-log").
@@ -119,7 +119,7 @@ pub struct RequireUseDto {
 }
 
 /// TOML representation of a scope dependency constraint.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeDepDto {
     /// Optional rule name (e.g., "no-domain-to-infra").
@@ -143,7 +143,7 @@ pub struct ScopeDepDto {
 }
 
 /// TOML representation of an ordered layer stack.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LayeringDto {
     /// Optional rule name (e.g., "clean-arch").
@@ -168,7 +168,7 @@ pub struct LayeringDto {
 }
 
 /// TOML representation of an attribute-denial rule.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DenyAttrDto {
     /// Rule name (e.g., "no-orm-derives-in-domain").
@@ -195,7 +195,7 @@ pub struct DenyAttrDto {
 }
 
 /// TOML representation of an attribute-requirement rule.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RequireAttrDto {
     /// Rule name (e.g., "instrument-handlers").
@@ -225,7 +225,7 @@ pub struct RequireAttrDto {
 }
 
 /// TOML representation of an identifier naming rule.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NamingDto {
     /// Rule name (e.g., "domain-ports").
@@ -254,7 +254,7 @@ pub struct NamingDto {
 }
 
 /// TOML representation of a return-type rule.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RequireReturnDto {
     /// Rule name (e.g., "handlers-return-app-result").

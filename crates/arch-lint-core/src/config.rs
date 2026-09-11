@@ -5,22 +5,23 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Top-level configuration for arch-lint.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Config {
-    /// Preset to use (e.g., "recommended", "strict", "minimal").
+    /// Rule set to start from: `recommended` (default), `strict`, or `minimal`.
     #[serde(default)]
     pub preset: Option<String>,
 
-    /// Severity threshold for test failure (default: "error").
-    /// Violations at or above this severity cause `check!()` to fail.
+    /// Severity threshold for test failure (default: `error`).
+    /// Violations at or above this severity cause `check!()` to fail and the
+    /// CLI to exit non-zero. One of `error`, `warning`, `info`.
     #[serde(default)]
     pub fail_on: Option<String>,
 
-    /// Analyzer configuration.
+    /// File discovery and analysis settings.
     #[serde(default)]
     pub analyzer: AnalyzerConfig,
 
-    /// Per-rule configurations.
+    /// Per-rule settings, keyed by kebab-case rule name (`no-unwrap-expect`).
     #[serde(default)]
     pub rules: HashMap<String, RuleConfig>,
 }
@@ -72,26 +73,32 @@ impl Config {
 }
 
 /// Analyzer-level configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AnalyzerConfig {
-    /// Root directory to analyze (default: current directory).
+    /// Directory to walk, relative to the configuration file (default: `.`).
     #[serde(default = "default_root")]
     pub root: PathBuf,
 
-    /// Glob patterns to exclude from analysis.
+    /// Glob patterns dropped from the discovered files. Matched against each
+    /// file's path relative to `root` and against its absolute path.
+    /// Default: `["**/target/**", "**/vendor/**"]`.
     #[serde(default)]
     pub exclude: Vec<String>,
 
-    /// Glob patterns to include (if empty, all *.rs files).
+    /// Glob patterns to include. When non-empty, only matching `*.rs` files
+    /// are analyzed; when empty (the default), every `*.rs` file under `root`
+    /// is analyzed.
     #[serde(default)]
     pub include: Vec<String>,
 
-    /// Whether to respect .gitignore files.
+    /// Skip files git ignores — a `.gitignore` at any level,
+    /// `.git/info/exclude`, or the global gitignore (default: `true`).
     #[serde(default = "default_true")]
     pub respect_gitignore: bool,
 
-    /// Maximum number of parallel file analyses.
+    /// Maximum number of parallel file analyses. **Reserved** — parsed, but
+    /// analysis currently runs sequentially. Default: unset.
     #[serde(default)]
     pub parallelism: Option<usize>,
 }
@@ -117,13 +124,14 @@ fn default_true() -> bool {
 }
 
 /// Per-rule configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RuleConfig {
-    /// Whether this rule is enabled.
+    /// Whether this rule runs at all (default: `true`).
     #[serde(default)]
     pub enabled: Option<bool>,
 
-    /// Severity override for this rule.
+    /// Severity override for this rule. When unset, the rule's own default
+    /// severity applies.
     #[serde(default)]
     pub severity: Option<crate::Severity>,
 
@@ -131,9 +139,24 @@ pub struct RuleConfig {
     #[serde(default)]
     pub exclude_files: Vec<String>,
 
-    /// Rule-specific options as key-value pairs.
+    /// Rule-specific options. The accepted keys depend on the rule; unknown
+    /// keys are a configuration error. See `rule_option_schemas` in
+    /// `arch-lint-rules` for the per-rule key sets.
     #[serde(flatten)]
+    #[schemars(schema_with = "rule_options_schema")]
     pub options: HashMap<String, toml::Value>,
+}
+
+/// Schema for the free-form half of a `[rules.<name>]` table.
+///
+/// The concrete key set is rule-specific and lives in `arch-lint-rules`, so at
+/// this layer the map is described as an open object.
+fn rule_options_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "description": "Rule-specific options; the accepted keys depend on the rule.",
+        "additionalProperties": true
+    })
 }
 
 impl RuleConfig {
@@ -281,5 +304,17 @@ exclude_files = ["src/startup.rs", "src/cli/**"]
         assert!(!rule.excludes_file(std::path::Path::new("src/lib.rs")));
         // `exclude_files` is not leaked into the free-form options map
         assert!(!rule.options.contains_key("exclude_files"));
+    }
+
+    #[test]
+    fn config_json_schema_covers_every_top_level_key() {
+        let json = schemars::schema_for!(Config).to_value().to_string();
+        for key in ["preset", "fail_on", "analyzer", "rules"] {
+            assert!(json.contains(key), "schema is missing `{key}`: {json}");
+        }
+        // Analyzer keys are reachable through the generated definitions.
+        for key in ["respect_gitignore", "exclude", "include", "parallelism"] {
+            assert!(json.contains(key), "schema is missing `{key}`: {json}");
+        }
     }
 }

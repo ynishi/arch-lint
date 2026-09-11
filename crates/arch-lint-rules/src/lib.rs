@@ -45,6 +45,7 @@ mod no_panic_in_lib;
 mod no_silent_result_drop;
 mod no_sync_io;
 mod no_unwrap_expect;
+pub mod options;
 mod prefer_from_over_into;
 mod presets;
 mod require_doc_comments;
@@ -59,10 +60,17 @@ pub use no_panic_in_lib::NoPanicInLib;
 pub use no_silent_result_drop::NoSilentResultDrop;
 pub use no_sync_io::NoSyncIo;
 pub use no_unwrap_expect::NoUnwrapExpect;
+pub use options::{
+    rule_option_schema, rule_option_schemas, AsyncTraitSendCheckOptions, HandlerComplexityOptions,
+    NoErrorSwallowingOptions, NoPanicInLibOptions, NoSilentResultDropOptions, NoSyncIoOptions,
+    NoUnwrapExpectOptions, PreferFromOverIntoOptions, RequireDocCommentsOptions,
+    RequireThiserrorOptions, RequireTracingOptions, RuleOptionSchema, RuleOptionsError,
+    TracingEnvInitOptions,
+};
 pub use prefer_from_over_into::PreferFromOverInto;
 pub use presets::{
     all_rules, canonical_rule_name, minimal_rules, recommended_rules, rule_by_name,
-    rule_from_config, strict_rules, ParsePresetError, Preset,
+    rule_from_config, strict_rules, validate_rule_tables, ParsePresetError, Preset,
 };
 pub use require_doc_comments::RequireDocComments;
 pub use require_thiserror::RequireThiserror;

@@ -73,6 +73,7 @@ pub mod rules {
 }
 
 pub mod report;
+pub mod schema;
 pub mod session;
 
 pub use session::{ConfigSource, Session, SessionError};

@@ -12,6 +12,7 @@ pub mod check_ts;
 pub mod init;
 pub mod init_ts;
 pub mod list_rules;
+pub mod schema;
 
 /// Writes a lint result to stdout in the requested format.
 ///

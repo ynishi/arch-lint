@@ -448,6 +448,8 @@ pub enum MyError {
 ```toml
 [rules.require-thiserror]
 severity = "error"
+# Extra type-name suffixes treated as error types, on top of the built-in "Error"
+patterns = ["Failure"]
 ```
 
 #### AL006: require-tracing
@@ -766,11 +768,12 @@ message = "Handlers must return Result<_, AppError>."
 | `exclude` | `["**/target/**", "**/vendor/**"]` | Glob patterns dropped from the result. |
 | `parallelism` | unset | **Reserved** — parsed, but analysis currently runs sequentially. |
 
-Unknown keys inside `[analyzer]` and inside any declarative rule table
-(`[[scopes]]`, `[[restrict-use]]`, ..., `[[require-return]]`) are a config
-error, so a typo such as `denyy = [...]` cannot silently disable a rule.
-Per-rule option tables (`[rules.<name>]`) stay free-form because each rule
-defines its own keys.
+Unknown keys inside `[analyzer]`, inside any declarative rule table
+(`[[scopes]]`, `[[restrict-use]]`, ..., `[[require-return]]`) and inside any
+per-rule option table (`[rules.<name>]`) are a config error, so a typo such as
+`denyy = [...]` or `allow_in_test = true` cannot silently disable a rule or be
+ignored. Each rule declares its own option keys; `enabled`, `severity` and
+`exclude_files` are accepted next to them for every rule.
 
 File discovery runs in this order:
 
@@ -794,6 +797,42 @@ leading `./` on a pattern is accepted (`./src/**` ≡ `src/**`).
 `Cargo.toml` discovery — used by project-wide rules such as `required-crate` —
 follows the same `respect_gitignore` and `exclude` settings, but ignores
 `include`, which scopes source files only.
+
+### JSON Schema
+
+`arch-lint schema` prints a JSON Schema (draft 2020-12) for the whole
+configuration file — the top-level keys, `[analyzer]`, every built-in rule's
+option keys with their documentation, and the declarative sections:
+
+```bash
+arch-lint schema > arch-lint.schema.json
+arch-lint schema --out arch-lint.schema.json   # same, written directly
+```
+
+Point your editor at the generated file with the schema directive that
+[taplo](https://taplo.tamasfe.dev/) and the
+[Even Better TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml)
+extension understand — the first line of `arch-lint.toml`:
+
+```toml
+#:schema ./arch-lint.schema.json
+
+preset = "recommended"
+
+[rules.no-unwrap-expect]
+allow_in_tests = true
+```
+
+You then get completion for rule names and option keys, and a warning on a
+misspelled key before the linter ever runs. `arch-lint list-rules --json`
+prints the same per-rule option schemas on their own, for tooling that wants
+the rule registry rather than the config file shape.
+
+Tables under `rules` whose name is not a built-in rule are left open, so
+configuration for custom rules still validates. Tree-sitter configuration
+(`[[layers]]`, `[dependencies]`, `[[constraints]]`) is not described by this
+schema; those keys are accepted because the top level of the document stays
+open.
 
 ## Suppression
 
@@ -1086,7 +1125,10 @@ arch-lint check                           # Run all checks
 arch-lint check --rules no-unwrap-expect  # Run specific rules
 arch-lint check --format json             # JSON output for CI
 arch-lint check --engine ts               # Force tree-sitter engine
-arch-lint list-rules                      # Show available rules
+arch-lint list-rules                      # Show available rules and their options
+arch-lint list-rules --json               # Same, as JSON (option schemas included)
+arch-lint schema                          # JSON Schema of arch-lint.toml
+arch-lint schema --out arch-lint.schema.json
 ```
 
 ### Cross-language (tree-sitter engine)
