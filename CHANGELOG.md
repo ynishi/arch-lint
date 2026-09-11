@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-11
+
 ### Added
 
 - **`arch_lint::Session` - the SDK driver for the syn engine.** The
@@ -102,6 +104,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `FromStr` for `Preset` / `Severity`
 - CI workflow (rustfmt, clippy, per-crate tests, MSRV, rustdoc, cargo-deny), `deny.toml`,
   `CONTRIBUTING.md`
+- **`arch-lint schema [--out <path>]`** - prints a JSON Schema (draft 2020-12) of
+  `arch-lint.toml`: the top-level keys, `[analyzer]`, every built-in rule's
+  `[rules.<name>]` table (common `enabled` / `severity` / `exclude_files` plus the
+  rule's own option keys, each with its documentation and preset-dependent
+  default) and the declarative sections. Point taplo / Even Better TOML at the
+  generated file with `#:schema ./arch-lint.schema.json` for completion and
+  typo warnings. Built as `arch_lint::schema::config_json_schema()` for SDK use
+- **Typed per-rule options** - each built-in rule now has an options struct
+  (`arch_lint_rules::options::*Options`, `JsonSchema`-derived), exposed through
+  `rule_option_schemas()` / `rule_option_schema(name_or_code)` and
+  `validate_rule_tables(&Config)`. `arch-lint list-rules` prints every rule's
+  option keys with type and default; `list-rules --json` prints the registry
+  with each rule's option schema
+- `JsonSchema` derives on `Config`, `AnalyzerConfig`, `RuleConfig`, `Severity`
+  and the declarative config DTOs (new `schemars` dependency)
 
 ### Changed
 
@@ -138,6 +155,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `arch_lint_core::test_utils` (behind the `test-utils` feature) replaces the `FileContext`
   literal that was copied into every rule's test module. No change to rule behavior, codes,
   messages, severities, or public rule APIs
+- **`Preset::rules_with_config` and `rule_from_config` are fallible** - they return
+  `Result<_, RuleOptionsError>` so that an invalid `[rules.<name>]` table surfaces
+  as an error; `Session` maps it to the new `SessionError::RuleOptions`. An
+  unrecognised `runtime_mode` value for `async-trait-send-check` is now an error
+  instead of silently falling back to the default
 
 ### Removed
 
@@ -147,9 +169,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Unknown keys in `[analyzer]` and in every declarative rule table (`[[scopes]]`,
-  `[[restrict-use]]`, ..., `[[require-return]]`) are now a config error instead of
-  being silently ignored, so a typo like `denyy = [...]` no longer disables a rule
+- Unknown keys in `[analyzer]`, in every declarative rule table (`[[scopes]]`,
+  `[[restrict-use]]`, ..., `[[require-return]]`) and in every built-in
+  `[rules.<name>]` table are now a config error instead of being silently
+  ignored, so a typo like `denyy = [...]` or `allow_in_test = true` no longer
+  disables a rule. `[rules.<name>]` tables are validated even when the rule is
+  not part of the active preset; tables for custom rules stay free-form
 - AL002 `no-sync-io` no longer reports `is_file()` / `is_dir()` on `FileType` /
   `Metadata` values (results of `file_type()`, `metadata()`, `symlink_metadata()`,
   `fs::metadata(..)`, also through `?` / `unwrap()`, `let` bindings and closure
@@ -285,7 +310,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Allow directives via attributes and inline comments
 - Comprehensive test coverage
 
-[Unreleased]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.5.0...HEAD
+[Unreleased]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.6.0...HEAD
+[0.6.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.5.0...arch-lint-v0.6.0
 [0.5.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.4.3...arch-lint-v0.5.0
 [0.4.3]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.4.2...arch-lint-v0.4.3
 [0.4.2]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.4.1...arch-lint-v0.4.2
