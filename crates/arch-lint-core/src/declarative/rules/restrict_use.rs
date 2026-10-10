@@ -374,7 +374,13 @@ mod tests {
     }
 
     #[test]
-    fn restrict_inline_skips_self_and_super_paths() {
+    fn restrict_inline_matches_self_and_super_paths_verbatim() {
+        // `self::helper` / `super::helper` don't match the `sqlx::*` deny
+        // pattern of `make_restrict_config`, so this stays empty — but that
+        // is because the *pattern* doesn't match, not because `self::` /
+        // `super::` inline paths are skipped (see the next test for proof
+        // they are matched like any other path, verbatim, same as `use`
+        // items already were).
         let config = make_restrict_config();
         let rule = RestrictUseRule::new(config);
         let code = "fn f() { self::helper(); super::helper(); }";
@@ -383,6 +389,32 @@ mod tests {
 
         let violations = rule.check(&ctx, &ast);
         assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn restrict_inline_super_path_matches_a_super_prefixed_deny_pattern() {
+        let scopes = vec![Scope::new(
+            ScopeName::new("domain").unwrap(),
+            vec![GlobPattern::new("src/domain/**").unwrap()],
+        )];
+        let restrict = vec![RestrictUse::new(
+            "no-super-helper-in-domain".to_string(),
+            ScopeRef::Named(ScopeName::new("domain").unwrap()),
+            vec![UsePattern::new("super::*").unwrap()],
+            "Domain must not reach into the parent module.".to_string(),
+            None,
+            Severity::Error,
+        )];
+        let config = Arc::new(DeclarativeConfig::new(scopes, restrict, vec![], vec![]).unwrap());
+        let rule = RestrictUseRule::new(config);
+        let code = "fn f() { super::helper(); }";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(violations[0].message.contains("super::helper"));
     }
 
     #[test]

@@ -15,10 +15,12 @@
 //! running any rule.
 //!
 //! Resolution follows the per-file scope rules (`[[deny-scope-dep]]`,
-//! `[[layering]]`): only `crate::`-prefixed paths are resolved, so `self::` and
-//! `super::` references are not edges; a file that belongs to no scope
-//! contributes nothing; and a reference that stays inside one scope is not an
-//! edge. Every declared scope is a node even when nothing points at or from it.
+//! `[[layering]]`): `crate::`, `self::` and `super::` paths are resolved
+//! (the latter two relative to the file's module, inline `mod` blocks
+//! included); bare paths and `pub use` re-exports are not. A file that
+//! belongs to no scope contributes nothing, and a reference that stays
+//! inside one scope is not an edge. Every declared scope is a node even when
+//! nothing points at or from it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -56,8 +58,8 @@ pub struct EdgeSite {
 /// (files are analyzed in sorted order, so that is file order, then source
 /// order).
 ///
-/// Limitation (v1): only `crate::`-prefixed paths are resolved to a scope;
-/// `self::` and `super::` references never become edges.
+/// Limitation (v1): `crate::`, `self::` and `super::` paths are resolved to
+/// a scope; bare paths and `pub use` re-export chains are not followed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScopeGraph {
     nodes: BTreeSet<ScopeName>,

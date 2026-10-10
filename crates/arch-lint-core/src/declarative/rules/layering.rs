@@ -3,8 +3,6 @@
 
 use std::sync::Arc;
 
-use syn::visit::Visit;
-
 use crate::context::FileContext;
 use crate::declarative::model::{DeclarativeConfig, ScopeDep};
 use crate::rule::Rule;
@@ -76,16 +74,8 @@ impl Rule for LayeringRule {
             applicable.iter().map(|d| (d.display_name(), d.severity())),
         );
 
-        let mut visitor = ScopeDepVisitor {
-            ctx,
-            config: &self.config,
-            applicable,
-            code: LAYERING_CODE,
-            scopes,
-            violations: Vec::new(),
-        };
-        visitor.visit_file(ast);
-        visitor.violations
+        let visitor = ScopeDepVisitor::new(ctx, &self.config, applicable, LAYERING_CODE, scopes);
+        visitor.run(ast)
     }
 }
 
