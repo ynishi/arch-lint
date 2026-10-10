@@ -218,7 +218,7 @@ fn find_async_trait_attr(attrs: &[Attribute]) -> Option<(&Attribute, bool)> {
         // Check if the path is `async_trait`
         if attr.path().is_ident("async_trait") {
             // Check if arguments contain `?Send`
-            let has_send_opt_out = attr.meta.require_list().ok().is_some_and(|meta_list| {
+            let has_send_opt_out = attr.meta.require_list().is_ok_and(|meta_list| {
                 // Parse tokens to check for `?Send`
                 let tokens = meta_list.tokens.to_string();
                 tokens.contains("? Send") || tokens.contains("?Send")
