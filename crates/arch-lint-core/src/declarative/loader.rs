@@ -3,13 +3,13 @@
 use crate::types::Severity;
 
 use super::config_dto::{
-    DeclarativeConfigDto, DenyAttrDto, LayeringDto, NamingDto, RequireAttrDto, RequireReturnDto,
-    RequireUseDto, RestrictUseDto, ScopeDepDto, ScopeDto,
+    AcyclicDto, DeclarativeConfigDto, DenyAttrDto, LayeringDto, NamingDto, RequireAttrDto,
+    RequireReturnDto, RequireUseDto, RestrictUseDto, ScopeDepDto, ScopeDto,
 };
 use super::model::{
-    AttrPattern, DeclarativeConfig, DenyAttr, GlobPattern, ItemKind, Layering, ModelError, Naming,
-    RegexPattern, RequireAttr, RequireReturn, RequireUse, RestrictUse, Scope, ScopeDep, ScopeName,
-    ScopeRef, UsePattern, VisibilityFilter,
+    Acyclic, AttrPattern, DeclarativeConfig, DenyAttr, GlobPattern, ItemKind, Layering, ModelError,
+    Naming, RegexPattern, RequireAttr, RequireReturn, RequireUse, RestrictUse, Scope, ScopeDep,
+    ScopeName, ScopeRef, UsePattern, VisibilityFilter,
 };
 
 /// Errors during DTO → Domain conversion.
@@ -116,6 +116,13 @@ pub fn load(dto: DeclarativeConfigDto) -> Result<DeclarativeConfig, LoadError> {
         .map(convert_require_return)
         .collect::<Result<Vec<_>, _>>()?;
 
+    let acyclics = dto
+        .acyclic
+        .into_iter()
+        .enumerate()
+        .map(|(i, a)| convert_acyclic(a, i))
+        .collect::<Result<Vec<_>, _>>()?;
+
     DeclarativeConfig::builder()
         .scopes(scopes)
         .restrict_uses(restrict_uses)
@@ -126,6 +133,7 @@ pub fn load(dto: DeclarativeConfigDto) -> Result<DeclarativeConfig, LoadError> {
         .require_attrs(require_attrs)
         .namings(namings)
         .require_returns(require_returns)
+        .acyclics(acyclics)
         .build()
         .map_err(LoadError::CrossRef)
 }
@@ -417,6 +425,34 @@ fn convert_require_return(dto: RequireReturnDto) -> Result<RequireReturn, LoadEr
             .with_visibility(visibility)
             .with_asyncness(dto.is_async),
     )
+}
+
+fn convert_acyclic(dto: AcyclicDto, index: usize) -> Result<Acyclic, LoadError> {
+    let ctx = dto
+        .name
+        .clone()
+        .map_or_else(|| format!("acyclic[{index}]"), |n| format!("acyclic '{n}'"));
+
+    let scopes = match dto.scopes {
+        None => None,
+        Some(names) => {
+            let scopes = names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    ScopeName::new(name).map_err(|e| LoadError::Validation {
+                        context: format!("{ctx}.scopes[{i}]"),
+                        source: e,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Some(scopes)
+        }
+    };
+
+    let severity = parse_severity(&dto.severity, &ctx)?;
+
+    Ok(Acyclic::new(dto.name, scopes, dto.doc, severity))
 }
 
 fn parse_severity(value: &str, context: &str) -> Result<Severity, LoadError> {
@@ -901,5 +937,61 @@ exclude = [""]
         );
         let err = result.unwrap_err().to_string();
         assert!(err.contains("scopes[0].exclude[0]"), "{err}");
+    }
+
+    // -- [[acyclic]] --
+
+    #[test]
+    fn load_acyclic_with_scopes() {
+        let config = load_with_scopes(
+            r#"
+[[acyclic]]
+scopes = ["domain", "infra"]
+doc = "ARCHITECTURE.md L10"
+severity = "error"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.acyclics().len(), 1);
+        let rule = &config.acyclics()[0];
+        assert_eq!(rule.display_name(), "acyclic");
+        let scopes: Vec<&str> = rule
+            .scopes()
+            .unwrap()
+            .iter()
+            .map(crate::declarative::model::ScopeName::as_str)
+            .collect();
+        assert_eq!(scopes, ["domain", "infra"]);
+        assert_eq!(rule.doc_ref(), Some("ARCHITECTURE.md L10"));
+    }
+
+    #[test]
+    fn load_acyclic_without_scopes_means_every_scope() {
+        let config = load_with_scopes("[[acyclic]]\n").unwrap();
+        assert_eq!(config.acyclics().len(), 1);
+        assert!(config.acyclics()[0].scopes().is_none());
+    }
+
+    #[test]
+    fn load_acyclic_rejects_unknown_scope() {
+        let result = load_with_scopes(
+            r#"
+[[acyclic]]
+scopes = ["domain", "nope"]
+"#,
+        );
+        assert!(matches!(result, Err(LoadError::CrossRef(_))));
+    }
+
+    #[test]
+    fn load_acyclic_rejects_unknown_severity() {
+        let result = load_with_scopes(
+            r#"
+[[acyclic]]
+severity = "critical"
+"#,
+        );
+        assert!(matches!(result, Err(LoadError::UnknownSeverity { .. })));
     }
 }

@@ -54,7 +54,7 @@ impl AllowCheck {
 }
 
 /// Parsed allowance directive.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AllowDirective {
     /// Rule names that are allowed.
     pub rules: HashSet<String>,
@@ -126,7 +126,13 @@ pub fn check_allow_with_reason(content: &str, line: usize, rule_name: &str) -> A
 }
 
 /// Parses an allowance directive from a comment line.
-fn parse_allow_directive(line: &str) -> Option<AllowDirective> {
+///
+/// `pub(crate)`: reused outside this module by
+/// [`ScopeEdgeCollector`](crate::declarative::rules::ScopeEdgeCollector),
+/// which records every directive on a site (not just one named rule), so it
+/// needs the raw parse rather than [`check_allow_with_reason`]'s
+/// one-rule-at-a-time check.
+pub(crate) fn parse_allow_directive(line: &str) -> Option<AllowDirective> {
     let line = line.trim();
 
     // Check for // or /// comment

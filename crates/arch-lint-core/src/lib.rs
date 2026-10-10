@@ -48,7 +48,7 @@ pub mod test_utils;
 pub use analyzer::{Analyzer, AnalyzerBuilder, AnalyzerError};
 pub use config::{AnalyzerConfig, Config, ConfigError, RuleConfig};
 pub use context::{FileContext, ProjectContext};
-pub use declarative::graph::{EdgeKind, EdgeSite, ScopeGraph};
+pub use declarative::graph::{DirectiveSource, EdgeKind, EdgeSite, ScopeGraph};
 pub use required_crate::{DetectionPattern, RequiredCrateRule};
 pub use rule::{ProjectRule, ProjectRuleBox, Rule, RuleBox};
 pub use types::{

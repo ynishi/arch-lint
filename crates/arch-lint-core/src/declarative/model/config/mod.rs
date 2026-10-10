@@ -9,8 +9,8 @@ mod builder;
 pub use builder::DeclarativeConfigBuilder;
 
 use super::{
-    DenyAttr, Layering, ModelError, Naming, RequireAttr, RequireReturn, RequireUse, RestrictUse,
-    Scope, ScopeDep, ScopeName, ScopeRef,
+    Acyclic, DenyAttr, Layering, ModelError, Naming, RequireAttr, RequireReturn, RequireUse,
+    RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -30,6 +30,7 @@ pub struct DeclarativeConfig {
     require_attrs: Vec<RequireAttr>,
     namings: Vec<Naming>,
     require_returns: Vec<RequireReturn>,
+    acyclics: Vec<Acyclic>,
 }
 
 impl DeclarativeConfig {
@@ -72,6 +73,7 @@ impl DeclarativeConfig {
             require_attrs: Vec::new(),
             namings: Vec::new(),
             require_returns: Vec::new(),
+            acyclics: Vec::new(),
         }
     }
 
@@ -86,6 +88,7 @@ impl DeclarativeConfig {
             && self.require_attrs.is_empty()
             && self.namings.is_empty()
             && self.require_returns.is_empty()
+            && self.acyclics.is_empty()
     }
 
     /// Returns all `[[layering]]` rules.
@@ -116,6 +119,12 @@ impl DeclarativeConfig {
     #[must_use]
     pub fn require_returns(&self) -> &[RequireReturn] {
         &self.require_returns
+    }
+
+    /// Returns all `[[acyclic]]` rules.
+    #[must_use]
+    pub fn acyclics(&self) -> &[Acyclic] {
+        &self.acyclics
     }
 
     /// Returns all defined scopes.
@@ -376,5 +385,27 @@ mod tests {
             .unwrap();
         assert!(!config.is_empty());
         assert_eq!(config.require_returns().len(), 1);
+    }
+
+    #[test]
+    fn config_is_empty_covers_acyclic() {
+        use crate::declarative::model::Acyclic;
+
+        let config = DeclarativeConfig::builder()
+            .scopes(vec![
+                Scope::new(
+                    ScopeName::new("domain").unwrap(),
+                    vec![GlobPattern::new("src/domain/**").unwrap()],
+                ),
+                Scope::new(
+                    ScopeName::new("infra").unwrap(),
+                    vec![GlobPattern::new("src/infra/**").unwrap()],
+                ),
+            ])
+            .acyclics(vec![Acyclic::new(None, None, None, Severity::Error)])
+            .build()
+            .unwrap();
+        assert!(!config.is_empty());
+        assert_eq!(config.acyclics().len(), 1);
     }
 }

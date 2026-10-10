@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`[[acyclic]]` (ALD009)**: a project-wide rule that reports a cycle
+  between `[[scopes]]` — Tarjan's strongly-connected-components algorithm
+  over the sub-graph induced by `scopes` (every declared scope when
+  omitted); every component of more than one node is one violation, whose
+  message names every scope in the component plus the shortest concrete
+  cycle through its smallest member, in order (e.g. `Cycle between scopes
+  domain, infra: domain → infra → domain`), with the primary `Location` at
+  the first site of the first edge and the other edges attached as
+  `Violation` labels (now rendered by the text report too, as
+  `= note: <message> at <file>:<line>:<column>`, not only JSON). The first
+  project-wide rule built on the `ScopeGraph`: paired with the new
+  `declarative::create_project_rules_shared` /
+  `declarative::create_project_rules` (the `ProjectRuleBox` counterparts of
+  `create_rules_shared` / `create_rules`), which `Session::run` now wires up
+  alongside the per-file declarative rules. Overlapping `[[acyclic]]` blocks
+  each report the same cycle once.
+  - An `// arch-lint: allow(acyclic) reason="..."` comment (or
+    `#[arch_lint::allow(acyclic, reason = "...")]` attribute, on the `use`
+    item itself or an enclosing `mod`/`fn`/`impl`/`trait`) removes that site
+    from the graph before cycles are computed. Whether a `reason` is
+    required depends on where the directive came from, exactly as it does
+    for the per-file rules: an attribute (on the item or an enclosing
+    scope) suppresses silently either way; a comment on an error-severity
+    rule needs one. A comment directive without a reason that suppresses a
+    site on an edge lying on a cycle (computed before suppression) gets the
+    same missing-reason warning `Suppressions::decide` reports for the
+    per-file rules, in place of the violation — one warning per such site,
+    not per edge, even if another, reasoned `allow` anywhere else on the
+    cycle also breaks it. A rule's own `name` is honored in either
+    kebab-case or
+    `snake_case`, matched against either spelling of a comment or attribute
+    directive. Reporting an `allow(acyclic)` directive that no longer
+    suppresses a cycle as unused is not implemented.
+  - `EdgeSite` gained a private `allow_directives` field (every
+    `AllowDirective` in scope at that site, each tagged with a
+    `DirectiveSource` — `Scope`, `Item` or `Comment` — saying where it came
+    from), read through `EdgeSite::allow_directive` / `allow_directives`,
+    plus an `EdgeSite::new` constructor (the struct is `#[non_exhaustive]`)
+    and `EdgeSite::with_allow_directive`, which normalizes the directive's
+    rule names to `snake_case` as it stores them.
+    `utils::allowance::parse_allow_directive` and
+    `utils::attributes::parse_arch_lint_allow_attr` are now `pub(crate)` so
+    the collector can reuse them directly.
+  - `[[acyclic]]` gained a `doc` field (a document reference), matching the
+    other eight declarative rule kinds; it is attached to the violation the
+    same way `[[deny-scope-dep]]`'s does.
+  - `arch-lint list-rules` (text and `--json`) now lists all nine
+    declarative rules (`ALD001`-`ALD009`), each `--json` entry adding a
+    `table` key naming its `[[<table>]]` section and an `options` schema
+    inlined from `arch-lint.toml`'s generated JSON Schema (previously a bare
+    unresolved `$ref`).
 - **`arch-lint check --exit-zero`** reports violations and exits `0`, for
   report-only CI steps
 - **`ScopeGraph`**: the dependency graph between declared `[[scopes]]`
@@ -16,18 +67,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `Location` of each site), collected once per `Analyzer::analyze()` by a
   visitor that runs inside the existing per-file pass (no second parse). Path
   resolution is the one ALD003 uses (see below); unlike ALD003 the graph
-  records every reference, regardless of `allow` suppressions and of
-  `check_inline` — rules built on the graph decide what to filter. Reachable
-  through `ProjectContext::scope_graph()` (for a `ProjectRule`), the standalone
-  `Analyzer::scope_graph()` (builds the graph without running any rule) and
-  `Session::scope_graph()` (the SDK driver). Enabled by the new
+  records every reference regardless of `check_inline` — rules built on the
+  graph decide what to filter (each `EdgeSite` does carry every `allow`
+  directive in scope at it, for a rule built on the graph to act on, see
+  ALD009 above). Reachable through `ProjectContext::scope_graph()`
+  (for a `ProjectRule`), the standalone `Analyzer::scope_graph()` (builds the
+  graph without running any rule) and `Session::scope_graph()` (the SDK
+  driver). Enabled by the new
   `AnalyzerBuilder::declarative(Arc<DeclarativeConfig>)` builder method,
   paired with the new `declarative::load_config_from_toml` (parses TOML into
   a `DeclarativeConfig` without building rules) and
   `declarative::create_rules_shared` (builds rules from a shared `Arc`, so the
-  same config can also be handed to the analyzer). Prerequisite for cycle
-  detection, independence and allow-list rules, and `arch-lint graph`
-  (separate issues)
+  same config can also be handed to the analyzer). Prerequisite for
+  independence and allow-list rules, and `arch-lint graph` (separate issues)
 - **`deny-scope-dep` (ALD003), `layering` (ALD004) and the `ScopeGraph`** now
   resolve `self::` and `super::` paths relative to the file's module
   (inline `mod` blocks included), not just `crate::`; bare paths and `pub use`
@@ -35,6 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`Format::Text` now prints `Violation::labels`**, one `= note: <message>
+  at <file>:<line>:<column>` line per label after the `= help:` suggestion
+  (if any); `Format::Json` already serialized them. Affects any custom SDK
+  rule that attaches labels — no built-in or declarative rule did before
+  `[[acyclic]]` (ALD009, above)
 - **ALD001 `restrict-use` inline checks now also see `self::` / `super::`
   paths**, matched verbatim against the `deny` / `except` patterns, as `use`
   items already were

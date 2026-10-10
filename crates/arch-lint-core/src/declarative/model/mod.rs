@@ -11,14 +11,15 @@
 //! - [`Scope`] / [`ScopeRef`] — named file scopes and references to them.
 //! - One entity per rule kind: [`RestrictUse`] (ALD001), [`RequireUse`]
 //!   (ALD002), [`ScopeDep`] (ALD003), [`Layering`] (ALD004), [`DenyAttr`]
-//!   (ALD005), [`RequireAttr`] (ALD006), [`Naming`] (ALD007) and
-//!   [`RequireReturn`] (ALD008).
+//!   (ALD005), [`RequireAttr`] (ALD006), [`Naming`] (ALD007),
+//!   [`RequireReturn`] (ALD008) and [`Acyclic`] (ALD009).
 //! - [`DeclarativeConfig`] / [`DeclarativeConfigBuilder`] — the aggregate
 //!   root, which validates cross-references between rules and scopes.
 //!
 //! Rule entities keep their fields private; the aggregate root and the rule
 //! implementations read them through the entities' accessors.
 
+mod acyclic;
 mod attr;
 mod config;
 mod item;
@@ -31,6 +32,7 @@ mod scope;
 mod scope_dep;
 mod vocab;
 
+pub use acyclic::Acyclic;
 pub use attr::{DenyAttr, RequireAttr};
 pub use config::{DeclarativeConfig, DeclarativeConfigBuilder};
 pub use item::{ItemKind, VisibilityFilter};

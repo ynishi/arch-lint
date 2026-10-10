@@ -34,8 +34,8 @@
 use arch_lint_core::declarative::model::DeclarativeConfig;
 use arch_lint_core::declarative::LoadRulesError;
 use arch_lint_core::{
-    Analyzer, AnalyzerError, Config, ConfigError, LintResult, ParseSeverityError, RuleBox,
-    ScopeGraph, Severity,
+    Analyzer, AnalyzerError, Config, ConfigError, LintResult, ParseSeverityError, ProjectRuleBox,
+    RuleBox, ScopeGraph, Severity,
 };
 use arch_lint_rules::{
     rule_from_config, validate_rule_tables, ParsePresetError, Preset, RuleOptionsError,
@@ -218,6 +218,9 @@ pub struct Session {
     preset: Preset,
     fail_on: Severity,
     declarative: Vec<RuleBox>,
+    /// Project-wide declarative rules (currently only `[[acyclic]]`,
+    /// `ALD009`), built from the same config as `declarative`.
+    declarative_project: Vec<ProjectRuleBox>,
     /// The declarative config the rules were built from; the analyzer uses it
     /// to collect the [`ScopeGraph`]. `None` when the config had no content.
     declarative_config: Option<Arc<DeclarativeConfig>>,
@@ -234,6 +237,7 @@ impl std::fmt::Debug for Session {
             .field("preset", &self.preset)
             .field("fail_on", &self.fail_on)
             .field("declarative_rules", &self.declarative.len())
+            .field("declarative_project_rules", &self.declarative_project.len())
             .field("explicit_rules", &self.rules.as_ref().map(Vec::len))
             .field("excludes", &self.excludes)
             .finish_non_exhaustive()
@@ -325,8 +329,8 @@ impl Session {
         config_source: ConfigSource,
         path: Option<PathBuf>,
     ) -> Result<Self, SessionError> {
-        let (config, declarative, declarative_config) = if content.is_empty() {
-            (Config::default(), Vec::new(), None)
+        let (config, declarative, declarative_project, declarative_config) = if content.is_empty() {
+            (Config::default(), Vec::new(), Vec::new(), None)
         } else {
             let config = Config::parse(content).map_err(|source| SessionError::ParseConfig {
                 path: path.clone(),
@@ -336,10 +340,17 @@ impl Session {
                 .map(Arc::new)
                 .map_err(|source| SessionError::Declarative { path, source })?;
             let declarative = arch_lint_core::declarative::create_rules_shared(&declarative_config);
+            let declarative_project =
+                arch_lint_core::declarative::create_project_rules_shared(&declarative_config);
             // Every `[rules.<name>]` table is checked here, not only the ones
             // the active preset builds, so a typo in any of them is an error.
             validate_rule_tables(&config)?;
-            (config, declarative, Some(declarative_config))
+            (
+                config,
+                declarative,
+                declarative_project,
+                Some(declarative_config),
+            )
         };
 
         let preset: Preset = config.preset.as_deref().unwrap_or(DEFAULT_PRESET).parse()?;
@@ -356,6 +367,7 @@ impl Session {
             preset,
             fail_on,
             declarative,
+            declarative_project,
             declarative_config,
             rules: None,
             excludes: Vec::new(),
@@ -492,6 +504,7 @@ impl Session {
             root,
             config,
             declarative,
+            declarative_project,
             declarative_config,
             rules: explicit,
             excludes,
@@ -505,6 +518,9 @@ impl Session {
         }
         for rule in declarative {
             builder = builder.rule_box(rule);
+        }
+        for rule in declarative_project {
+            builder = builder.project_rule_box(rule);
         }
 
         let analyzer = builder.build().map_err(SessionError::Build)?;
