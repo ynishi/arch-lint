@@ -46,7 +46,7 @@ cargo add arch-lint --dev
 ### 2. Generate config
 
 ```bash
-cargo install arch-lint-cli
+cargo install --locked arch-lint-cli
 arch-lint init
 ```
 
@@ -1117,7 +1117,7 @@ the built-in Kotlin extractor stays registered.
 ## CLI Usage
 
 ```bash
-cargo install arch-lint-cli
+cargo install --locked arch-lint-cli
 
 arch-lint init                            # Generate arch-lint.toml
 arch-lint init --ts                       # Generate with tree-sitter layers
@@ -1156,7 +1156,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install arch-lint-cli
+      - run: cargo install --locked arch-lint-cli
       - run: arch-lint check --format json > lint-results.json
       - name: Check results
         run: |

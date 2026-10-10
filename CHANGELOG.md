@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI no longer depends on the newest dependency versions.** The workspace
+  uses `resolver = "3"` (MSRV-aware, Rust 1.84+) and `Cargo.lock` is now
+  committed, so the MSRV (1.88) job checks a fixed, MSRV-buildable tree with
+  `--locked` instead of resolving transitive dependencies that have raised
+  their `rust-version` (`textwrap`, `tree-sitter-language`). A non-blocking
+  `latest deps` job runs `cargo update` on stable so upstream breakage stays
+  visible. `cargo install --locked arch-lint-cli` is the documented install
+  line
+- clippy: `.ok().is_some_and(..)` replaced by `.is_ok_and(..)` in
+  `async-trait-send-check`, which newer stable clippy rejects under
+  `-D warnings`
+
 ## [0.6.0] - 2026-09-11
 
 ### Added
