@@ -127,6 +127,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - clippy: `.ok().is_some_and(..)` replaced by `.is_ok_and(..)` in
   `async-trait-send-check`, which newer stable clippy rejects under
   `-D warnings`
+- **CLI logs no longer print to stdout.** `arch-lint check --format json`
+  (and `--format compact`) previously printed `tracing` `INFO` lines ahead
+  of the report, so the captured stdout did not parse as JSON. The
+  subscriber now writes to stderr, the default level is `warn` (silent on a
+  successful run), and `--verbose` raises it to `debug`; a non-empty
+  `RUST_LOG` overrides `--verbose`, invalid directives are reported on
+  stderr (`ignoring ...`) and skipped, and if none remain the default
+  applies. Invalid `RUST_LOG` directives are now reported on stderr instead
+  of silently disabling logging
 
 ## [0.6.0] - 2026-09-11
 

@@ -1182,6 +1182,13 @@ arch-lint schema                          # JSON Schema of arch-lint.toml
 arch-lint schema --out arch-lint.schema.json
 ```
 
+Logs go to stderr, never stdout; a successful run prints nothing there (a
+source file that fails to parse still logs a WARN line, an invalid
+`RUST_LOG` directive prints `ignoring ...`, and exit `2` prints the `Error:`
+line). `--verbose` turns on `INFO`/`DEBUG` logs; a non-empty `RUST_LOG`
+overrides `--verbose` — invalid directives are reported on stderr
+(`ignoring ...`) and skipped, and if none remain the default applies.
+
 ### Cross-language (tree-sitter engine)
 
 ```bash
@@ -1206,6 +1213,11 @@ See [docs/tree-sitter-engine.md](docs/tree-sitter-engine.md) for full documentat
 A CI step can therefore fail on violations and still tell a misconfigured
 linter (`2`) apart from a real finding (`1`). `--exit-zero` turns the step
 into a report-only one.
+
+`--format json` and `--format compact` on stdout are clean machine-readable
+output with no log lines mixed in — tracing diagnostics go to stderr, so
+there is no need to redirect it away (e.g. `2>/dev/null`) before piping
+stdout to `jq` or writing it to a file.
 
 ### GitHub Actions
 
