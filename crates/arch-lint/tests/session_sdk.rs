@@ -155,3 +155,62 @@ fn exclude_pattern_skips_files() {
     assert_eq!(result.files_checked, 0);
     assert!(result.violations.is_empty());
 }
+
+// ── ScopeGraph (issue #4) ──
+
+/// A project with a `domain` file that imports from `infra`.
+fn project_with_cross_scope_import() -> TempDir {
+    let tmp = TempDir::new().expect("tempdir");
+    let domain = tmp.path().join("src/domain");
+    let infra = tmp.path().join("src/infra");
+    fs::create_dir_all(&domain).expect("create dirs");
+    fs::create_dir_all(&infra).expect("create dirs");
+    fs::write(
+        domain.join("service.rs"),
+        "use crate::infra::db::Connection;\n\npub fn run() {}\n",
+    )
+    .expect("write source");
+    fs::write(infra.join("db.rs"), "pub struct Connection;\n").expect("write source");
+    tmp
+}
+
+const SCOPE_GRAPH_CONFIG: &str = r#"
+preset = "minimal"
+
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+"#;
+
+#[test]
+fn scope_graph_reports_the_cross_scope_edge() {
+    let tmp = project_with_cross_scope_import();
+
+    let graph = Session::from_config_str(tmp.path(), SCOPE_GRAPH_CONFIG)
+        .expect("session builds")
+        .scope_graph()
+        .expect("scope graph builds");
+
+    let nodes: Vec<&str> = graph.nodes().map(|n| n.as_str()).collect();
+    assert_eq!(nodes, ["domain", "infra"]);
+    assert_eq!(graph.edge_count(), 1, "exactly one domain -> infra edge");
+}
+
+#[test]
+fn scope_graph_is_empty_without_scopes() {
+    let tmp = project_with_cross_scope_import();
+
+    let graph = Session::from_config_str(tmp.path(), "")
+        .expect("session builds")
+        .scope_graph()
+        .expect("scope graph builds");
+
+    assert!(
+        graph.is_empty(),
+        "a config with no [[scopes]] yields an empty graph"
+    );
+}

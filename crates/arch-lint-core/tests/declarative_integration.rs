@@ -352,3 +352,201 @@ fn has_violations_at_respects_severity() {
     // There are also Warning-level violations (require-use)
     assert!(result.has_violations_at(Severity::Warning));
 }
+
+// ── ScopeGraph (issue #4) ──
+//
+// Fixture: `tests/fixtures/declarative/` declares scopes `domain` and
+// `infra`; `src/domain/service.rs:5` has `use crate::infra::db::Connection;`
+// and `src/app/handler.rs` belongs to no declared scope.
+
+mod scope_graph {
+    use super::fixture_root;
+    use arch_lint_core::declarative::graph::EdgeKind;
+    use arch_lint_core::declarative::model::ScopeName;
+    use arch_lint_core::declarative::{self, model::DeclarativeConfig};
+    use arch_lint_core::{
+        Analyzer, ProjectContext, ProjectRule, ProjectRuleBox, ScopeGraph, Violation,
+    };
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    fn name(s: &str) -> ScopeName {
+        ScopeName::new(s).expect("valid scope name")
+    }
+
+    fn fixture_config() -> Arc<DeclarativeConfig> {
+        let toml_content = std::fs::read_to_string(fixture_root().join("arch-lint.toml"))
+            .expect("fixture TOML should exist");
+        Arc::new(
+            declarative::load_config_from_toml(&toml_content).expect("fixture config should parse"),
+        )
+    }
+
+    /// Nodes are exactly the declared scopes (`domain`, `infra`); the file
+    /// outside every scope (`src/app/handler.rs`) contributes no node, and
+    /// the single cross-scope `use` is recorded as one `domain → infra` edge
+    /// pointing at the `use` line (acceptance 1, 2, 3).
+    #[test]
+    fn scope_graph_has_exact_nodes_and_one_use_edge() {
+        let root = fixture_root();
+        let config = fixture_config();
+
+        let analyzer = Analyzer::builder()
+            .root(&root)
+            .declarative(Arc::clone(&config))
+            .build()
+            .expect("analyzer should build");
+
+        let graph = analyzer.scope_graph().expect("scope graph should build");
+
+        let nodes: Vec<&str> = graph.nodes().map(ScopeName::as_str).collect();
+        assert_eq!(
+            nodes,
+            ["domain", "infra"],
+            "app/handler.rs is in no declared scope and must not add an `app` node: {nodes:?}"
+        );
+
+        assert_eq!(graph.edge_count(), 1, "exactly one domain -> infra edge");
+        assert!(!graph.has_edge(&name("infra"), &name("domain")));
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].kind, EdgeKind::Use);
+        assert_eq!(sites[0].path, "crate::infra::db::Connection");
+        assert_eq!(sites[0].location.line, 5);
+        assert_eq!(
+            sites[0].location.file,
+            PathBuf::from("src/domain/service.rs")
+        );
+    }
+
+    /// `Analyzer::scope_graph()` records an inline path reference (not only a
+    /// `use`) as an `Inline` site. Built fresh under a tempdir, since the
+    /// shared fixture's cross-scope reference is a `use` (covered above).
+    #[test]
+    fn scope_graph_records_an_inline_path_reference() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let domain = root.join("src/domain");
+        let infra = root.join("src/infra");
+        std::fs::create_dir_all(&domain).expect("create domain dir");
+        std::fs::create_dir_all(&infra).expect("create infra dir");
+        std::fs::write(
+            domain.join("a.rs"),
+            "pub fn f() { crate::infra::db::connect(); }\n",
+        )
+        .expect("write domain file");
+        std::fs::write(infra.join("db.rs"), "pub fn connect() {}\n").expect("write infra file");
+
+        let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+"#;
+        let config =
+            Arc::new(declarative::load_config_from_toml(toml_content).expect("config parses"));
+
+        let analyzer = Analyzer::builder()
+            .root(root)
+            .declarative(config)
+            .build()
+            .expect("analyzer should build");
+
+        let graph = analyzer.scope_graph().expect("scope graph should build");
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert_eq!(sites.len(), 1, "exactly one inline site: {sites:#?}");
+        assert_eq!(sites[0].kind, EdgeKind::Inline);
+        assert_eq!(sites[0].path, "crate::infra::db::connect");
+    }
+
+    /// A `ProjectRule` reachable only through `ctx.scope_graph()` sees the
+    /// same graph `Analyzer::scope_graph()` reports, and adding it changes
+    /// nothing about the per-file violation count (acceptance 4: behaviour
+    /// unchanged).
+    struct CaptureGraphRule {
+        captured: Arc<Mutex<Option<ScopeGraph>>>,
+    }
+
+    impl ProjectRule for CaptureGraphRule {
+        fn name(&self) -> &'static str {
+            "capture-scope-graph"
+        }
+
+        fn code(&self) -> &'static str {
+            "TEST-CAPTURE"
+        }
+
+        fn check_project(&self, ctx: &ProjectContext) -> Vec<Violation> {
+            *self.captured.lock().expect("lock") = Some(ctx.scope_graph().clone());
+            vec![]
+        }
+    }
+
+    #[test]
+    fn analyze_hands_project_rules_the_same_graph_and_keeps_violation_count() {
+        let root = fixture_root();
+        let config = fixture_config();
+        let toml_content = std::fs::read_to_string(root.join("arch-lint.toml")).unwrap();
+        let rules =
+            declarative::load_rules_from_toml(&toml_content).expect("fixture rules should load");
+
+        let expected_graph = Analyzer::builder()
+            .root(&root)
+            .declarative(Arc::clone(&config))
+            .build()
+            .expect("analyzer should build")
+            .scope_graph()
+            .expect("scope graph should build");
+
+        let captured: Arc<Mutex<Option<ScopeGraph>>> = Arc::new(Mutex::new(None));
+        let capture_rule: ProjectRuleBox = Box::new(CaptureGraphRule {
+            captured: Arc::clone(&captured),
+        });
+
+        let mut builder = Analyzer::builder()
+            .root(&root)
+            .declarative(Arc::clone(&config))
+            .project_rule_box(capture_rule);
+        for rule in rules {
+            builder = builder.rule_box(rule);
+        }
+        let result = builder
+            .build()
+            .expect("analyzer should build")
+            .analyze()
+            .expect("analysis should succeed");
+
+        let seen = captured
+            .lock()
+            .expect("lock")
+            .clone()
+            .expect("project rule should have run");
+        assert_eq!(
+            seen, expected_graph,
+            "ctx.scope_graph() must match Analyzer::scope_graph()"
+        );
+
+        // Unchanged from `detects_all_three_violation_types`: adding the
+        // graph-capturing project rule reports no violations of its own and
+        // does not change the per-file rule count.
+        assert_eq!(
+            result.violations.len(),
+            3,
+            "behaviour must be unchanged: {:#?}",
+            result
+                .violations
+                .iter()
+                .map(|v| format!("{} @ {}", v.rule, v.location.file.display()))
+                .collect::<Vec<_>>()
+        );
+        let codes: Vec<&str> = result.violations.iter().map(|v| v.code.as_str()).collect();
+        assert!(codes.contains(&"ALD001"));
+        assert!(codes.contains(&"ALD002"));
+        assert!(codes.contains(&"ALD003"));
+    }
+}

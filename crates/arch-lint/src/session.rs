@@ -31,14 +31,17 @@
 //!
 //! The winning candidate is recorded in [`Session::config_source`].
 
+use arch_lint_core::declarative::model::DeclarativeConfig;
 use arch_lint_core::declarative::LoadRulesError;
 use arch_lint_core::{
-    Analyzer, AnalyzerError, Config, ConfigError, LintResult, ParseSeverityError, RuleBox, Severity,
+    Analyzer, AnalyzerError, Config, ConfigError, LintResult, ParseSeverityError, RuleBox,
+    ScopeGraph, Severity,
 };
 use arch_lint_rules::{
     rule_from_config, validate_rule_tables, ParsePresetError, Preset, RuleOptionsError,
 };
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Project-level configuration file names, checked in order.
 const PROJECT_CONFIG_NAMES: &[&str] = &["arch-lint.toml", ".arch-lint.toml"];
@@ -215,6 +218,9 @@ pub struct Session {
     preset: Preset,
     fail_on: Severity,
     declarative: Vec<RuleBox>,
+    /// The declarative config the rules were built from; the analyzer uses it
+    /// to collect the [`ScopeGraph`]. `None` when the config had no content.
+    declarative_config: Option<Arc<DeclarativeConfig>>,
     rules: Option<Vec<RuleBox>>,
     excludes: Vec<String>,
 }
@@ -319,19 +325,21 @@ impl Session {
         config_source: ConfigSource,
         path: Option<PathBuf>,
     ) -> Result<Self, SessionError> {
-        let (config, declarative) = if content.is_empty() {
-            (Config::default(), Vec::new())
+        let (config, declarative, declarative_config) = if content.is_empty() {
+            (Config::default(), Vec::new(), None)
         } else {
             let config = Config::parse(content).map_err(|source| SessionError::ParseConfig {
                 path: path.clone(),
                 source,
             })?;
-            let declarative = arch_lint_core::declarative::load_rules_from_toml(content)
+            let declarative_config = arch_lint_core::declarative::load_config_from_toml(content)
+                .map(Arc::new)
                 .map_err(|source| SessionError::Declarative { path, source })?;
+            let declarative = arch_lint_core::declarative::create_rules_shared(&declarative_config);
             // Every `[rules.<name>]` table is checked here, not only the ones
             // the active preset builds, so a typo in any of them is an error.
             validate_rule_tables(&config)?;
-            (config, declarative)
+            (config, declarative, Some(declarative_config))
         };
 
         let preset: Preset = config.preset.as_deref().unwrap_or(DEFAULT_PRESET).parse()?;
@@ -348,6 +356,7 @@ impl Session {
             preset,
             fail_on,
             declarative,
+            declarative_config,
             rules: None,
             excludes: Vec::new(),
         })
@@ -472,25 +481,25 @@ impl Session {
     /// [`SessionError::Build`] if the analyzer rejects the configuration, and
     /// [`SessionError::Analyze`] if the analysis itself fails.
     pub fn run(self) -> Result<LintResult, SessionError> {
+        // Computed before destructuring `self`: an explicit `with_rules` (or
+        // `with_rule_filter`) wins and the preset is not evaluated at all;
+        // otherwise the preset supplies the rule set.
+        let preset_rules = match self.rules {
+            Some(_) => None,
+            None => Some(self.preset.rules_with_config(&self.config)?),
+        };
         let Self {
             root,
             config,
-            preset,
             declarative,
-            rules,
+            declarative_config,
+            rules: explicit,
             excludes,
             ..
         } = self;
+        let rules = explicit.or(preset_rules).unwrap_or_default();
 
-        let rules = match rules {
-            Some(rules) => rules,
-            None => preset.rules_with_config(&config)?,
-        };
-
-        let mut builder = Analyzer::builder().root(&root).config(config);
-        for pattern in excludes {
-            builder = builder.exclude(pattern);
-        }
+        let mut builder = Self::base_builder(&root, config, excludes, declarative_config.as_ref());
         for rule in rules {
             builder = builder.rule_box(rule);
         }
@@ -503,6 +512,48 @@ impl Session {
         tracing::info!("Analyzing {:?} with {} rules", root, analyzer.rule_count());
 
         analyzer.analyze().map_err(SessionError::Analyze)
+    }
+
+    /// Builds the [`ScopeGraph`] of the project without running any rule.
+    ///
+    /// Same file discovery (root, `[analyzer]` settings, `with_exclude`
+    /// overrides) and the same `[[scopes]]` as [`Session::run`], so the graph
+    /// equals the one project rules see during a run. A config without
+    /// `[[scopes]]` yields an empty graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the analyzer cannot be built or file discovery
+    /// fails.
+    pub fn scope_graph(&self) -> Result<ScopeGraph, SessionError> {
+        let analyzer = Self::base_builder(
+            &self.root,
+            self.config.clone(),
+            self.excludes.clone(),
+            self.declarative_config.as_ref(),
+        )
+        .build()
+        .map_err(SessionError::Build)?;
+        analyzer.scope_graph().map_err(SessionError::Analyze)
+    }
+
+    /// The analyzer builder shared by [`Session::run`] and
+    /// [`Session::scope_graph`]: root, config, excludes and the declarative
+    /// config, without rules.
+    fn base_builder(
+        root: &Path,
+        config: Config,
+        excludes: Vec<String>,
+        declarative_config: Option<&Arc<DeclarativeConfig>>,
+    ) -> arch_lint_core::AnalyzerBuilder {
+        let mut builder = Analyzer::builder().root(root).config(config);
+        for pattern in excludes {
+            builder = builder.exclude(pattern);
+        }
+        if let Some(declarative_config) = declarative_config {
+            builder = builder.declarative(Arc::clone(declarative_config));
+        }
+        builder
     }
 }
 
