@@ -2,10 +2,14 @@
 
 use crate::config::{Config, RuleConfig};
 use crate::context::{FileContext, ProjectContext};
+use crate::declarative::graph::ScopeGraph;
+use crate::declarative::model::DeclarativeConfig;
+use crate::declarative::rules::ScopeEdgeCollector;
 use crate::rule::{ProjectRule, ProjectRuleBox, Rule, RuleBox};
 use crate::types::{LintResult, Violation};
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -44,6 +48,7 @@ pub struct AnalyzerBuilder {
     include_patterns: Vec<String>,
     respect_gitignore: Option<bool>,
     config: Option<Config>,
+    declarative: Option<Arc<DeclarativeConfig>>,
     fail_on_parse_error: bool,
 }
 
@@ -157,6 +162,20 @@ impl AnalyzerBuilder {
         self
     }
 
+    /// Sets the declarative config whose `[[scopes]]` define the
+    /// [`ScopeGraph`].
+    ///
+    /// With it, the analyzer records every scope-crossing reference while it
+    /// runs the per-file rules and hands the graph to project rules through
+    /// [`ProjectContext::scope_graph`]. Without it the graph is empty. Pass
+    /// the same `Arc` the declarative rules were built from
+    /// ([`create_rules_shared`](crate::declarative::create_rules_shared)).
+    #[must_use]
+    pub fn declarative(mut self, config: Arc<DeclarativeConfig>) -> Self {
+        self.declarative = Some(config);
+        self
+    }
+
     /// Sets whether to fail on parse errors (default: false).
     #[must_use]
     pub fn fail_on_parse_error(mut self, fail: bool) -> Self {
@@ -215,6 +234,7 @@ impl AnalyzerBuilder {
             include_patterns,
             respect_gitignore,
             config: self.config.unwrap_or_default(),
+            declarative: self.declarative,
             fail_on_parse_error: self.fail_on_parse_error,
         })
     }
@@ -231,6 +251,7 @@ pub struct Analyzer {
     include_patterns: Vec<String>,
     respect_gitignore: bool,
     config: Config,
+    declarative: Option<Arc<DeclarativeConfig>>,
     fail_on_parse_error: bool,
 }
 
@@ -266,9 +287,10 @@ impl Analyzer {
 
         info!("Found {} files to analyze", files.len());
 
-        // Run per-file rules
+        // Run per-file rules; the scope graph is collected on the same pass.
+        let mut graph = self.empty_graph();
         for file_path in &files {
-            match self.analyze_file(file_path) {
+            match self.analyze_file(file_path, &mut graph) {
                 Ok(violations) => {
                     result.violations.extend(violations);
                     result.files_checked += 1;
@@ -286,7 +308,8 @@ impl Analyzer {
         // Run project-wide rules
         let project_ctx = ProjectContext::new(&self.root)
             .with_source_files(files.clone())
-            .with_cargo_files(self.discover_cargo_files()?);
+            .with_cargo_files(self.discover_cargo_files()?)
+            .with_scope_graph(graph);
 
         for rule in &self.project_rules {
             if !self.config.is_rule_enabled(rule.name()) {
@@ -317,17 +340,76 @@ impl Analyzer {
         Ok(result)
     }
 
-    /// Analyzes a single file and returns violations.
-    fn analyze_file(&self, path: &Path) -> Result<Vec<Violation>, AnalyzerError> {
-        debug!("Analyzing: {}", path.display());
+    /// Builds the [`ScopeGraph`] of the project without running any rule.
+    ///
+    /// Discovers files exactly as [`Analyzer::analyze`] does and collects the
+    /// scope-crossing references of each. The result equals the graph that
+    /// `analyze()` hands to project rules. Files that fail to parse are
+    /// skipped with a warning (or fail the call when
+    /// [`AnalyzerBuilder::fail_on_parse_error`] is set), as in `analyze()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file discovery or reading fails.
+    pub fn scope_graph(&self) -> Result<ScopeGraph, AnalyzerError> {
+        let mut graph = self.empty_graph();
+        let Some(declarative) = &self.declarative else {
+            return Ok(graph);
+        };
 
+        for path in &self.discover_files()? {
+            match Self::read_and_parse(path) {
+                Ok((content, ast)) => {
+                    let ctx = FileContext::new(path, &content, &self.root);
+                    ScopeEdgeCollector::collect(declarative, &ctx, &ast, &mut graph);
+                }
+                Err(AnalyzerError::Parse { path, message }) => {
+                    warn!("Failed to parse {}: {}", path.display(), message);
+                    if self.fail_on_parse_error {
+                        return Err(AnalyzerError::Parse { path, message });
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(graph)
+    }
+
+    /// A graph with every declared scope as a node and no edges.
+    fn empty_graph(&self) -> ScopeGraph {
+        match &self.declarative {
+            Some(config) => ScopeGraph::with_nodes(config.scopes().keys().cloned()),
+            None => ScopeGraph::new(),
+        }
+    }
+
+    /// Reads and parses one source file.
+    fn read_and_parse(path: &Path) -> Result<(String, syn::File), AnalyzerError> {
         let content = std::fs::read_to_string(path)?;
         let ast = syn::parse_file(&content).map_err(|e| AnalyzerError::Parse {
             path: path.to_path_buf(),
             message: e.to_string(),
         })?;
+        Ok((content, ast))
+    }
 
+    /// Analyzes a single file and returns violations, recording its
+    /// scope-crossing references into `graph`.
+    fn analyze_file(
+        &self,
+        path: &Path,
+        graph: &mut ScopeGraph,
+    ) -> Result<Vec<Violation>, AnalyzerError> {
+        debug!("Analyzing: {}", path.display());
+
+        let (content, ast) = Self::read_and_parse(path)?;
         let ctx = FileContext::new(path, &content, &self.root);
+
+        if let Some(declarative) = &self.declarative {
+            ScopeEdgeCollector::collect(declarative, &ctx, &ast, graph);
+        }
+
         let mut violations = Vec::new();
 
         for rule in &self.rules {

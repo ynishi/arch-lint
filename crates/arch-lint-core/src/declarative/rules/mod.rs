@@ -11,6 +11,7 @@ use crate::context::FileContext;
 use crate::declarative::model::ItemKind;
 use crate::types::{Location, Severity, Violation};
 
+mod collect;
 mod deny_attr;
 mod layering;
 mod naming;
@@ -21,6 +22,7 @@ mod restrict_use;
 mod scope_dep;
 mod suppress;
 
+pub(crate) use collect::ScopeEdgeCollector;
 pub(crate) use suppress::{Decision, Suppressions};
 
 pub use deny_attr::DenyAttrRule;

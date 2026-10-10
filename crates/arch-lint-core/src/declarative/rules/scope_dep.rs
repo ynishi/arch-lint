@@ -116,7 +116,7 @@ pub(super) struct ScopeDepVisitor<'a> {
 ///
 /// Only handles `crate::` prefixed paths. External crates, `self::`,
 /// and `super::` paths return an empty vec.
-fn resolve_target_scopes<'a>(
+pub(super) fn resolve_target_scopes<'a>(
     config: &'a DeclarativeConfig,
     use_path: &str,
 ) -> Vec<&'a crate::declarative::model::ScopeName> {

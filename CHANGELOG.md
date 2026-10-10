@@ -11,9 +11,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`arch-lint check --exit-zero`** reports violations and exits `0`, for
   report-only CI steps
+- **`ScopeGraph`**: the dependency graph between declared `[[scopes]]`
+  (nodes = scope names, edges = scope-crossing `use`/inline references with
+  the `Location` of each site), collected once per `Analyzer::analyze()` by a
+  visitor that runs inside the existing per-file pass (no second parse). Path
+  resolution is the one ALD003 uses (`crate::`-prefixed paths, `src/x/y.rs` /
+  `src/x/y/mod.rs` candidates); unlike ALD003 the graph records every
+  reference, regardless of `allow` suppressions and of `check_inline` — rules
+  built on the graph decide what to filter. Reachable through
+  `ProjectContext::scope_graph()` (for a `ProjectRule`), the standalone
+  `Analyzer::scope_graph()` (builds the graph without running any rule) and
+  `Session::scope_graph()` (the SDK driver). Enabled by the new
+  `AnalyzerBuilder::declarative(Arc<DeclarativeConfig>)` builder method,
+  paired with the new `declarative::load_config_from_toml` (parses TOML into
+  a `DeclarativeConfig` without building rules) and
+  `declarative::create_rules_shared` (builds rules from a shared `Arc`, so the
+  same config can also be handed to the analyzer). Limitation: only
+  `crate::`-prefixed paths are resolved (`self::` and `super::` references
+  are not edges). Prerequisite for cycle detection, independence and
+  allow-list rules, and `arch-lint graph` (separate issues)
 
 ### Changed
 
+- **`ProjectContext` is now `#[non_exhaustive]`** and has a new `scope_graph`
+  field; construct it with `ProjectContext::new` plus the `with_*` builders,
+  not a struct literal
 - **Exit status `2` when the CLI could not run.** Configuration errors,
   unknown `--rules` names, unreadable paths and I/O errors now exit `2`;
   `1` is reserved for "ran, and found violations at or above `fail_on`".

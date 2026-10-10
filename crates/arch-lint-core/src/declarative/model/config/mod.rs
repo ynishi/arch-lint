@@ -349,7 +349,7 @@ mod tests {
             .restrict_uses()
             .iter()
             .filter(|r| config.scope_ref_contains(r.scope(), path))
-            .map(|r| r.name())
+            .map(RestrictUse::name)
             .collect();
         assert_eq!(applicable.len(), 2);
         assert!(applicable.contains(&"no-sqlx-in-shared"));

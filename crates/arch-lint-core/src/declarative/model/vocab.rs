@@ -8,7 +8,10 @@ use std::fmt;
 use std::path::Path;
 
 /// A validated scope name (non-empty, `[a-z0-9-]` only).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Orders lexically, so scope names can key a `BTreeMap` and graph output is
+/// deterministic.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ScopeName(String);
 
 impl ScopeName {

@@ -1,5 +1,6 @@
 //! Context types for rule execution.
 
+use crate::declarative::graph::ScopeGraph;
 use std::path::{Path, PathBuf};
 
 /// Context provided to per-file rules.
@@ -124,8 +125,18 @@ impl<'a> FileContext<'a> {
 
 /// Context provided to project-wide rules.
 ///
-/// Contains information about the project being analyzed.
+/// Contains information about the project being analyzed: the files the
+/// analyzer discovered and the [`ScopeGraph`] it collected while running the
+/// per-file rules. The graph is empty when the analyzer was built without a
+/// declarative config (see
+/// [`AnalyzerBuilder::declarative`](crate::AnalyzerBuilder::declarative)) or
+/// the config declares no `[[scopes]]`.
+///
+/// `#[non_exhaustive]`: fields stay `pub` for read access, but construct one
+/// with [`ProjectContext::new`] and the `with_*` builders, not a struct
+/// literal, so a future field addition is not a breaking change.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ProjectContext<'a> {
     /// Root directory of the project.
     pub root: &'a Path,
@@ -133,6 +144,8 @@ pub struct ProjectContext<'a> {
     pub source_files: Vec<PathBuf>,
     /// List of Cargo.toml files found.
     pub cargo_files: Vec<PathBuf>,
+    /// Dependency graph between the declared scopes.
+    pub scope_graph: ScopeGraph,
 }
 
 impl<'a> ProjectContext<'a> {
@@ -143,7 +156,21 @@ impl<'a> ProjectContext<'a> {
             root,
             source_files: Vec::new(),
             cargo_files: Vec::new(),
+            scope_graph: ScopeGraph::new(),
         }
+    }
+
+    /// Sets the scope dependency graph.
+    #[must_use]
+    pub fn with_scope_graph(mut self, graph: ScopeGraph) -> Self {
+        self.scope_graph = graph;
+        self
+    }
+
+    /// Returns the scope dependency graph collected for this project.
+    #[must_use]
+    pub fn scope_graph(&self) -> &ScopeGraph {
+        &self.scope_graph
     }
 
     /// Sets the list of source files.
