@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`arch-lint check --exit-zero`** reports violations and exits `0`, for
+  report-only CI steps
+
+### Changed
+
+- **Exit status `2` when the CLI could not run.** Configuration errors,
+  unknown `--rules` names, unreadable paths and I/O errors now exit `2`;
+  `1` is reserved for "ran, and found violations at or above `fail_on`".
+  Previously both cases exited `1`. The table is in `arch-lint check --help`
+  and the README "CI Integration" section
+
 ### Fixed
 
 - **CI no longer depends on the newest dependency versions.** The workspace

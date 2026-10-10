@@ -7,15 +7,29 @@
 //! arch-lint schema [--out <PATH>]
 //! arch-lint init
 //! ```
+//!
+//! Exit status: `0` when the command ran and found nothing to fail on, `1`
+//! when `check` found violations at or above `fail_on`, `2` when the command
+//! could not run (configuration error, unknown rule, unreadable path, I/O
+//! error). `check --exit-zero` reports violations but exits `0`.
 
 use anyhow::Result;
 use arch_lint::session::ConfigSource;
 use clap::{Parser, Subcommand};
+use commands::Outcome;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
 mod commands;
+
+/// Exit-status table shown at the end of `arch-lint check --help`.
+const CHECK_AFTER_HELP: &str = "\
+Exit status:
+  0  no violation at or above `fail_on` (or --exit-zero)
+  1  violations at or above `fail_on` were found
+  2  could not run: configuration error, unknown rule, unreadable path, I/O error";
 
 /// Architecture linter for Rust projects and cross-language layer enforcement
 #[derive(Parser)]
@@ -37,6 +51,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Run lint checks
+    #[command(after_help = CHECK_AFTER_HELP)]
     Check {
         /// Path to analyze (default: current directory)
         #[arg(default_value = ".")]
@@ -58,6 +73,10 @@ enum Commands {
         /// Auto-detected from config if omitted.
         #[arg(long)]
         engine: Option<EngineHint>,
+
+        /// Exit 0 even when violations are found (errors still exit 2)
+        #[arg(long)]
+        exit_zero: bool,
     },
 
     /// List available rules
@@ -107,9 +126,22 @@ pub enum EngineHint {
     Ts,
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(Outcome::Clean) => ExitCode::SUCCESS,
+        Ok(Outcome::Violations) => ExitCode::from(1),
+        Err(err) => {
+            eprintln!("Error: {err:?}");
+            ExitCode::from(2)
+        }
+    }
+}
 
+/// Dispatches the parsed command line.
+///
+/// `Ok` means the command ran; the [`Outcome`] says what it found. `Err`
+/// means it could not run, and `main` reports that as exit status 2.
+fn run(cli: Cli) -> Result<Outcome> {
     let filter = if cli.verbose {
         EnvFilter::new("debug")
     } else {
@@ -129,23 +161,24 @@ fn main() -> Result<()> {
             rules,
             exclude,
             engine,
+            exit_zero,
         } => {
             let source = ConfigSource::resolve(&path, cli.config.as_deref());
             let engine = engine.unwrap_or_else(|| detect_engine(&source));
-            match engine {
-                EngineHint::Syn => commands::check::run(&path, format, rules, exclude, &source),
-                EngineHint::Ts => commands::check_ts::run(&path, format, &source),
-            }
+            let outcome = match engine {
+                EngineHint::Syn => commands::check::run(&path, format, rules, exclude, &source)?,
+                EngineHint::Ts => commands::check_ts::run(&path, format, &source)?,
+            };
+            Ok(if exit_zero { Outcome::Clean } else { outcome })
         }
-        Commands::ListRules { json } => commands::list_rules::run(json),
-        Commands::Schema { out } => commands::schema::run(out.as_deref()),
-        Commands::Init { force, ts } => {
-            if ts {
-                commands::init_ts::run(force)
-            } else {
-                commands::init::run(force)
-            }
+        Commands::ListRules { json } => commands::list_rules::run(json).map(|()| Outcome::Clean),
+        Commands::Schema { out } => commands::schema::run(out.as_deref()).map(|()| Outcome::Clean),
+        Commands::Init { force, ts } => if ts {
+            commands::init_ts::run(force)
+        } else {
+            commands::init::run(force)
         }
+        .map(|()| Outcome::Clean),
     }
 }
 

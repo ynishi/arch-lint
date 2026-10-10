@@ -109,6 +109,7 @@ dependencies = [
  "arch-lint-ts",
  "clap",
  "serde_json",
+ "tempfile",
  "toml",
  "tracing",
  "tracing-subscriber",

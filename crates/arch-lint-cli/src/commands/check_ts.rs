@@ -8,15 +8,19 @@ use arch_lint::session::ConfigSource;
 use arch_lint_ts::{ArchConfig, TsSession};
 use std::path::Path;
 
+use super::Outcome;
 use crate::OutputFormat;
 
 /// Runs the tree-sitter check command.
 ///
+/// Returns [`Outcome::Violations`] when any error-severity violation is
+/// found; `main` turns that into exit status 1.
+///
 /// # Errors
 ///
 /// Returns an error if no config file was found, if it cannot be loaded or
-/// validated, or if analysis fails.
-pub fn run(path: &Path, format: OutputFormat, source: &ConfigSource) -> Result<()> {
+/// validated, or if analysis fails. `main` maps that to exit status 2.
+pub fn run(path: &Path, format: OutputFormat, source: &ConfigSource) -> Result<Outcome> {
     let config = load_ts_config(source)?;
 
     let result = TsSession::new(config, path).run()?;
@@ -24,10 +28,10 @@ pub fn run(path: &Path, format: OutputFormat, source: &ConfigSource) -> Result<(
     super::print_result(&result, format)?;
 
     if result.has_errors() {
-        std::process::exit(1);
+        Ok(Outcome::Violations)
+    } else {
+        Ok(Outcome::Clean)
     }
-
-    Ok(())
 }
 
 fn load_ts_config(source: &ConfigSource) -> Result<ArchConfig> {
