@@ -206,10 +206,10 @@ mod tests {
 
     #[test]
     fn test_check_allow_comment() {
-        let content = r#"fn foo() {
+        let content = r"fn foo() {
     // arch-lint: allow(no-unwrap-expect)
     value.unwrap();
-}"#;
+}";
 
         assert_eq!(
             check_allow_comment(content, 3, "no-unwrap-expect"),
@@ -235,10 +235,10 @@ mod tests {
 
     #[test]
     fn test_check_allow_without_reason() {
-        let content = r#"fn foo() {
+        let content = r"fn foo() {
     // arch-lint: allow(no-unwrap-expect)
     value.unwrap();
-}"#;
+}";
 
         let result = check_allow_with_reason(content, 3, "no-unwrap-expect");
         assert!(result.is_allowed());
@@ -247,9 +247,9 @@ mod tests {
 
     #[test]
     fn test_check_allow_denied() {
-        let content = r#"fn foo() {
+        let content = r"fn foo() {
     value.unwrap();
-}"#;
+}";
 
         let result = check_allow_with_reason(content, 2, "no-unwrap-expect");
         assert!(!result.is_allowed());
