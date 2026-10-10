@@ -105,17 +105,16 @@ pub(crate) fn expand_use_tree(tree: &syn::UseTree, prefix: &str) -> Vec<Resolved
 /// macro position — anywhere outside a `use` statement) to a flat
 /// `::` separated string.
 ///
-/// Returns `None` for paths that cannot denote a cross-scope reference:
-/// single-segment paths (local names) and `self::` / `super::` relative
-/// paths (v1 limitation, same as the use-based checks). Generic arguments
-/// are dropped, so `crate::infra::Db::<T>` becomes `crate::infra::Db`;
-/// paths nested inside generic arguments are visited separately by syn.
+/// Returns `None` for single-segment paths (local names): they cannot denote
+/// a cross-scope reference. Multi-segment paths are returned verbatim,
+/// `self::` and `super::` included — resolving those relative to the
+/// current module (`crate::`, `self::` and `super::` are followed; bare
+/// paths and `pub use` re-exports are not) is the caller's job, done by
+/// `scope_dep::resolve_relative_target_scopes`. Generic arguments are
+/// dropped, so `crate::infra::Db::<T>` becomes `crate::infra::Db`; paths
+/// nested inside generic arguments are visited separately by syn.
 pub(crate) fn inline_path_to_string(path: &syn::Path) -> Option<String> {
     if path.segments.len() < 2 {
-        return None;
-    }
-    let first = path.segments[0].ident.to_string();
-    if first == "self" || first == "super" {
         return None;
     }
     Some(
@@ -581,9 +580,18 @@ mod tests {
     }
 
     #[test]
-    fn inline_path_skips_self_and_super() {
-        assert!(inline_path_to_string(&parse_type_path("self::Db")).is_none());
-        assert!(inline_path_to_string(&parse_type_path("super::Db")).is_none());
+    fn inline_path_passes_self_and_super_through_verbatim() {
+        // Resolving these relative to the current module is
+        // `scope_dep::resolve_relative_target_scopes`'s job, not this
+        // function's; it only flattens the `syn::Path` to a string.
+        assert_eq!(
+            inline_path_to_string(&parse_type_path("self::Db")).as_deref(),
+            Some("self::Db")
+        );
+        assert_eq!(
+            inline_path_to_string(&parse_type_path("super::Db")).as_deref(),
+            Some("super::Db")
+        );
     }
 
     // ── rendering helpers ──

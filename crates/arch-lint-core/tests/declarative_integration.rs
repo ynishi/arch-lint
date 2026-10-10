@@ -159,6 +159,69 @@ fn scope_dep_violation_details() {
         .contains("domain/service.rs"));
 }
 
+/// Acceptance 1, end-to-end through `Analyzer::analyze()` (not just the
+/// rule's own `check()`): `use super::super::infra::db::Pool;` in a fresh
+/// `src/domain/service.rs` is reported as `ALD003`, at the line it is
+/// written on. Built under a tempdir (not the shared fixture, which has no
+/// `self::`/`super::` usage and must stay that way so the `crate::`-only
+/// behaviour-unchanged diff keeps comparing like for like).
+#[test]
+fn scope_dep_double_super_violation_end_to_end() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let domain = root.join("src/domain");
+    let infra = root.join("src/infra");
+    std::fs::create_dir_all(&domain).expect("create domain dir");
+    std::fs::create_dir_all(&infra).expect("create infra dir");
+    std::fs::write(
+        domain.join("service.rs"),
+        "// a leading comment, so the `use` is not on line 1\nuse super::super::infra::db::Pool;\n",
+    )
+    .expect("write domain file");
+    std::fs::write(infra.join("db.rs"), "pub struct Pool;\n").expect("write infra file");
+
+    let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[deny-scope-dep]]
+from = "domain"
+to = ["infra"]
+message = "Domain must not depend on infra."
+severity = "error"
+"#;
+    let (config, rules) = load_config_and_rules(toml_content);
+
+    let mut builder = Analyzer::builder().root(root).config(config);
+    for rule in rules {
+        builder = builder.rule_box(rule);
+    }
+    let result = builder.build().unwrap().analyze().unwrap();
+
+    let scope_dep_violations: Vec<_> = result
+        .violations
+        .iter()
+        .filter(|v| v.code == "ALD003")
+        .collect();
+    assert_eq!(scope_dep_violations.len(), 1, "{:#?}", result.violations);
+
+    let violation = scope_dep_violations[0];
+    assert_eq!(
+        violation.location.file,
+        PathBuf::from("src/domain/service.rs")
+    );
+    assert_eq!(
+        violation.location.line, 2,
+        "the `use` is on line 2 (line 1 is a leading comment)"
+    );
+    assert!(violation.message.contains("super::super::infra::db::Pool"));
+}
+
 // ── Predefined patterns: ALD004-ALD008 plus except / exclude ──
 
 #[test]

@@ -27,8 +27,14 @@ const SCOPE_DEP_CODE: &str = "ALD003";
 ///
 /// # Limitations (v1)
 ///
-/// - Only checks `crate::` prefixed paths (not `self::` or `super::`)
+/// - Resolves `crate::`, `self::` and `super::` paths; bare paths
+///   (`use infra::db;`, edition-2015 style) and `pub use` re-export chasing
+///   are not followed
 /// - Assumes standard `src/` layout for module-to-file mapping
+/// - `self::` / `super::` are resolved only for files under `src/`,
+///   excluding `src/bin/` (each file under `src/bin/`, like `tests/` and
+///   `benches/`, is its own crate root, so there is no single module path
+///   to resolve against); `crate::` paths are unaffected by this
 pub struct ScopeDepRule {
     config: Arc<DeclarativeConfig>,
 }
@@ -79,16 +85,8 @@ impl Rule for ScopeDepRule {
             applicable.iter().map(|d| (d.display_name(), d.severity())),
         );
 
-        let mut visitor = ScopeDepVisitor {
-            ctx,
-            config: &self.config,
-            applicable,
-            code: SCOPE_DEP_CODE,
-            scopes,
-            violations: Vec::new(),
-        };
-        visitor.visit_file(ast);
-        visitor.violations
+        let visitor = ScopeDepVisitor::new(ctx, &self.config, applicable, SCOPE_DEP_CODE, scopes);
+        visitor.run(ast)
     }
 }
 
@@ -106,6 +104,53 @@ pub(super) struct ScopeDepVisitor<'a> {
     /// order.
     pub(super) scopes: Suppressions,
     pub(super) violations: Vec<Violation>,
+    /// Module path of `ctx`'s file itself, e.g. `Some(["domain", "service"])`
+    /// for `src/domain/service.rs`; `None` when the file is outside `src/`
+    /// or under `src/bin/` (see [`file_module_segments`]), in which case
+    /// `self::` / `super::` paths never resolve. Computed once; combined
+    /// with `mod_stack` to resolve relative to the current position.
+    file_module: Option<Vec<String>>,
+    /// Names of the inline `mod` blocks currently being visited, outermost
+    /// first. Empty at the top level of the file.
+    mod_stack: Vec<String>,
+}
+
+impl<'a> ScopeDepVisitor<'a> {
+    /// Creates a visitor ready to run over one file's AST.
+    pub(super) fn new(
+        ctx: &'a FileContext<'a>,
+        config: &'a DeclarativeConfig,
+        applicable: Vec<&'a ScopeDep>,
+        code: &'static str,
+        scopes: Suppressions,
+    ) -> Self {
+        Self {
+            file_module: file_module_segments(&ctx.relative_path),
+            ctx,
+            config,
+            applicable,
+            code,
+            scopes,
+            violations: Vec::new(),
+            mod_stack: Vec::new(),
+        }
+    }
+
+    /// Visits `ast` and returns the violations collected.
+    pub(super) fn run(mut self, ast: &syn::File) -> Vec<Violation> {
+        self.visit_file(ast);
+        self.violations
+    }
+
+    /// The module path at the visitor's current position: the file's own
+    /// module path, plus the inline `mod` blocks currently entered. `None`
+    /// when the file itself has no resolvable module path (see
+    /// `file_module`).
+    fn current_module(&self) -> Option<Vec<String>> {
+        let mut module = self.file_module.clone()?;
+        module.extend(self.mod_stack.iter().cloned());
+        Some(module)
+    }
 }
 
 /// Converts a `crate::x::y::z` module path to candidate file paths
@@ -114,8 +159,11 @@ pub(super) struct ScopeDepVisitor<'a> {
 /// Tries both `src/x/y/z.rs` and `src/x/y/z/mod.rs` to handle
 /// the two standard Rust module layout conventions.
 ///
-/// Only handles `crate::` prefixed paths. External crates, `self::`,
-/// and `super::` paths return an empty vec.
+/// Only handles `crate::` prefixed paths; external crates return an empty
+/// vec. `self::` and `super::` paths are rewritten to a `crate::` path by
+/// [`resolve_relative_target_scopes`] before reaching here — calling this
+/// function directly with a `self::` / `super::` path also returns an empty
+/// vec, since it does not have the current module to rewrite against.
 pub(super) fn resolve_target_scopes<'a>(
     config: &'a DeclarativeConfig,
     use_path: &str,
@@ -146,10 +194,152 @@ pub(super) fn resolve_target_scopes<'a>(
     vec![]
 }
 
+/// Derives the module path of a source file from its root-relative path,
+/// as segments without the leading `crate`: `src/domain/service.rs` becomes
+/// `["domain", "service"]`, `src/domain/mod.rs` becomes `["domain"]`.
+///
+/// Returns `None` for a file outside `src/` (`tests/`, `benches/`, ...) or
+/// under `src/bin/`: each is its own crate root (there can be several
+/// `src/bin/*.rs` binaries in one package), so there is no single module
+/// path to resolve `self::` / `super::` against from here. `crate::`
+/// resolution ([`resolve_target_scopes`]) is unaffected by this — it always
+/// resolves relative to the one `src/` tree, regardless of where the
+/// reference itself lives.
+///
+/// A trailing `mod` segment is always dropped (`src/a/mod.rs` becomes
+/// `["a"]`: the file names a submodule of its parent directory, not itself).
+/// `lib` or `main` is dropped only when it is the *sole* remaining segment
+/// (`src/lib.rs` / `src/main.rs` become `[]`, the crate root): a nested
+/// `src/foo/lib.rs` or `src/cli/main.rs` is a real submodule that happens to
+/// be named `lib` / `main`, not the crate root, and keeps its segment.
+///
+/// This intentionally differs from `FileContext`'s own (private)
+/// `compute_module_path`, which keeps the `src` segment and does not
+/// special-case `main`: that function's `["crate", "src", ...]` shape is
+/// unrelated to scope resolution, and no rule depends on it today.
+pub(super) fn file_module_segments(relative_path: &std::path::Path) -> Option<Vec<String>> {
+    let mut segments: Vec<String> = relative_path
+        .with_extension("")
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str().map(String::from),
+            _ => None,
+        })
+        .collect();
+
+    if segments.first().map(String::as_str) != Some("src") {
+        return None;
+    }
+    segments.remove(0);
+
+    if segments.first().map(String::as_str) == Some("bin") {
+        return None;
+    }
+
+    let drop_last = segments.last().map(String::as_str) == Some("mod")
+        || (segments.len() == 1 && matches!(segments[0].as_str(), "lib" | "main"));
+    if drop_last {
+        segments.pop();
+    }
+
+    Some(segments)
+}
+
+/// Returns `true` for a `self::` / `super::` prefixed path (including the
+/// bare `self` / `super`, which denotes the current / parent module itself).
+pub(super) fn is_relative_path(path: &str) -> bool {
+    path == "self" || path.starts_with("self::") || path == "super" || path.starts_with("super::")
+}
+
+/// Rewrites a `self::` or `super::` path relative to `current_module` into
+/// the equivalent `crate::`-prefixed path. `current_module` is the module
+/// path of the file (or inline `mod` block) containing the reference, in
+/// the shape [`file_module_segments`] returns.
+///
+/// Returns `None` when a `super::` climbs above the crate root. Paths that
+/// are not `self::` / `super::` prefixed are returned unchanged (so this is
+/// safe to call unconditionally).
+fn rewrite_relative_path(path: &str, current_module: &[String]) -> Option<String> {
+    let mut tokens = path.split("::");
+    let Some(head) = tokens.next() else {
+        return Some(path.to_string());
+    };
+
+    match head {
+        "self" => {
+            let mut segments = current_module.to_vec();
+            segments.extend(tokens.map(str::to_string));
+            Some(format!("crate::{}", segments.join("::")))
+        }
+        "super" => {
+            let mut segments = current_module.to_vec();
+            segments.pop()?;
+            let mut rest = tokens;
+            loop {
+                match rest.next() {
+                    Some("super") => {
+                        segments.pop()?;
+                    }
+                    Some(other) => {
+                        segments.push(other.to_string());
+                        break;
+                    }
+                    None => break,
+                }
+            }
+            segments.extend(rest.map(str::to_string));
+            Some(format!("crate::{}", segments.join("::")))
+        }
+        _ => Some(path.to_string()),
+    }
+}
+
+/// Resolves a `use`/inline path to scopes, following `crate::`, `self::`
+/// and `super::` paths relative to `current_module`.
+///
+/// `self::` and `super::` are rewritten to the equivalent `crate::` path
+/// (see [`rewrite_relative_path`]) and resolved exactly as a `crate::` path
+/// would be; a `super::` that climbs above the crate root, or a `self::` /
+/// `super::` path with no `current_module` (the file itself has none, see
+/// [`file_module_segments`]), resolves to no scope. Bare paths (no
+/// recognized prefix) are left unresolved: following them would require
+/// resolving `pub use` re-export chains, which is out of scope (see
+/// [`ScopeDepRule`] limitations).
+///
+/// Callers should pass `current_module` only when `path` actually needs it
+/// (`is_relative_path(path)`), so a `crate::`/bare/external path never pays
+/// for computing the caller's current module.
+pub(super) fn resolve_relative_target_scopes<'a>(
+    config: &'a DeclarativeConfig,
+    current_module: Option<&[String]>,
+    path: &str,
+) -> Vec<&'a crate::declarative::model::ScopeName> {
+    if path.starts_with("crate::") {
+        return resolve_target_scopes(config, path);
+    }
+    if is_relative_path(path) {
+        let Some(current_module) = current_module else {
+            return vec![];
+        };
+        return match rewrite_relative_path(path, current_module) {
+            Some(rewritten) => resolve_target_scopes(config, &rewritten),
+            None => vec![],
+        };
+    }
+    vec![]
+}
+
 impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
         let mark = self.scopes.enter_item_mod(&node.attrs);
+        let pushed_mod = node.content.is_some();
+        if pushed_mod {
+            self.mod_stack.push(node.ident.to_string());
+        }
         syn::visit::visit_item_mod(self, node);
+        if pushed_mod {
+            self.mod_stack.pop();
+        }
         self.scopes.exit(mark);
     }
 
@@ -169,7 +359,16 @@ impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
         let resolved = expand_use_tree(&node.tree, "");
 
         for use_item in &resolved {
-            let target_scopes = resolve_target_scopes(self.config, &use_item.path);
+            // Only `self::`/`super::` paths need the current module; a
+            // `crate::`/bare/external path never pays for computing it.
+            let current_module = is_relative_path(&use_item.path)
+                .then(|| self.current_module())
+                .flatten();
+            let target_scopes = resolve_relative_target_scopes(
+                self.config,
+                current_module.as_deref(),
+                &use_item.path,
+            );
 
             for (index, dep) in self.applicable.iter().enumerate() {
                 for target_scope in &target_scopes {
@@ -224,7 +423,11 @@ impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
         // `use` statements contain `UseTree` nodes, not `syn::Path`,
         // so this never double-reports an import already flagged above.
         if let Some(path) = inline_path_to_string(node) {
-            let target_scopes = resolve_target_scopes(self.config, &path);
+            let current_module = is_relative_path(&path)
+                .then(|| self.current_module())
+                .flatten();
+            let target_scopes =
+                resolve_relative_target_scopes(self.config, current_module.as_deref(), &path);
 
             for (index, dep) in self.applicable.iter().enumerate() {
                 if !dep.check_inline() {
@@ -540,6 +743,270 @@ mod tests {
         let config = make_scope_dep_config();
         let scopes = resolve_target_scopes(&config, "self::utils::helper");
         assert!(scopes.is_empty());
+    }
+
+    // ── file_module_segments ──
+
+    fn segs(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn file_module_segments_file_per_module() {
+        assert_eq!(
+            file_module_segments(std::path::Path::new("src/domain/service.rs")),
+            Some(segs(&["domain", "service"]))
+        );
+    }
+
+    #[test]
+    fn file_module_segments_mod_rs_drops_mod_segment() {
+        assert_eq!(
+            file_module_segments(std::path::Path::new("src/domain/mod.rs")),
+            Some(segs(&["domain"]))
+        );
+        assert_eq!(
+            file_module_segments(std::path::Path::new("src/a/mod.rs")),
+            Some(segs(&["a"]))
+        );
+    }
+
+    #[test]
+    fn file_module_segments_crate_root_files_are_empty() {
+        assert_eq!(
+            file_module_segments(std::path::Path::new("src/lib.rs")),
+            Some(vec![])
+        );
+        assert_eq!(
+            file_module_segments(std::path::Path::new("src/main.rs")),
+            Some(vec![])
+        );
+    }
+
+    /// `lib` / `main` are only the crate root when they are the *only*
+    /// segment; a nested file genuinely named `lib.rs` / `main.rs` is a
+    /// submodule, not the crate root, and keeps its segment. A `super::`
+    /// from such a file must climb only one level, not two.
+    #[test]
+    fn file_module_segments_nested_lib_and_main_keep_their_segment() {
+        assert_eq!(
+            file_module_segments(std::path::Path::new("src/foo/lib.rs")),
+            Some(segs(&["foo", "lib"]))
+        );
+        assert_eq!(
+            file_module_segments(std::path::Path::new("src/cli/main.rs")),
+            Some(segs(&["cli", "main"]))
+        );
+    }
+
+    #[test]
+    fn file_module_segments_outside_src_is_none() {
+        // `tests/` and `benches/` are separate crate roots (integration
+        // tests, each `#[bench]` file), not part of the `src/` module tree.
+        assert!(file_module_segments(std::path::Path::new("tests/x.rs")).is_none());
+        assert!(file_module_segments(std::path::Path::new("benches/b.rs")).is_none());
+    }
+
+    #[test]
+    fn file_module_segments_src_bin_is_none() {
+        // Each `src/bin/*.rs` is its own crate root (a separate binary).
+        assert!(file_module_segments(std::path::Path::new("src/bin/foo.rs")).is_none());
+        assert!(file_module_segments(std::path::Path::new("src/bin/foo/main.rs")).is_none());
+    }
+
+    // ── rewrite_relative_path ──
+
+    #[test]
+    fn rewrite_self_path_prepends_current_module() {
+        let current = vec!["domain".to_string(), "service".to_string()];
+        assert_eq!(
+            rewrite_relative_path("self::helpers::f", &current).as_deref(),
+            Some("crate::domain::service::helpers::f")
+        );
+    }
+
+    #[test]
+    fn rewrite_double_super_climbs_two_levels() {
+        let current = vec!["domain".to_string(), "service".to_string()];
+        assert_eq!(
+            rewrite_relative_path("super::super::infra::db::Pool", &current).as_deref(),
+            Some("crate::infra::db::Pool")
+        );
+    }
+
+    #[test]
+    fn rewrite_super_above_crate_root_is_none() {
+        let current = vec!["domain".to_string()];
+        assert!(rewrite_relative_path("super::super::infra::db::Pool", &current).is_none());
+    }
+
+    // ── resolve_relative_target_scopes ──
+
+    /// Direct (non-end-to-end) check that resolution, not just same-scope
+    /// coincidence, is what makes a single `super::` from
+    /// `src/domain/service.rs` land in `domain`: it must resolve to the
+    /// scope `domain` specifically, not merely "no edge/violation".
+    #[test]
+    fn resolve_relative_target_scopes_single_super_resolves_to_domain() {
+        let config = make_scope_dep_config();
+        let current_module = vec!["domain".to_string(), "service".to_string()];
+        let scopes =
+            resolve_relative_target_scopes(&config, Some(&current_module), "super::entity::User");
+        let names: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
+        assert_eq!(names, vec!["domain"]);
+    }
+
+    #[test]
+    fn resolve_relative_target_scopes_none_current_module_is_unresolved() {
+        let config = make_scope_dep_config();
+        assert!(
+            resolve_relative_target_scopes(&config, None, "self::helpers::f").is_empty(),
+            "a self::/super:: path with no current module (file outside src/, or src/bin/) \
+             must not resolve"
+        );
+    }
+
+    // ── acceptance: self:: / super:: resolution (issue #5) ──
+
+    /// Acceptance 1: `use super::super::infra::db::Pool;` in
+    /// `src/domain/service.rs` resolves to `crate::infra::db::Pool`
+    /// (two `super`s from `crate::domain::service`) and is reported by
+    /// `[[deny-scope-dep]] from = "domain" to = ["infra"]`.
+    #[test]
+    fn scope_dep_detects_double_super_use_path() {
+        let config = make_scope_dep_config();
+        let rule = ScopeDepRule::new(config);
+        let code = "use super::super::infra::db::Pool;";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].code, SCOPE_DEP_CODE);
+        assert!(violations[0]
+            .message
+            .contains("super::super::infra::db::Pool"));
+        assert!(violations[0].message.contains("infra"));
+    }
+
+    /// Acceptance 2: `use self::helpers::f;` in `src/domain/mod.rs`
+    /// resolves to `crate::domain::helpers::f` — scope `domain`, same as the
+    /// file's own scope — so it produces no violation.
+    #[test]
+    fn scope_dep_self_path_same_scope_is_allowed() {
+        let config = make_scope_dep_config();
+        let rule = ScopeDepRule::new(config);
+        let code = "use self::helpers::f;";
+        let ctx = make_ctx("src/domain/mod.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+        assert!(violations.is_empty());
+    }
+
+    /// Bonus acceptance case: an inline `super::` path (not just a `use`
+    /// item) is resolved and checked the same way. Two `super`s, exactly as
+    /// in acceptance 1's `use` case: from `crate::domain::service` one
+    /// `super` lands on `crate::domain`, two on the crate root, where
+    /// `infra` is a real sibling scope of `domain`.
+    #[test]
+    fn scope_dep_detects_inline_super_path() {
+        let config = make_scope_dep_config();
+        let rule = ScopeDepRule::new(config);
+        let code = "fn f() { super::super::infra::db::connect(); }";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(violations[0]
+            .message
+            .contains("super::super::infra::db::connect"));
+    }
+
+    /// `self::` / `super::` inside an inline `mod` block resolve relative to
+    /// that inline module, not the file's own module: three `super`s are
+    /// needed here to reach the crate root (one for `wiring`, one for
+    /// `service`, one for `domain`), proving the mod stack is tracked.
+    #[test]
+    fn scope_dep_super_climbs_relative_to_inline_mod() {
+        let config = make_scope_dep_config();
+        let rule = ScopeDepRule::new(config);
+        let code = "mod wiring {\n    use super::super::super::infra::db::Pool;\n}\n";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(violations[0].message.contains("infra"));
+    }
+
+    /// `self::` inside an inline `mod` block still resolves within the same
+    /// file's scope (`domain`), so it stays allowed.
+    #[test]
+    fn scope_dep_self_path_inside_inline_mod_stays_in_scope() {
+        let config = make_scope_dep_config();
+        let rule = ScopeDepRule::new(config);
+        let code = "mod wiring {\n    use self::helpers::f;\n}\n";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+        assert!(violations.is_empty());
+    }
+
+    /// A bodyless `mod helpers;` declaration must not push onto the mod
+    /// stack: it has no content for `super::`/`self::` inside it to be
+    /// relative to. A following sibling `use` at file level must still
+    /// resolve against the *file's* module, not get stuck one level deep.
+    #[test]
+    fn scope_dep_bodyless_mod_declaration_does_not_affect_following_use() {
+        let config = make_scope_dep_config();
+        let rule = ScopeDepRule::new(config);
+        let code = "mod helpers;\nuse super::super::infra::db::Pool;\n";
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+    }
+
+    /// A `super::` that would climb above the crate root resolves to no
+    /// scope, so no violation fires even though a same-named
+    /// `[[deny-scope-dep]]` would otherwise catch a reference to `infra`.
+    #[test]
+    fn scope_dep_super_above_crate_root_is_unresolved() {
+        let scopes = vec![
+            Scope::new(
+                ScopeName::new("root").unwrap(),
+                vec![GlobPattern::new("src/*.rs").unwrap()],
+            ),
+            Scope::new(
+                ScopeName::new("infra").unwrap(),
+                vec![GlobPattern::new("src/infra/**").unwrap()],
+            ),
+        ];
+        let deps = vec![ScopeDep::new(
+            Some("no-root-to-infra".to_string()),
+            ScopeName::new("root").unwrap(),
+            vec![ScopeName::new("infra").unwrap()],
+            "Root must not depend on infra.".to_string(),
+            None,
+            Severity::Error,
+        )];
+        let config = Arc::new(DeclarativeConfig::new(scopes, vec![], vec![], deps).unwrap());
+        let rule = ScopeDepRule::new(config);
+        // src/lib.rs's module is the crate root ([]); one `super::` from
+        // there has nothing to climb above, and must not resolve.
+        let code = "use super::infra::db::Pool;";
+        let ctx = make_ctx("src/lib.rs", code);
+        let ast = parse_file(code);
+
+        let violations = rule.check(&ctx, &ast);
+        assert!(violations.is_empty(), "{violations:#?}");
     }
 
     // ── suppression ──
