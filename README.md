@@ -1125,6 +1125,7 @@ arch-lint check                           # Run all checks
 arch-lint check --rules no-unwrap-expect  # Run specific rules
 arch-lint check --format json             # JSON output for CI
 arch-lint check --engine ts               # Force tree-sitter engine
+arch-lint check --exit-zero               # Report, but never fail the step
 arch-lint list-rules                      # Show available rules and their options
 arch-lint list-rules --json               # Same, as JSON (option schemas included)
 arch-lint schema                          # JSON Schema of arch-lint.toml
@@ -1144,6 +1145,18 @@ See [docs/tree-sitter-engine.md](docs/tree-sitter-engine.md) for full documentat
 
 ## CI Integration
 
+### Exit status
+
+| Code | Meaning |
+|------|---------|
+| `0` | Ran; no violation at or above `fail_on` (or `--exit-zero` was given) |
+| `1` | Ran; violations at or above `fail_on` were found |
+| `2` | Could not run: configuration error, unknown rule, unreadable path, I/O error |
+
+A CI step can therefore fail on violations and still tell a misconfigured
+linter (`2`) apart from a real finding (`1`). `--exit-zero` turns the step
+into a report-only one.
+
 ### GitHub Actions
 
 ```yaml
@@ -1157,13 +1170,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install --locked arch-lint-cli
-      - run: arch-lint check --format json > lint-results.json
-      - name: Check results
-        run: |
-          if [ $(jq '.violations | length' lint-results.json) -gt 0 ]; then
-            arch-lint check
-            exit 1
-          fi
+      - run: arch-lint check   # exit 1 on violations, 2 if it could not run
 ```
 
 ### Pre-commit Hook

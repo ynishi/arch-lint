@@ -14,6 +14,20 @@ pub mod init_ts;
 pub mod list_rules;
 pub mod schema;
 
+/// What a command found, mapped to the process exit code in `main`.
+///
+/// A command never calls `std::process::exit` itself: it returns this value
+/// (or an `Err`, for "could not run"), so the mapping to `0` / `1` / `2`
+/// lives in one place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The command ran and found nothing to fail on (exit `0`).
+    Clean,
+    /// The command ran and found violations at or above the fail threshold
+    /// (exit `1`).
+    Violations,
+}
+
 /// Writes a lint result to stdout in the requested format.
 ///
 /// ANSI colors are enabled only when stdout is a terminal, so piped and
