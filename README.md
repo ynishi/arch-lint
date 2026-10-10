@@ -1212,7 +1212,10 @@ The tree-sitter engine extends this to non-Rust languages (Kotlin first, more pl
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the
+workflow (issues, branches, checks, pull requests) and
+[PUBLIC_DEVELOPMENT.md](PUBLIC_DEVELOPMENT.md) says what may appear in a
+public artifact.
 
 ## License
 

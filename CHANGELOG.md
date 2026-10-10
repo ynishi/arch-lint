@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Previously both cases exited `1`. The table is in `arch-lint check --help`
   and the README "CI Integration" section
 
+### Documentation
+
+- `CONTRIBUTING.md` rewritten around the workflow: label table with branch
+  prefixes, issue template (`.github/ISSUE_TEMPLATE/issue.md`: Problem /
+  Evidence / Proposal / Acceptance), pull request template with an acceptance
+  table, verification through the installed binary, commit subject prefixes.
+  New `PUBLIC_DEVELOPMENT.md` states the public-by-default policy and what
+  must not appear in a public artifact
+
+
 ### Fixed
 
 - **CI no longer depends on the newest dependency versions.** The workspace
