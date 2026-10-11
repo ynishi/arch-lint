@@ -305,16 +305,18 @@ fn readme_documents_the_adoption_flow() {
     );
 }
 
-// ── Review B1: AL004 (handler-complexity) fingerprint churn ──
+// ── Issue #21: AL004 (handler-complexity) message no longer embeds the
+// measured size, so its baseline fingerprint is stable ──
 //
-// `AL004`'s message embeds the measured arm count, so it is the one rule
-// shipped today whose fingerprint is NOT stable across an unrelated-looking
-// edit: adding an arm to an already-over-the-limit `match` changes the
-// message, so the baselined entry goes stale and the new arm count is
-// reported as a new violation. This is documented behaviour (see
-// `crates/arch-lint/src/baseline.rs` module docs), pinned here so a future
-// change to either the message format or `fingerprint` has to touch this
-// test.
+// `AL004`'s message used to embed the measured arm count, making it the one
+// rule whose fingerprint was NOT stable across an unrelated-looking edit:
+// adding an arm to an already-over-the-limit `match` changed the message,
+// so the baselined entry went stale and the new arm count was reported as
+// a new violation (see `crates/arch-lint/src/baseline.rs` module docs). The
+// message now names only the item; the count and limit live in the
+// `Suggestion` instead, which the baseline fingerprint does not key on —
+// pinned here so a future change to either the message format or
+// `fingerprint` has to touch this test.
 
 fn match_with_arms(count: usize) -> String {
     let mut arms = String::new();
@@ -339,7 +341,7 @@ fn project_with_match_arms(count: usize) -> TempDir {
 }
 
 #[test]
-fn al004_fingerprint_churns_when_the_arm_count_changes() {
+fn al004_fingerprint_is_stable_when_the_arm_count_changes() {
     let dir = project_with_match_arms(5); // 5 arms + `_`, over the limit of 3
     let baseline = dir.path().join("b.toml");
 
@@ -356,11 +358,15 @@ fn al004_fingerprint_churns_when_the_arm_count_changes() {
     );
     assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
     let content = fs::read_to_string(&baseline).expect("baseline written");
-    assert!(content.contains("has 6 arms (max: 3)"), "{content}");
+    assert!(
+        content.contains("Match expression exceeds the arm limit"),
+        "{content}"
+    );
+    assert!(!content.contains("arms"), "{content}");
 
-    // Add one more arm: the baselined "6 arms" entry no longer occurs (its
-    // count goes stale), and "7 arms" is reported as new — even though the
-    // `match` is otherwise the same shape.
+    // Add one more arm: the message is unchanged (it names the item, not
+    // the count), so the baselined entry still matches — no stale entry,
+    // no new violation.
     fs::write(dir.path().join("src/lib.rs"), match_with_arms(6)).expect("rewrite src/lib.rs");
 
     let out = arch_lint(
@@ -373,15 +379,52 @@ fn al004_fingerprint_churns_when_the_arm_count_changes() {
             baseline.to_str().unwrap(),
         ],
     );
-    assert_eq!(code(&out), 1, "stderr: {}", stderr(&out));
-    assert!(
-        stdout(&out).contains("has 7 arms (max: 3)"),
-        "{}",
-        stdout(&out)
-    );
+    assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+    assert!(!stdout(&out).contains("AL004"), "{}", stdout(&out));
     let err = stderr(&out);
-    assert!(err.contains("baseline: 0 suppressed, 1 stale"), "{err}");
-    assert!(err.contains("has 6 arms (max: 3)"), "{err}");
+    assert!(err.contains("baseline: 1 suppressed, 0 stale"), "{err}");
+}
+
+// ── Issue #21: the measured size and limit show up in the suggestion,
+// not the message, under both `--format text` and `--format json` ──
+
+#[test]
+fn al004_text_format_shows_the_measured_size_on_the_help_line() {
+    let dir = project_with_match_arms(5); // 5 arms + `_`, over the limit of 3
+
+    let out = arch_lint(dir.path(), &["check", "--rules", "handler-complexity"]);
+    assert_eq!(code(&out), 1, "stderr: {}", stderr(&out));
+    let out_str = stdout(&out);
+    assert!(
+        out_str.contains("Match expression exceeds the arm limit"),
+        "{out_str}"
+    );
+    assert!(out_str.contains("= help: 6 arms, limit 3"), "{out_str}");
+}
+
+#[test]
+fn al004_json_format_has_the_measured_size_in_the_suggestion_field() {
+    let dir = project_with_match_arms(5); // 5 arms + `_`, over the limit of 3
+
+    let out = arch_lint(
+        dir.path(),
+        &["check", "--rules", "handler-complexity", "--format", "json"],
+    );
+    assert_eq!(code(&out), 1, "stderr: {}", stderr(&out));
+
+    let value: serde_json::Value = serde_json::from_str(&stdout(&out))
+        .unwrap_or_else(|e| panic!("not JSON: {e}: {}", stdout(&out)));
+    let violations = value["violations"].as_array().expect("violations array");
+    assert_eq!(violations.len(), 1, "{value}");
+    assert_eq!(
+        violations[0]["message"], "Match expression exceeds the arm limit",
+        "{value}"
+    );
+    let suggestion = violations[0]["suggestion"]["message"]
+        .as_str()
+        .expect("suggestion.message");
+    assert!(suggestion.contains("6 arms"), "{suggestion}");
+    assert!(suggestion.contains("limit 3"), "{suggestion}");
 }
 
 // ── Review S3: unknown keys are a parse error, not a silently empty baseline ──

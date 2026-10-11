@@ -115,6 +115,21 @@ severity = "error"
 
 Limits complexity in handler functions (TEA/Elm architecture).
 
+The message names the offending item only (`` Handler `handle_action` exceeds
+the line limit `` / `` Match expression in `handle_action` exceeds the arm
+limit `` — or `Match expression exceeds the arm limit` when the match is not
+directly inside a free function whose name starts with `handle_`, `process_`,
+`on_` or `update` (the rule's own handler-name patterns); a match inside an
+`impl` method, a differently-named free function or a closure is unnamed the
+same way / `` Enum `Action` exceeds the variant limit ``); the measured count
+and the configured limit are not in the message, so the baseline fingerprint
+(`code`, `file`, `message`) stays stable across an edit that only changes the
+size. Unnamed matches in one file share a single baseline entry (`count =
+N`), the same as any rule with a constant message. The count and limit are
+reported instead in the suggestion (`= help:` line in `--format text`,
+`suggestion.message` in `--format json`), e.g. `61 lines, limit 50 — Split
+into smaller functions or extract match arms to separate handlers`.
+
 ```rust
 // BAD - Too many match arms
 fn handle_action(action: Action) {
