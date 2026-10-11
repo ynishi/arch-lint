@@ -37,6 +37,8 @@ use arch_lint_core::{
     Analyzer, AnalyzerError, Config, ConfigError, LintResult, ParseSeverityError, ProjectRuleBox,
     RuleBox, ScopeGraph, Severity,
 };
+
+use crate::baseline::{Applied, Baseline};
 use arch_lint_rules::{
     rule_from_config, validate_rule_tables, ParsePresetError, Preset, RuleOptionsError,
 };
@@ -227,6 +229,7 @@ pub struct Session {
     declarative_config: Option<Arc<DeclarativeConfig>>,
     rules: Option<Vec<RuleBox>>,
     excludes: Vec<String>,
+    baseline: Option<Baseline>,
 }
 
 impl std::fmt::Debug for Session {
@@ -241,6 +244,10 @@ impl std::fmt::Debug for Session {
             .field("declarative_project_rules", &self.declarative_project.len())
             .field("explicit_rules", &self.rules.as_ref().map(Vec::len))
             .field("excludes", &self.excludes)
+            .field(
+                "baseline_entries",
+                &self.baseline.as_ref().map(|b| b.entries().len()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -372,6 +379,7 @@ impl Session {
             declarative_config,
             rules: None,
             excludes: Vec::new(),
+            baseline: None,
         })
     }
 
@@ -424,6 +432,15 @@ impl Session {
     #[must_use]
     pub fn with_exclude(mut self, pattern: impl Into<String>) -> Self {
         self.excludes.push(pattern.into());
+        self
+    }
+
+    /// Attaches a baseline, so [`Session::run_with_baseline`] filters known
+    /// violations instead of reporting every one. Does not affect
+    /// [`Session::run`].
+    #[must_use]
+    pub fn with_baseline(mut self, baseline: Baseline) -> Self {
+        self.baseline = Some(baseline);
         self
     }
 
@@ -529,6 +546,31 @@ impl Session {
         tracing::info!("Analyzing {:?} with {} rules", root, analyzer.rule_count());
 
         analyzer.analyze().map_err(SessionError::Analyze)
+    }
+
+    /// Runs the analysis and applies the attached baseline, if any.
+    ///
+    /// Behaves exactly like [`Session::run`] (full analysis, same rule
+    /// selection) and then, when [`Session::with_baseline`] was called,
+    /// filters the result through [`crate::baseline::apply`]. Without a
+    /// baseline, returns every violation as new (`suppressed: 0`,
+    /// `stale: []`) — [`Applied::result`] then equals what [`Session::run`]
+    /// would have returned.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Session::run`].
+    pub fn run_with_baseline(mut self) -> Result<Applied, SessionError> {
+        let baseline = self.baseline.take();
+        let result = self.run()?;
+        Ok(match baseline {
+            Some(baseline) => crate::baseline::apply(result, &baseline),
+            None => Applied {
+                result,
+                suppressed: 0,
+                stale: Vec::new(),
+            },
+        })
     }
 
     /// Builds the [`ScopeGraph`] of the project without running any rule.

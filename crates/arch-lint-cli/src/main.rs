@@ -3,6 +3,8 @@
 //! Usage:
 //! ```bash
 //! arch-lint check [OPTIONS] [PATH]
+//! arch-lint check --baseline <PATH> --update-baseline   # (re)write a baseline
+//! arch-lint check --baseline <PATH>                      # report only new violations
 //! arch-lint list-rules [--json]
 //! arch-lint schema [--out <PATH>]
 //! arch-lint init
@@ -84,6 +86,24 @@ enum Commands {
         /// Exit 0 even when violations are found (errors still exit 2)
         #[arg(long)]
         exit_zero: bool,
+
+        /// Baseline file of known violations (TOML, syn engine only).
+        ///
+        /// Without --update-baseline, the file must already exist: only
+        /// violations beyond it are reported, and a
+        /// `baseline: N suppressed, M stale` summary (plus one line per
+        /// stale entry) is printed to stderr.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+
+        /// (Requires --baseline) Authoring step: run the full analysis,
+        /// print its full report, and (re)write --baseline from it. Always
+        /// exits 0, regardless of violations found — this writes the
+        /// baseline, it does not check it. Run it once when adopting
+        /// arch-lint, and again whenever a baselined violation is fixed or
+        /// a new one is intentionally added to the baseline.
+        #[arg(long, requires = "baseline")]
+        update_baseline: bool,
     },
 
     /// List available rules
@@ -209,12 +229,27 @@ fn run(cli: Cli) -> Result<Outcome> {
             exclude,
             engine,
             exit_zero,
+            baseline,
+            update_baseline,
         } => {
             let source = ConfigSource::resolve(&path, cli.config.as_deref());
             let engine = engine.unwrap_or_else(|| detect_engine(&source));
             let outcome = match engine {
-                EngineHint::Syn => commands::check::run(&path, format, rules, exclude, &source)?,
-                EngineHint::Ts => commands::check_ts::run(&path, format, &source)?,
+                EngineHint::Syn => commands::check::run(
+                    &path,
+                    format,
+                    rules,
+                    exclude,
+                    &source,
+                    baseline.as_deref(),
+                    update_baseline,
+                )?,
+                EngineHint::Ts => {
+                    if baseline.is_some() {
+                        anyhow::bail!("--baseline is only supported by the syn engine");
+                    }
+                    commands::check_ts::run(&path, format, &source)?
+                }
             };
             Ok(if exit_zero { Outcome::Clean } else { outcome })
         }
