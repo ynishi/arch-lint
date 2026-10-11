@@ -18,8 +18,15 @@
 
 use arch_lint_core::{LintResult, Severity};
 
+mod sarif;
+
 /// Output format for [`render`].
+///
+/// `#[non_exhaustive]`: added when [`Format::Sarif`] was introduced (issue
+/// #11). A caller matching on `Format` from outside this crate must now
+/// carry a wildcard arm — see `CHANGELOG.md` `[Unreleased]` → `### Changed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Format {
     /// Multi-line human-readable report, one block per violation.
     Text {
@@ -30,6 +37,8 @@ pub enum Format {
     Json,
     /// One line per violation, no summary.
     Compact,
+    /// SARIF 2.1.0 JSON, consumable by `github/codeql-action/upload-sarif`.
+    Sarif,
 }
 
 impl Default for Format {
@@ -51,13 +60,14 @@ pub enum RenderError {
 ///
 /// # Errors
 ///
-/// Returns [`RenderError::Json`] if [`Format::Json`] is requested and
-/// serialization fails.
+/// Returns [`RenderError::Json`] if [`Format::Json`] or [`Format::Sarif`] is
+/// requested and serialization fails.
 pub fn render(result: &LintResult, format: Format) -> Result<String, RenderError> {
     match format {
         Format::Text { color } => Ok(TextReport { result, color }.to_string()),
         Format::Json => Ok(format!("{}\n", serde_json::to_string_pretty(result)?)),
         Format::Compact => Ok(CompactReport { result }.to_string()),
+        Format::Sarif => Ok(sarif::render(result)?),
     }
 }
 

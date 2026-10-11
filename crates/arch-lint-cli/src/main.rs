@@ -3,6 +3,7 @@
 //! Usage:
 //! ```bash
 //! arch-lint check [OPTIONS] [PATH]
+//! arch-lint check --format sarif                         # SARIF 2.1.0 for code scanning
 //! arch-lint check --baseline <PATH> --update-baseline   # (re)write a baseline
 //! arch-lint check --baseline <PATH>                      # report only new violations
 //! arch-lint list-rules [--json]
@@ -173,6 +174,8 @@ pub enum OutputFormat {
     Json,
     /// One-line-per-violation compact format.
     Compact,
+    /// SARIF 2.1.0 JSON, for `github/codeql-action/upload-sarif`.
+    Sarif,
 }
 
 /// Engine selection hint.
@@ -201,7 +204,8 @@ fn main() -> ExitCode {
 /// means it could not run, and `main` reports that as exit status 2.
 fn run(cli: Cli) -> Result<Outcome> {
     // Logs are diagnostics, not the report: they always go to stderr so
-    // stdout stays machine-readable (`--format json`, `--format compact`).
+    // stdout stays machine-readable (`--format json`, `--format compact`,
+    // `--format sarif`).
     // A non-empty `RUST_LOG` overrides `--verbose`; invalid directives are
     // reported on stderr (`ignoring ...`) and skipped, and if none remain
     // the default applies: `--verbose` selects `debug`, otherwise `warn`.

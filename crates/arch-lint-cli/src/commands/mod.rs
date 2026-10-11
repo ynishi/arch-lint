@@ -40,6 +40,7 @@ fn print_result(result: &LintResult, format: OutputFormat) -> Result<()> {
         },
         OutputFormat::Json => Format::Json,
         OutputFormat::Compact => Format::Compact,
+        OutputFormat::Sarif => Format::Sarif,
     };
 
     let rendered = render(result, format)?;

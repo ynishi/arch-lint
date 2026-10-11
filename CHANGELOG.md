@@ -72,6 +72,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `baseline: stale entry <code> <file> (<message>) xN` — kept as the
   clearer, grep-able form rather than matched to the issue's prose.
 
+- **SARIF output (`--format sarif`)**: `arch-lint check --format sarif` (both
+  engines) renders a SARIF 2.1.0 document instead of the text/JSON/compact
+  reports, consumable by `github/codeql-action/upload-sarif` for PR
+  annotations that survive re-runs and the Security tab — GitHub's
+  `::error` workflow commands are capped at 10 per severity per step and
+  silently drop the rest, which this replaces. One `runs[]` entry with
+  `tool.driver` (`name`, `semanticVersion`, `informationUri`) and one
+  `rules[]` entry per distinct rule code that produced a violation
+  (`id`/`name` from the violation, `shortDescription.text` the rule name —
+  there is no fuller description registry reachable from a `LintResult`),
+  sorted by `id` so the document and `results[].ruleIndex` are
+  deterministic. One `results[]` entry per violation, in violation order:
+  `ruleId`/`ruleIndex`, `level` (`error`/`warning`, and `info` →
+  `note` — SARIF has no `info` level), `message.text`,
+  `locations[0].physicalLocation` (root-relative `artifactLocation.uri`
+  with `/` separators, `uriBaseId: "%SRCROOT%"`, and `region.startLine`/
+  `startColumn`, the latter omitted when `0` — and `region` itself omitted
+  when `line` is `0`, since the SARIF schema requires `startLine >= 1`; a
+  project-level `ProjectRule` reports `Location::new(root, 0, 0)`, with no
+  line to point at), `relatedLocations[]` from
+  `Violation.labels` (own `physicalLocation` plus `message.text`),
+  `partialFingerprints["arch-lint/fingerprint/v1"]` from the same
+  `baseline::fingerprint` the baseline feature above uses — one identity
+  scheme serving both, as planned — and `properties.severity` /
+  `properties.suggestion` (the latter only when `Violation.suggestion` is
+  `Some`; SARIF has no first-class "suggestion" field short of `fixes`,
+  which needs a text edit this renderer does not have). Rendered through a
+  small typed model in a new private `arch-lint::report::sarif` module;
+  `report::render` stays the single entry point. `originalUriBaseIds` is
+  omitted — this renderer has no project root to anchor `%SRCROOT%` to;
+  GitHub resolves it to the checkout when the file is uploaded from CI.
+  README's CI Integration section now leads with a SARIF upload job.
+
+  **Deferred to the maintainer**: acceptance item 6 (uploading the file in
+  a real GitHub Actions run and confirming the violations surface as
+  code-scanning alerts) — that requires a live run on GitHub's
+  infrastructure, which this PR cannot produce.
+
+### Changed
+
+- **`arch_lint::report::Format` is now `#[non_exhaustive]`** (added
+  alongside the new `Format::Sarif` variant above): a caller outside this
+  crate matching on `Format` exhaustively must add a wildcard arm. No
+  in-tree call site needed one — the only matches on `Format` live inside
+  `report::render` itself, which is exempt as the defining crate.
+
 ## [0.7.0] - 2026-10-11
 
 ### Added
