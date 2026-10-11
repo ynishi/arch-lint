@@ -1,0 +1,28 @@
+# `language: rust` always runs `cargo install --bins --root <env> --path .`
+# against the checked-out hook repo (this repository, at the pinned `rev`),
+# in addition to anything `additional_dependencies` adds — it is not an
+# either/or. This repository's root `Cargo.toml` is a virtual manifest
+# (`[workspace]` only, no `[package]`) because `arch-lint-cli` lives at
+# `crates/arch-lint-cli`, not at the repo root, so that install has no
+# package to build and fails regardless of `additional_dependencies`.
+# `language: rust` only builds straight from a repo's own content when that
+# repo's root `Cargo.toml` is itself a package (as it is for cargo-deny and
+# typos, which both ship a working `.pre-commit-hooks.yaml` this way).
+#
+# `language: system` instead runs `entry` as-is, installing nothing: the
+# caller must already have `arch-lint-cli` on `PATH` (`cargo binstall
+# arch-lint-cli` or `cargo install --locked arch-lint-cli`; see docs/cli.md,
+# "Pre-commit Hook"). The trade-off is that `system` hooks do not run on
+# pre-commit.ci, which only provisions a fixed set of languages (Python,
+# Node, Go, Rust, ...) in its own sandbox and does not trust an arbitrary
+# system `PATH` — a project that relies on pre-commit.ci rather than running
+# hooks locally or in its own CI needs a different hook definition than
+# this one, or arch-lint in its own CI step instead (docs/cli.md, "GitHub
+# Actions").
+- id: arch-lint
+  name: arch-lint
+  description: Lint Rust architecture (layering, scope, dependency rules) with arch-lint
+  language: system
+  entry: arch-lint check --format compact
+  pass_filenames: false
+  types_or: [rust, toml]

@@ -1,0 +1,100 @@
+name: Self-check
+
+# Exercises action.yml against this repository's own fixture (issue #15),
+# the way an external consumer would with `uses: ynishi/arch-lint@<tag>`.
+# `uses: ./` resolves to this checkout's action.yml.
+#
+# examples/sample-project is a known-violating fixture (CONTRIBUTING.md,
+# "Verification": 2 AL001 errors plus warnings). The `sarif` job passes
+# `--exit-zero --format sarif` so the action's own step succeeds (`exit-code`
+# output is "0", because `--exit-zero` makes `cargo arch-lint` itself exit
+# 0 — there is no hidden "real" violation code underneath it to assert
+# against) while still writing and asserting the SARIF file. The `plain`
+# job instead omits `--exit-zero`, so `cargo arch-lint` exits 1 on this
+# fixture's real violations and the action step fails — `continue-on-error:
+# true` on that step is what lets this job assert on that failure
+# (`outputs.exit-code` and `outcome`) instead of the job itself failing.
+# Both jobs set `upload-sarif: false`: the fixture's violations are not
+# this repository's own code and must not show up as code-scanning alerts
+# on it.
+#
+# `version: latest` (the action's default) installs the latest *released*
+# arch-lint-cli, not a build of this PR's own `crates/arch-lint-cli` — this
+# workflow checks that action.yml and .pre-commit-hooks.yaml work, not that
+# a change to the CLI itself behaves correctly (that is `ci.yml`'s job).
+#
+# Until a release carries arch-lint-cli's [package.metadata.binstall] table
+# (issue #14), taiki-e/install-action falls back to compiling from source
+# for both jobs below, which takes a few minutes rather than seconds; that
+# is expected and not a failure.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sarif:
+    name: self-check (sarif)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./
+        id: arch-lint
+        with:
+          working-directory: examples/sample-project
+          args: check --exit-zero --format sarif
+          upload-sarif: false
+
+      - name: Assert the SARIF file exists and parses
+        run: |
+          python3 -c '
+          import json
+          d = json.load(open("examples/sample-project/arch-lint.sarif"))
+          assert d["version"] == "2.1.0"
+          print(len(d["runs"][0]["results"]), "results")
+          '
+
+      - name: Assert exit-code output was recorded
+        # --exit-zero makes cargo arch-lint itself exit 0; the action
+        # captures that same process exit code verbatim, so this is "0",
+        # not the violation count the fixture actually has.
+        run: |
+          echo "exit-code output: ${{ steps.arch-lint.outputs.exit-code }}"
+          test "${{ steps.arch-lint.outputs.exit-code }}" = "0"
+
+  plain:
+    name: self-check (plain)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./
+        id: arch-lint
+        continue-on-error: true
+        with:
+          working-directory: examples/sample-project
+          args: check
+          upload-sarif: false
+
+      - name: Assert no SARIF file was written
+        run: |
+          test ! -f examples/sample-project/arch-lint.sarif
+
+      - name: Assert the exit code passed through as a failure
+        # No --exit-zero this time, and upload-sarif: false means the
+        # action step itself does `exit "$code"` directly — this is the
+        # case continue-on-error: true above is for, so this assertion
+        # step still runs instead of the job stopping at the step above.
+        run: |
+          echo "exit-code output: ${{ steps.arch-lint.outputs.exit-code }}"
+          echo "step outcome: ${{ steps.arch-lint.outcome }}"
+          test "${{ steps.arch-lint.outputs.exit-code }}" = "1"
+          test "${{ steps.arch-lint.outcome }}" = "failure"

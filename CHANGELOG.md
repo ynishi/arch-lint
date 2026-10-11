@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GitHub Action and pre-commit hook**: `action.yml` at the repository
+  root is a composite action (`uses: ynishi/arch-lint@arch-lint-v<version>`)
+  that installs `arch-lint-cli` via `taiki-e/install-action`, runs
+  `cargo arch-lint`, and uploads a SARIF report to GitHub code scanning
+  (`github/codeql-action/upload-sarif@v4`) — the job still fails on
+  violations, enforced after the upload runs so a PR gets both the
+  code-scanning alerts and a failed check. Inputs: `args`, `version`,
+  `working-directory`, `upload-sarif`, `sarif-file`; outputs: `exit-code`,
+  `sarif-file`. `.pre-commit-hooks.yaml` ships one `arch-lint` hook
+  (`language: system`, `entry: arch-lint check --format compact`) for the
+  pre-commit hook catalogue; `language: system` runs nothing but `entry`,
+  so the caller installs `arch-lint-cli` itself first (`cargo install
+  --locked arch-lint-cli` or `cargo binstall arch-lint-cli`) rather than
+  pre-commit building it — this repository's root `Cargo.toml` is a
+  virtual manifest, so `language: rust`'s own install step has no package
+  to build there and fails regardless of `additional_dependencies`
+  (docs/cli.md, "Pre-commit Hook"). `.github/workflows/self-check.yml` runs the action
+  against `examples/sample-project` on every PR and on push to `main`, both
+  with and without `--format sarif`, with `upload-sarif: false` so the
+  fixture's violations never reach this repository's own code scanning.
+  `docs/cli.md`'s "GitHub Actions" / "Pre-commit Hook" sections now lead
+  with the action/hook, with the manual `taiki-e/install-action` and raw
+  shell-hook forms collapsed below them (issue #15).
+
 - **Prebuilt release binaries**: `.github/workflows/release.yml`, triggered
   by an `arch-lint-v*` tag push, builds `arch-lint` and `cargo-arch-lint` for
   six targets (`x86_64`/`aarch64-unknown-linux-gnu`,

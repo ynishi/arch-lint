@@ -78,6 +78,18 @@ that the sample does not exercise gets a fixture under the relevant crate's
 `tests/` instead. What the pull request says about it is the Checks section of
 [`.github/pull_request_template.md`](.github/pull_request_template.md).
 
+A change to [`.pre-commit-hooks.yaml`](.pre-commit-hooks.yaml) is run
+through `pre-commit` itself, not just read — `arch-lint`/`cargo-arch-lint`
+on `PATH` from the install above, then:
+
+```bash
+pre-commit try-repo <path-to-this-checkout> arch-lint --all-files
+```
+
+`try-repo` runs the hook from a local checkout at whatever revision is
+currently on disk, without needing a pushed tag; it should print the same
+compact report `cargo arch-lint check --format compact` does.
+
 ## Adding a rule
 
 1. Create `crates/arch-lint-rules/src/<rule_name>.rs` implementing
@@ -156,6 +168,16 @@ that draft looks right does `make publish` run (crates in dependency order:
 macros, core, rules, ts, arch-lint, cli); undraft the release afterwards, once
 its assets (six archives, each with its own `.sha256` file — twelve assets)
 have been checked. Only a maintainer does any of this.
+
+[`action.yml`](action.yml) (issue #15) is pinned by consumers to the release
+tag itself, `@arch-lint-v<version>` — this project does not create or move a
+floating `@v0` major tag. One release tag names one exact commit and one
+exact `action.yml`, so pinning to it is both simpler to maintain (no extra
+tag-moving step on every release) and honest about what a consumer is
+actually running; a `@v0` tag would need to be re-pointed at every release
+to stay useful, and a stale one is worse than none. The same tag also pins
+`.pre-commit-hooks.yaml` consumers (`rev: arch-lint-v<version>` in their
+`.pre-commit-config.yaml`, docs/cli.md "Pre-commit Hook").
 
 ## License
 

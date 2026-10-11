@@ -1,2 +1,5 @@
 /target/
 Cargo.lock
+# Written by local `check --format sarif` runs and by
+# .github/workflows/self-check.yml (issue #15); never committed.
+arch-lint.sarif
