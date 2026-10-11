@@ -1036,3 +1036,356 @@ scopes = ["domain", "nope"]
         assert!(result.is_err(), "unknown scope name must be rejected");
     }
 }
+
+/// End-to-end coverage of `[[independent]]` (ALD010), issue #7's acceptance
+/// items 1-4 (item 4's CLI surface is covered in `arch-lint-cli`).
+mod independent {
+    use arch_lint_core::declarative::{self, model::DeclarativeConfig};
+    use arch_lint_core::{Analyzer, Severity};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    /// Writes one file, creating its parent directories.
+    fn write(root: &std::path::Path, relative: &str, content: &str) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().expect("has parent")).expect("mkdir");
+        std::fs::write(path, content).expect("write file");
+    }
+
+    /// Builds a tempdir project from `(path, content)` source files plus a
+    /// `arch-lint.toml`-shaped `toml_content`, and returns its ALD010
+    /// violations (any other declarative violation would be a bug in the
+    /// fixture, so none are filtered out silently). `toml_content` is also
+    /// parsed as the base `Config`, so a `[rules.independent]` table
+    /// (`enabled` / `severity` overrides) in the same document takes
+    /// effect, exactly as it would through `Session`.
+    fn independent_violations(
+        toml_content: &str,
+        files: &[(&str, &str)],
+    ) -> Vec<arch_lint_core::Violation> {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        for (path, content) in files {
+            write(root, path, content);
+        }
+
+        let config: Arc<DeclarativeConfig> = Arc::new(
+            declarative::load_config_from_toml(toml_content).expect("fixture config should load"),
+        );
+        let project_rules = declarative::create_project_rules_shared(&config);
+        let base_config =
+            arch_lint_core::Config::parse(toml_content).expect("fixture config should parse");
+
+        let mut builder = Analyzer::builder()
+            .root(root)
+            .config(base_config)
+            .declarative(Arc::clone(&config));
+        for rule in project_rules {
+            builder = builder.project_rule_box(rule);
+        }
+        let result = builder
+            .build()
+            .expect("analyzer should build")
+            .analyze()
+            .expect("analysis should succeed");
+
+        result
+            .violations
+            .into_iter()
+            .filter(|v| v.code == "ALD010")
+            .collect()
+    }
+
+    const BILLING_SHIPPING: &str = r#"
+[[scopes]]
+name = "billing"
+paths = ["src/billing/**"]
+
+[[scopes]]
+name = "shipping"
+paths = ["src/shipping/**"]
+
+[[independent]]
+scopes = ["billing", "shipping"]
+"#;
+
+    /// Acceptance 1: `billing -> shipping` is exactly one ALD010 violation
+    /// at the `use` line, naming both scopes with the arrow, error
+    /// severity.
+    #[test]
+    fn billing_to_shipping_is_one_violation_at_the_use_line() {
+        let violations = independent_violations(
+            BILLING_SHIPPING,
+            &[(
+                "src/billing/service.rs",
+                "use crate::shipping::order::Order;\n",
+            )],
+        );
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        let v = &violations[0];
+        assert_eq!(v.severity, Severity::Error);
+        assert!(
+            v.message.contains("billing \u{2192} shipping"),
+            "{}",
+            v.message
+        );
+        assert_eq!(
+            v.location.file,
+            std::path::PathBuf::from("src/billing/service.rs")
+        );
+        assert_eq!(v.location.line, 1);
+        assert_eq!(v.location.column, 29, "column of `Order`");
+        assert!(v.labels.is_empty());
+    }
+
+    /// N1: `[rules.independent] enabled = false` disables the rule
+    /// entirely, even though the TOML still has an `[[independent]]` block
+    /// and a real offending reference on disk.
+    #[test]
+    fn rules_table_can_disable_independent() {
+        let toml_content = format!("{BILLING_SHIPPING}\n[rules.independent]\nenabled = false\n");
+        let violations = independent_violations(
+            &toml_content,
+            &[(
+                "src/billing/service.rs",
+                "use crate::shipping::order::Order;\n",
+            )],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// N1: `[rules.independent] severity = "warning"` overrides the
+    /// `[[independent]]` block's own (error) severity.
+    #[test]
+    fn rules_table_overrides_severity_to_warning() {
+        let toml_content =
+            format!("{BILLING_SHIPPING}\n[rules.independent]\nseverity = \"warning\"\n");
+        let violations = independent_violations(
+            &toml_content,
+            &[(
+                "src/billing/service.rs",
+                "use crate::shipping::order::Order;\n",
+            )],
+        );
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].severity, Severity::Warning);
+    }
+
+    /// Acceptance 2: `billing -> shared`, with `shared` not in `scopes`, is
+    /// not reported.
+    #[test]
+    fn reference_to_a_scope_outside_the_universe_has_no_violation() {
+        let toml_content = r#"
+[[scopes]]
+name = "billing"
+paths = ["src/billing/**"]
+
+[[scopes]]
+name = "shipping"
+paths = ["src/shipping/**"]
+
+[[scopes]]
+name = "shared"
+paths = ["src/shared/**"]
+
+[[independent]]
+scopes = ["billing", "shipping"]
+"#;
+        let violations = independent_violations(
+            toml_content,
+            &[
+                ("src/billing/service.rs", "use crate::shared::util::Util;\n"),
+                ("src/shared/util.rs", "pub struct Util;\n"),
+            ],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// Acceptance 3: adding `catalog` to `scopes` and a
+    /// `catalog -> billing` reference reports a second violation, with no
+    /// other config change.
+    #[test]
+    fn adding_a_third_scope_reports_a_second_violation() {
+        // A real before/after over the same project: the scope
+        // declarations and source files never change, only the
+        // `[[independent]].scopes` list does.
+        let scopes_decl = r#"
+[[scopes]]
+name = "billing"
+paths = ["src/billing/**"]
+
+[[scopes]]
+name = "shipping"
+paths = ["src/shipping/**"]
+
+[[scopes]]
+name = "catalog"
+paths = ["src/catalog/**"]
+"#;
+        let files: &[(&str, &str)] = &[
+            (
+                "src/billing/service.rs",
+                "use crate::shipping::order::Order;\n",
+            ),
+            (
+                "src/catalog/item.rs",
+                "use crate::billing::service::Service;\n",
+            ),
+        ];
+
+        let before_toml =
+            format!("{scopes_decl}\n[[independent]]\nscopes = [\"billing\", \"shipping\"]\n");
+        let before_violations = independent_violations(&before_toml, files);
+        assert_eq!(
+            before_violations.len(),
+            1,
+            "catalog -> billing must be ignored before catalog joins scopes: {before_violations:#?}"
+        );
+
+        let after_toml = format!(
+            "{scopes_decl}\n[[independent]]\nscopes = [\"billing\", \"shipping\", \"catalog\"]\n"
+        );
+        let after_violations = independent_violations(&after_toml, files);
+        assert_eq!(
+            after_violations.len(),
+            2,
+            "catalog -> billing must be reported once catalog joins scopes: {after_violations:#?}"
+        );
+    }
+
+    /// Both directions between the same two scopes report two separate
+    /// violations, one per edge.
+    #[test]
+    fn both_directions_report_two_violations() {
+        let violations = independent_violations(
+            BILLING_SHIPPING,
+            &[
+                (
+                    "src/billing/service.rs",
+                    "use crate::shipping::order::Order;\n",
+                ),
+                (
+                    "src/shipping/order.rs",
+                    "use crate::billing::service::Service;\n",
+                ),
+            ],
+        );
+        assert_eq!(violations.len(), 2, "{violations:#?}");
+    }
+
+    /// Acceptance 4 fixture for the load-time validation: an unknown scope
+    /// name in `scopes` is a load error, same as `[[acyclic]]`.
+    #[test]
+    fn unknown_scope_in_scopes_list_is_a_load_error() {
+        let toml_content = r#"
+[[scopes]]
+name = "billing"
+paths = ["src/billing/**"]
+
+[[independent]]
+scopes = ["billing", "nope"]
+"#;
+        let result = declarative::load_config_from_toml(toml_content);
+        assert!(result.is_err(), "unknown scope name must be rejected");
+    }
+
+    /// `scopes` needs at least two entries — a load-time error.
+    #[test]
+    fn a_single_scope_is_a_load_error() {
+        let toml_content = r#"
+[[scopes]]
+name = "billing"
+paths = ["src/billing/**"]
+
+[[independent]]
+scopes = ["billing"]
+"#;
+        let result = declarative::load_config_from_toml(toml_content);
+        assert!(result.is_err(), "fewer than 2 scopes must be rejected");
+    }
+
+    /// A repeated scope name collapses to one graph node, so the rule would
+    /// silently check nothing against it — a load-time error instead.
+    #[test]
+    fn an_immediate_duplicate_scope_in_scopes_list_is_a_load_error() {
+        let toml_content = r#"
+[[scopes]]
+name = "billing"
+paths = ["src/billing/**"]
+
+[[independent]]
+scopes = ["billing", "billing"]
+"#;
+        let result = declarative::load_config_from_toml(toml_content);
+        assert!(result.is_err(), "a duplicate scope name must be rejected");
+    }
+
+    /// A non-adjacent duplicate (`a`, `b`, `a`) is rejected the same way.
+    #[test]
+    fn a_non_adjacent_duplicate_scope_in_scopes_list_is_a_load_error() {
+        let toml_content = r#"
+[[scopes]]
+name = "a"
+paths = ["src/a/**"]
+
+[[scopes]]
+name = "b"
+paths = ["src/b/**"]
+
+[[independent]]
+scopes = ["a", "b", "a"]
+"#;
+        let result = declarative::load_config_from_toml(toml_content);
+        assert!(result.is_err(), "a duplicate scope name must be rejected");
+    }
+
+    /// An `allow(independent) reason="..."` comment on one `use` of the
+    /// offending edge removes the violation.
+    #[test]
+    fn allow_comment_with_reason_removes_the_violation() {
+        let violations = independent_violations(
+            BILLING_SHIPPING,
+            &[(
+                "src/billing/service.rs",
+                "// arch-lint: allow(independent) reason=\"bootstrap wiring\"\nuse crate::shipping::order::Order;\n",
+            )],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// An `#[arch_lint::allow(independent)]` attribute on the `use` item,
+    /// with no `reason`, still suppresses the violation with no warning —
+    /// attributes never require one.
+    #[test]
+    fn item_attribute_without_reason_suppresses_with_no_warning() {
+        let violations = independent_violations(
+            BILLING_SHIPPING,
+            &[(
+                "src/billing/service.rs",
+                "#[arch_lint::allow(independent)]\nuse crate::shipping::order::Order;\n",
+            )],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// A comment `allow` with no reason on an error-severity rule reports
+    /// the missing-reason warning in place of the violation.
+    #[test]
+    fn comment_without_reason_on_error_rule_warns() {
+        let violations = independent_violations(
+            BILLING_SHIPPING,
+            &[(
+                "src/billing/service.rs",
+                "// arch-lint: allow(independent)\nuse crate::shipping::order::Order;\n",
+            )],
+        );
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].severity, Severity::Warning);
+        assert!(
+            violations[0].message.contains("missing required reason"),
+            "{}",
+            violations[0].message
+        );
+    }
+}

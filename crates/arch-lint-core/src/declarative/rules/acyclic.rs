@@ -32,12 +32,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::context::ProjectContext;
-use crate::declarative::graph::{DirectiveSource, EdgeSite, ScopeGraph};
+use crate::declarative::graph::{EdgeSite, ScopeGraph};
 use crate::declarative::model::{Acyclic, DeclarativeConfig, ScopeName};
 use crate::rule::ProjectRule;
 use crate::types::{Label, Severity, Violation};
-use crate::utils::allowance::AllowDirective;
 
+use super::graph_suppress::{classify_site, SiteOutcome};
 use super::missing_reason_violation;
 
 /// Kind name used by `allow` directives and [`ProjectRule::name`].
@@ -77,70 +77,6 @@ impl ProjectRule for AcyclicRule {
             .iter()
             .flat_map(|rule| check_one(rule, ctx.scope_graph()))
             .collect()
-    }
-}
-
-/// Every directive on `site` naming `rule` — tried as the kind name
-/// (`"acyclic"`), the code (`"ALD009"`) and the TOML block's own `name` (or
-/// its `"acyclic"` fallback), each normalized, or `"all"`. Unlike a single
-/// best match, this returns *every* one, source included, because whether
-/// the site is suppressed silently or needs a `reason` depends on whether
-/// *any* matching directive is attribute-sourced, not just the first one
-/// found (R1: an attribute and a comment can both name the rule on the same
-/// site).
-fn matching_directives<'s>(
-    site: &'s EdgeSite,
-    rule: &Acyclic,
-) -> Vec<(DirectiveSource, &'s AllowDirective)> {
-    let names = [
-        ACYCLIC_NAME.replace('-', "_"),
-        ACYCLIC_CODE.replace('-', "_"),
-        rule.display_name().replace('-', "_"),
-    ];
-    site.allow_directives()
-        .iter()
-        .filter(|(_, directive)| {
-            directive.rules.contains("all")
-                || names.iter().any(|name| directive.rules.contains(name))
-        })
-        .map(|(source, directive)| (*source, directive))
-        .collect()
-}
-
-/// What `rule` does with one site, given every directive naming it there.
-enum SiteOutcome {
-    /// No directive names `rule`: the site stands, so the edge survives.
-    Report,
-    /// At least one matching directive is attribute-sourced (`Scope` or
-    /// `Item`), which never requires a `reason` — silently suppressed,
-    /// matching `Suppressions::decide`'s attribute path.
-    Suppressed,
-    /// Every matching directive is `Comment`-sourced and none carries a
-    /// `reason`. The site is still dropped, but (when it mattered — see
-    /// [`working_graph`]) a warning stands in for the violation it
-    /// suppressed, matching `Suppressions::decide`'s comment path.
-    MissingReason,
-}
-
-/// Classifies one site for `rule` (see [`SiteOutcome`]).
-fn classify_site(site: &EdgeSite, rule: &Acyclic) -> SiteOutcome {
-    let matches = matching_directives(site, rule);
-    if matches.is_empty() {
-        return SiteOutcome::Report;
-    }
-    if matches
-        .iter()
-        .any(|(source, _)| !matches!(source, DirectiveSource::Comment))
-    {
-        return SiteOutcome::Suppressed;
-    }
-    if matches
-        .iter()
-        .any(|(_, directive)| directive.reason.is_some())
-    {
-        SiteOutcome::Suppressed
-    } else {
-        SiteOutcome::MissingReason
     }
 }
 
@@ -243,7 +179,7 @@ fn working_graph<'g>(
 
         let mut reporting_site: Option<&'g EdgeSite> = None;
         for site in sites {
-            match classify_site(site, rule) {
+            match classify_site(site, ACYCLIC_NAME, ACYCLIC_CODE, &rule.display_name()) {
                 SiteOutcome::Report => {
                     if reporting_site.is_none() {
                         reporting_site = Some(site);
@@ -503,9 +439,10 @@ impl Tarjan<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::declarative::graph::EdgeKind;
+    use crate::declarative::graph::{DirectiveSource, EdgeKind};
     use crate::declarative::model::{DeclarativeConfig, GlobPattern, Scope};
     use crate::types::{Location, Severity};
+    use crate::utils::allowance::AllowDirective;
     use std::path::PathBuf;
 
     fn name(s: &str) -> ScopeName {

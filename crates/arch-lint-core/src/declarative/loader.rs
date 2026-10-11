@@ -3,13 +3,13 @@
 use crate::types::Severity;
 
 use super::config_dto::{
-    AcyclicDto, DeclarativeConfigDto, DenyAttrDto, LayeringDto, NamingDto, RequireAttrDto,
-    RequireReturnDto, RequireUseDto, RestrictUseDto, ScopeDepDto, ScopeDto,
+    AcyclicDto, DeclarativeConfigDto, DenyAttrDto, IndependentDto, LayeringDto, NamingDto,
+    RequireAttrDto, RequireReturnDto, RequireUseDto, RestrictUseDto, ScopeDepDto, ScopeDto,
 };
 use super::model::{
-    Acyclic, AttrPattern, DeclarativeConfig, DenyAttr, GlobPattern, ItemKind, Layering, ModelError,
-    Naming, RegexPattern, RequireAttr, RequireReturn, RequireUse, RestrictUse, Scope, ScopeDep,
-    ScopeName, ScopeRef, UsePattern, VisibilityFilter,
+    Acyclic, AttrPattern, DeclarativeConfig, DenyAttr, GlobPattern, Independent, ItemKind,
+    Layering, ModelError, Naming, RegexPattern, RequireAttr, RequireReturn, RequireUse,
+    RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef, UsePattern, VisibilityFilter,
 };
 
 /// Errors during DTO → Domain conversion.
@@ -123,6 +123,13 @@ pub fn load(dto: DeclarativeConfigDto) -> Result<DeclarativeConfig, LoadError> {
         .map(|(i, a)| convert_acyclic(a, i))
         .collect::<Result<Vec<_>, _>>()?;
 
+    let independents = dto
+        .independent
+        .into_iter()
+        .enumerate()
+        .map(|(i, ind)| convert_independent(ind, i))
+        .collect::<Result<Vec<_>, _>>()?;
+
     DeclarativeConfig::builder()
         .scopes(scopes)
         .restrict_uses(restrict_uses)
@@ -134,6 +141,7 @@ pub fn load(dto: DeclarativeConfigDto) -> Result<DeclarativeConfig, LoadError> {
         .namings(namings)
         .require_returns(require_returns)
         .acyclics(acyclics)
+        .independents(independents)
         .build()
         .map_err(LoadError::CrossRef)
 }
@@ -453,6 +461,32 @@ fn convert_acyclic(dto: AcyclicDto, index: usize) -> Result<Acyclic, LoadError> 
     let severity = parse_severity(&dto.severity, &ctx)?;
 
     Ok(Acyclic::new(dto.name, scopes, dto.doc, severity))
+}
+
+fn convert_independent(dto: IndependentDto, index: usize) -> Result<Independent, LoadError> {
+    let ctx = dto.name.clone().map_or_else(
+        || format!("independent[{index}]"),
+        |n| format!("independent '{n}'"),
+    );
+
+    let scopes = dto
+        .scopes
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            ScopeName::new(name).map_err(|e| LoadError::Validation {
+                context: format!("{ctx}.scopes[{i}]"),
+                source: e,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let severity = parse_severity(&dto.severity, &ctx)?;
+
+    Independent::new(dto.name, scopes, dto.doc, severity).map_err(|e| LoadError::Validation {
+        context: format!("{ctx}.scopes"),
+        source: e,
+    })
 }
 
 fn parse_severity(value: &str, context: &str) -> Result<Severity, LoadError> {
@@ -993,5 +1027,104 @@ severity = "critical"
 "#,
         );
         assert!(matches!(result, Err(LoadError::UnknownSeverity { .. })));
+    }
+
+    // -- [[independent]] --
+
+    #[test]
+    fn load_independent_with_scopes() {
+        let config = load_with_scopes(
+            r#"
+[[independent]]
+scopes = ["domain", "infra"]
+doc = "ARCHITECTURE.md L20"
+severity = "error"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.independents().len(), 1);
+        let rule = &config.independents()[0];
+        assert_eq!(rule.display_name(), "independent");
+        let scopes: Vec<&str> = rule
+            .scopes()
+            .iter()
+            .map(crate::declarative::model::ScopeName::as_str)
+            .collect();
+        assert_eq!(scopes, ["domain", "infra"]);
+        assert_eq!(rule.doc_ref(), Some("ARCHITECTURE.md L20"));
+    }
+
+    #[test]
+    fn load_independent_rejects_unknown_scope() {
+        let result = load_with_scopes(
+            r#"
+[[independent]]
+scopes = ["domain", "nope"]
+"#,
+        );
+        assert!(matches!(result, Err(LoadError::CrossRef(_))));
+    }
+
+    #[test]
+    fn load_independent_rejects_unknown_severity() {
+        let result = load_with_scopes(
+            r#"
+[[independent]]
+scopes = ["domain", "infra"]
+severity = "critical"
+"#,
+        );
+        assert!(matches!(result, Err(LoadError::UnknownSeverity { .. })));
+    }
+
+    #[test]
+    fn load_independent_rejects_a_single_scope() {
+        let result = load_with_scopes(
+            r#"
+[[independent]]
+scopes = ["domain"]
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("at least 2 entries"), "{err}");
+    }
+
+    #[test]
+    fn load_independent_rejects_no_scopes() {
+        let result = load_with_scopes(
+            r#"
+[[independent]]
+scopes = []
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("at least 2 entries"), "{err}");
+    }
+
+    #[test]
+    fn load_independent_rejects_an_immediate_duplicate_scope() {
+        let result = load_with_scopes(
+            r#"
+[[independent]]
+scopes = ["domain", "domain"]
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("more than once"), "{err}");
+        assert!(err.contains("domain"), "{err}");
+    }
+
+    #[test]
+    fn load_independent_rejects_a_non_adjacent_duplicate_scope() {
+        let result = load_with_scopes(
+            r#"
+[[independent]]
+scopes = ["handler", "domain", "handler"]
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("more than once"), "{err}");
+        assert!(err.contains("handler"), "{err}");
     }
 }
