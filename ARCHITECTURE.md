@@ -406,6 +406,24 @@ builds prebuilt binaries for six targets and opens a draft GitHub Release; it
 never runs `cargo publish`. A manual `workflow_dispatch` run instead only
 builds and uploads the same archives as workflow artifacts, without creating
 or touching a release — a dry run of the build step alone (issue #14).
+`.github/workflows/self-check.yml` is a third: on every pull request and on
+push to `main` it runs this repository's own `action.yml`
+(`uses: ./`) against `examples/sample-project`, once with `--format sarif`
+and once without, both with `upload-sarif: false` so the fixture's
+intentional violations never reach this repository's own code-scanning tab
+— it is checking that the action (and the SARIF file it writes) works, not
+that the fixture is clean (issue #15).
+
+The repository ships two more public-facing entry points consumed by other
+projects rather than by this one's own CI: `action.yml` at the repository
+root, a composite GitHub Action (`taiki-e/install-action` to install
+`arch-lint-cli`, run `cargo arch-lint`, `github/codeql-action/upload-sarif`
+to report), and `.pre-commit-hooks.yaml`, one `language: system` hook
+(`entry: arch-lint check --format compact`) for the pre-commit hook
+catalogue — `system` rather than `rust` because this repository's root
+`Cargo.toml` is a virtual manifest, which `language: rust`'s own install
+step cannot build from; `system` installs nothing, so the caller needs
+`arch-lint-cli` on `PATH` already (issue #15).
 
 Each rule includes unit tests with synthetic code examples.
 

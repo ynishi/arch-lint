@@ -185,8 +185,56 @@ before piping stdout to `jq`, uploading it, or writing it to a file.
 
 ### GitHub Actions
 
-The recommended way to get the CLI into a workflow is
-[`taiki-e/install-action`](https://github.com/taiki-e/install-action):
+This repository publishes itself as a composite action
+([`action.yml`](../action.yml), issue #15):
+
+```yaml
+name: Lint
+on: [push, pull_request]
+
+permissions:
+  contents: read          # required by actions/checkout
+  actions: read           # required by upload-sarif on private repos
+  security-events: write  # required by upload-sarif
+
+jobs:
+  arch-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ynishi/arch-lint@arch-lint-v<version>
+```
+
+Use the next release tag after 0.8.0, which is the first to ship
+`action.yml` — 0.8.0 and earlier tags predate it.
+
+Default `args` is `check --format sarif`: `upload-sarif` defaults to
+`true`, so violations become code-scanning alerts (PR annotations that
+survive re-runs, plus the Security tab — this is what the manual route
+below uses `::error` workflow commands to avoid, since those are capped at
+10 per severity per step and silently drop the rest), and the job still
+fails on them — the action's own exit code is `cargo arch-lint`'s,
+enforced *after* the SARIF upload runs, so a failing PR gets both the
+alerts and a failed check in the same run. For a report-only run that
+never fails the step, pass `args: check --exit-zero --format sarif` (and
+drop `security-events: write` if nothing else in the workflow needs it).
+
+All inputs: `args` (default `check --format sarif`), `version` (an
+arch-lint-cli version, or `latest`, forwarded to the installer),
+`working-directory` (default `.`), `upload-sarif` (default `true`),
+`sarif-file` (default `arch-lint.sarif`, relative to `working-directory`).
+Outputs: `exit-code`, `sarif-file`.
+
+Pin the tag to an actual release, not a floating major — `arch-lint-v<version>`
+as above, not `@v0` or `@main` (see [CONTRIBUTING.md](../CONTRIBUTING.md),
+"Releasing": this project does not maintain a floating `v0` tag).
+
+<details>
+<summary>Installing the CLI by hand instead of the action</summary>
+
+The action wraps [`taiki-e/install-action`](https://github.com/taiki-e/install-action);
+calling it directly works the same way, without the action's exit-code
+sequencing:
 
 ```yaml
 - uses: taiki-e/install-action@v2
@@ -201,66 +249,88 @@ off to `cargo-binstall`, which reads the crate's
 GitHub Release archive instead of compiling — trying `cargo-quickinstall`
 (a separately hosted prebuilt-binary cache) next, and falling back to a
 source build (`cargo install`) only when neither has a matching archive.
-The `cargo arch-lint`
-step that follows then runs against whatever `cargo` is already on the
-runner (GitHub-hosted runner images ship a Rust toolchain by default); this
-step does not need a `dtolnay/rust-toolchain` step either way.
+The `cargo arch-lint` step that follows then runs against whatever `cargo`
+is already on the runner (GitHub-hosted runner images ship a Rust
+toolchain by default); this step does not need a `dtolnay/rust-toolchain`
+step either way.
 
-The simple option fails the step directly on violations:
-
-```yaml
-name: Lint
-on: [push, pull_request]
-
-jobs:
-  arch-lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: arch-lint-cli
-      - run: cargo arch-lint check   # exit 1 on violations, 2 if it could not run
-```
-
-To get violations into GitHub's code-scanning UI instead — PR annotations
-that survive re-runs, plus the Security tab — upload a SARIF report:
-`::error` workflow commands are capped at 10 per severity per step and
-silently drop the rest, which this avoids. `artifactLocation.uri` is
-relative to the path given to `check`, so run it against the repository
-root (`arch-lint check . --format sarif`, as below) — a narrower path
-produces URIs that do not line up with the checkout, and GitHub will not
-be able to anchor the annotations to the right file.
+The simplest form fails the step directly on violations:
 
 ```yaml
-name: Lint
-on: [push, pull_request]
-
-jobs:
-  arch-lint:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read          # required by actions/checkout
-      actions: read           # required on private repos, per upload-sarif's own example
-      security-events: write  # required by upload-sarif
-    steps:
-      - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: arch-lint-cli
-      - run: cargo arch-lint check . --format sarif --exit-zero > arch-lint.sarif
-        # --exit-zero: let upload-sarif turn violations into alerts instead
-        # of failing the step before the upload runs — the step still
-        # exits 2 (and fails) on a configuration error, so a broken config
-        # is not silently swallowed. Gating the PR then comes from GitHub's
-        # code-scanning checks or branch protection, not this step's exit
-        # code.
-      - uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: arch-lint.sarif
+- uses: actions/checkout@v4
+- uses: taiki-e/install-action@v2
+  with:
+    tool: arch-lint-cli
+- run: cargo arch-lint check   # exit 1 on violations, 2 if it could not run
 ```
+
+Or upload SARIF by hand instead of through the action (`artifactLocation.uri`
+is relative to the path given to `check`, so run it against the repository
+root — `arch-lint check . --format sarif`, as below — a narrower path
+produces URIs that do not line up with the checkout):
+
+```yaml
+- uses: actions/checkout@v4
+- uses: taiki-e/install-action@v2
+  with:
+    tool: arch-lint-cli
+- run: cargo arch-lint check . --format sarif --exit-zero > arch-lint.sarif
+  # --exit-zero: let upload-sarif turn violations into alerts instead of
+  # failing the step before the upload runs — the step still exits 2 (and
+  # fails) on a configuration error, so a broken config is not silently
+  # swallowed. Gating the PR then comes from GitHub's code-scanning checks
+  # or branch protection, not this step's exit code.
+- uses: github/codeql-action/upload-sarif@v4
+  with:
+    sarif_file: arch-lint.sarif
+```
+
+</details>
 
 ### Pre-commit Hook
+
+```bash
+cargo install --locked arch-lint-cli   # or: cargo binstall arch-lint-cli
+```
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/ynishi/arch-lint
+    rev: arch-lint-v<version>
+    hooks:
+      - id: arch-lint
+```
+
+The hook (`.pre-commit-hooks.yaml`, issue #15) is `language: system`: it
+installs nothing and runs `entry` as-is, so `arch-lint` must already be on
+`PATH` (the `cargo install`/`cargo binstall` line above). `language: rust`
+would be the more usual choice for a Rust tool's own hook, but it always
+runs `cargo install --bins --root <env> --path .` against the checked-out
+hook repo in addition to anything `additional_dependencies` adds, and this
+repository's root `Cargo.toml` is a virtual manifest (`arch-lint-cli` lives
+at `crates/arch-lint-cli`, not at the root) — that install has no package
+to build and fails, regardless of `additional_dependencies`.
+
+The trade-off: `language: system` hooks do not run on
+[pre-commit.ci](https://pre-commit.ci/), which only provisions a fixed set
+of languages in its own sandbox and does not trust an arbitrary system
+`PATH`. A project that relies on pre-commit.ci rather than running hooks
+locally or in its own CI needs a different hook definition than this one,
+or arch-lint in its own CI step instead (see "GitHub Actions" above).
+
+Use the next release tag after 0.8.0 for `rev`, the same one as for the
+action above — it is the first to ship `.pre-commit-hooks.yaml`. See
+[CONTRIBUTING.md](../CONTRIBUTING.md), "Verification", for the
+`pre-commit try-repo` check a maintainer runs before relying on it.
+
+A cross-language project (the tree-sitter engine, see
+[tree-sitter-engine.md](tree-sitter-engine.md)) can add `kotlin` (or
+another supported language) to `types_or` in its own
+`.pre-commit-config.yaml` hook override, alongside `rust`.
+
+<details>
+<summary>A raw pre-commit hook instead</summary>
 
 ```bash
 #!/bin/sh
@@ -272,4 +342,6 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 ```
+
+</details>
 

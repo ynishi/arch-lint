@@ -1,0 +1,196 @@
+name: arch-lint
+description: Architecture linter for Rust projects and cross-language layer enforcement
+author: arch-lint contributors
+branding:
+  icon: layers
+  color: blue
+
+# Permissions the CALLING workflow needs (a composite action inherits the
+# caller's permissions; it cannot grant its own):
+#   permissions:
+#     contents: read          # actions/checkout in the caller's job
+#     actions: read           # required by upload-sarif on private repos
+#     security-events: write  # required by upload-sarif
+# Omit security-events: write (or set upload-sarif: false) for a
+# report-only run that never touches the Security tab; pair it with
+# `args: check --exit-zero --format sarif` so the step itself never fails
+# either.
+
+inputs:
+  args:
+    description: >-
+      Arguments passed to `cargo arch-lint`, e.g. "check --exit-zero
+      --format sarif". Split on whitespace by the shell before `cargo
+      arch-lint` sees them — there is no quoting or glob support, so an
+      argument containing a space (a `--exclude` glob with one, for
+      instance) does not work here.
+    required: false
+    default: 'check --format sarif'
+  version:
+    description: arch-lint-cli version to install (a crates.io version, or "latest")
+    required: false
+    default: latest
+  working-directory:
+    description: Directory to run `cargo arch-lint` in
+    required: false
+    default: '.'
+  upload-sarif:
+    description: Upload the SARIF file to GitHub code scanning (needs `--format sarif` in args and security-events:write on the caller)
+    required: false
+    default: 'true'
+  sarif-file:
+    description: SARIF output file, relative to working-directory (only written when args requests SARIF output)
+    required: false
+    default: arch-lint.sarif
+
+outputs:
+  exit-code:
+    description: Exit code `cargo arch-lint` returned (0 clean/exit-zero, 1 violations, 2 could not run)
+    value: ${{ steps.run.outputs.exit-code }}
+  sarif-file:
+    description: Path to the SARIF file that was written, relative to working-directory (only meaningful when args requests SARIF output)
+    value: ${{ inputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    # install-action's own manifest of tools it downloads directly does not
+    # include arch-lint-cli; for a tool it does not recognize it hands off
+    # to cargo-binstall, which reads the crate's [package.metadata.binstall]
+    # table (issue #14) and downloads the matching GitHub Release archive —
+    # trying cargo-quickinstall next — and only falls back to compiling
+    # from source (`cargo install --locked`) when neither has a matching
+    # archive. Until a release carries that metadata table (the first
+    # published after issue #14), every install here compiles from source,
+    # which is slow but correct.
+    - name: Install arch-lint-cli
+      uses: taiki-e/install-action@v2
+      with:
+        tool: ${{ (inputs.version == 'latest' || inputs.version == '') && 'arch-lint-cli' || format('arch-lint-cli@{0}', inputs.version) }}
+
+    # Always exits 0 here so the steps below can run; the real exit code is
+    # recorded as this step's `exit-code` output and enforced by "Enforce
+    # exit code" below, after the SARIF upload has had a chance to run. When
+    # upload-sarif is not "true" there is nothing to defer for, so this step
+    # fails directly (exit "$code") like a plain `run:` step would.
+    #
+    # Also records a `sarif` output (true/false) by pattern-matching `args`
+    # for every form `cargo arch-lint`'s own `--format`/`-f` flag accepts
+    # SARIF in: `--format sarif`, `--format=sarif`, `-f sarif`, `-fsarif`.
+    # This is what decides both whether to redirect stdout to sarif-file
+    # here and whether "Upload SARIF" below runs at all — `contains(args,
+    # '--format sarif')` alone would miss the `-f`/`=` forms.
+    - name: Run cargo arch-lint
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ARCH_LINT_ARGS: ${{ inputs.args }}
+        SARIF_FILE: ${{ inputs.sarif-file }}
+        UPLOAD_SARIF: ${{ inputs.upload-sarif }}
+      run: |
+        set -uo pipefail
+
+        if printf '%s' "$ARCH_LINT_ARGS" | grep -Eq -- '(^|[[:space:]])(--format[= ]|-f[= ]?)sarif([[:space:]]|$)'; then
+          sarif=true
+        else
+          sarif=false
+        fi
+        echo "sarif=$sarif" >> "$GITHUB_OUTPUT"
+
+        if [[ "$sarif" == "true" ]]; then
+          cargo arch-lint $ARCH_LINT_ARGS > "$SARIF_FILE"
+          code=$?
+        else
+          cargo arch-lint $ARCH_LINT_ARGS
+          code=$?
+        fi
+
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+        if [[ "$UPLOAD_SARIF" != "true" ]]; then
+          exit "$code"
+        fi
+
+    # SARIF's artifactLocation.uri is relative to the path `check` ran
+    # against, i.e. relative to working-directory here, not to the
+    # repository root upload-sarif anchors annotations against. When
+    # working-directory is not ".", prefix every uri so the annotations
+    # land on the right file. GitHub-hosted Linux and macOS runners ship
+    # python3; on a Windows runner, either pass a "." working-directory or
+    # confirm `python3` is on PATH first (not something this action checks).
+    #
+    # Skipped (same exit-code/empty guard as "Upload SARIF" below) on
+    # exit-code 2: a config error leaves no meaningful SARIF content behind
+    # (empty or absent stdout), and rewriting that would fail on a JSON
+    # parse error that hides the real, more useful failure.
+    - name: Rewrite SARIF paths for working-directory
+      if: >-
+        always() && steps.run.outputs.sarif == 'true' && inputs.working-directory != '.' &&
+        steps.run.outputs.exit-code != '2' && steps.run.outputs.exit-code != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        SARIF_FILE: ${{ inputs.sarif-file }}
+        WORKING_DIR: ${{ inputs.working-directory }}
+      run: |
+        python3 -c "
+        import json
+        import os
+        import sys
+
+        path = os.environ['SARIF_FILE']
+        prefix = os.environ['WORKING_DIR']
+        while prefix.startswith('./'):
+            prefix = prefix[2:]
+        prefix = prefix.strip('/')
+
+        if not prefix:
+            # working-directory normalised to '' (e.g. '.' or './') —
+            # nothing to prefix, leave the file exactly as written.
+            sys.exit(0)
+
+        with open(path) as f:
+            data = json.load(f)
+
+        def rewrite(loc):
+            art = loc.get('physicalLocation', {}).get('artifactLocation')
+            if art and 'uri' in art:
+                art['uri'] = prefix + '/' + art['uri']
+
+        for run in data.get('runs', []):
+            for result in run.get('results', []):
+                for loc in result.get('locations', []):
+                    rewrite(loc)
+                for rel in result.get('relatedLocations', []):
+                    rewrite(rel)
+
+        with open(path, 'w') as f:
+            json.dump(data, f)
+        "
+
+    # Skips the upload (rather than let it fail and hide the real cause)
+    # when cargo arch-lint could not run at all: exit-code 2 means no SARIF
+    # file was meaningfully written (a config error produces empty or no
+    # stdout), and an empty exit-code means the run step itself never
+    # reached its own GITHUB_OUTPUT write.
+    - name: Upload SARIF
+      if: >-
+        always() && inputs.upload-sarif == 'true' && steps.run.outputs.sarif == 'true' &&
+        steps.run.outputs.exit-code != '2' && steps.run.outputs.exit-code != ''
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ inputs.working-directory }}/${{ inputs.sarif-file }}
+        category: arch-lint
+
+    # Surfaces the exit code recorded by "Run cargo arch-lint" after the
+    # upload step has run (or been skipped). Runs unconditionally so a
+    # clean run (exit-code 0) does not fail, and a violation (or a config
+    # error, exit-code 2) does, even though "Run cargo arch-lint" itself
+    # exited 0 to get here. Guarded on a non-empty exit-code so a run step
+    # that failed before writing it (an environment problem, not an
+    # arch-lint result) does not fail a second time on an empty `exit`.
+    - name: Enforce exit code
+      if: always() && steps.run.outputs.exit-code != ''
+      shell: bash
+      run: exit ${{ steps.run.outputs.exit-code }}
