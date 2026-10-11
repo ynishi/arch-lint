@@ -13,6 +13,14 @@ categories.workspace = true
 name = "arch-lint"
 path = "src/main.rs"
 
+# Cargo's external-subcommand convention: a `cargo-<name>` binary on PATH is
+# invoked by `cargo <name> <args>` as `cargo-<name> <name> <args>`. Shares
+# `main.rs` with the `arch-lint` binary above, which strips the leading
+# `arch-lint` argument this way arrives with (issue #12).
+[[bin]]
+name = "cargo-arch-lint"
+path = "src/main.rs"
+
 [dependencies]
 arch-lint.workspace = true
 arch-lint-core.workspace = true

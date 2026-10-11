@@ -69,7 +69,7 @@ happens to have built:
 
 ```bash
 cargo install --locked --path crates/arch-lint-cli
-arch-lint check examples/sample-project/src    # 2 AL001 errors (plus warnings), exit 1
+cargo arch-lint check examples/sample-project/src    # 2 AL001 errors (plus warnings), exit 1
 ```
 
 `target/debug/arch-lint` is not that binary. `examples/sample-project` exists
