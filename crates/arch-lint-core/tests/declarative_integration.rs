@@ -1389,3 +1389,347 @@ scopes = ["a", "b", "a"]
         );
     }
 }
+
+/// End-to-end coverage of `[[allow-dep]]` (ALD011), issue #8's acceptance
+/// items 1-4 (item 4's CLI surface is covered in `arch-lint-cli`).
+mod allow_dep {
+    use arch_lint_core::declarative::{self, model::DeclarativeConfig};
+    use arch_lint_core::{Analyzer, Severity};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    /// Writes one file, creating its parent directories.
+    fn write(root: &std::path::Path, relative: &str, content: &str) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().expect("has parent")).expect("mkdir");
+        std::fs::write(path, content).expect("write file");
+    }
+
+    /// Builds a tempdir project from `(path, content)` source files plus a
+    /// `arch-lint.toml`-shaped `toml_content`, and returns its ALD011
+    /// violations (any other declarative violation would be a bug in the
+    /// fixture, so none are filtered out silently). `toml_content` is also
+    /// parsed as the base `Config`, so a `[rules.allow-dep]` table
+    /// (`enabled` / `severity` overrides) in the same document takes
+    /// effect, exactly as it would through `Session`.
+    fn allow_dep_violations(
+        toml_content: &str,
+        files: &[(&str, &str)],
+    ) -> Vec<arch_lint_core::Violation> {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        for (path, content) in files {
+            write(root, path, content);
+        }
+
+        let config: Arc<DeclarativeConfig> = Arc::new(
+            declarative::load_config_from_toml(toml_content).expect("fixture config should load"),
+        );
+        let project_rules = declarative::create_project_rules_shared(&config);
+        let base_config =
+            arch_lint_core::Config::parse(toml_content).expect("fixture config should parse");
+
+        let mut builder = Analyzer::builder()
+            .root(root)
+            .config(base_config)
+            .declarative(Arc::clone(&config));
+        for rule in project_rules {
+            builder = builder.project_rule_box(rule);
+        }
+        let result = builder
+            .build()
+            .expect("analyzer should build")
+            .analyze()
+            .expect("analysis should succeed");
+
+        result
+            .violations
+            .into_iter()
+            .filter(|v| v.code == "ALD011")
+            .collect()
+    }
+
+    const DOMAIN_SHARED_INFRA: &str = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "shared"
+paths = ["src/shared/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[allow-dep]]
+from = "domain"
+to = ["shared"]
+"#;
+
+    /// Acceptance 1: `domain -> shared` (allowed) and `domain -> infra`
+    /// (not allowed) with `to = ["shared"]` reports exactly one ALD011
+    /// violation, for `infra`, at the `use` line, with the message naming
+    /// both scopes and the arrow; the CLI's exit code is covered in
+    /// `arch-lint-cli`.
+    #[test]
+    fn domain_to_infra_is_the_only_violation() {
+        let violations = allow_dep_violations(
+            DOMAIN_SHARED_INFRA,
+            &[
+                ("src/domain/a.rs", "use crate::shared::util::Util;\n"),
+                ("src/domain/b.rs", "use crate::infra::db::Pool;\n"),
+            ],
+        );
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        let v = &violations[0];
+        assert_eq!(v.severity, Severity::Error);
+        assert!(v.message.contains("domain \u{2192} infra"), "{}", v.message);
+        assert_eq!(v.location.file, std::path::PathBuf::from("src/domain/b.rs"));
+        assert_eq!(v.location.line, 1);
+        assert!(v.labels.is_empty());
+    }
+
+    /// Acceptance 2: a reference to an external crate (resolves to no
+    /// declared scope) never reaches the graph, so it is never a violation.
+    #[test]
+    fn reference_to_an_external_crate_has_no_violation() {
+        let violations = allow_dep_violations(
+            DOMAIN_SHARED_INFRA,
+            &[("src/domain/a.rs", "use tokio::fs::File;\n")],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// Acceptance 3: `to = []` forbids every declared-scope dependency from
+    /// `domain` — two declared targets referenced report two violations.
+    #[test]
+    fn empty_to_forbids_every_declared_scope_dependency() {
+        let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "shared"
+paths = ["src/shared/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[allow-dep]]
+from = "domain"
+to = []
+"#;
+        let violations = allow_dep_violations(
+            toml_content,
+            &[
+                ("src/domain/a.rs", "use crate::shared::util::Util;\n"),
+                ("src/domain/b.rs", "use crate::infra::db::Pool;\n"),
+            ],
+        );
+        assert_eq!(violations.len(), 2, "{violations:#?}");
+    }
+
+    /// A reference from a scope other than `from` is ignored, even when it
+    /// targets a scope outside `to`.
+    #[test]
+    fn reference_from_a_different_scope_is_ignored() {
+        let violations = allow_dep_violations(
+            DOMAIN_SHARED_INFRA,
+            &[("src/infra/db.rs", "use crate::domain::service::Service;\n")],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// `to` containing `from` is a load-time error.
+    #[test]
+    fn to_containing_from_is_a_load_error() {
+        let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "shared"
+paths = ["src/shared/**"]
+
+[[allow-dep]]
+from = "domain"
+to = ["shared", "domain"]
+"#;
+        let result = declarative::load_config_from_toml(toml_content);
+        assert!(result.is_err(), "`to` containing `from` must be rejected");
+    }
+
+    /// A duplicate in `to` is a load-time error.
+    #[test]
+    fn duplicate_in_to_is_a_load_error() {
+        let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "shared"
+paths = ["src/shared/**"]
+
+[[allow-dep]]
+from = "domain"
+to = ["shared", "shared"]
+"#;
+        let result = declarative::load_config_from_toml(toml_content);
+        assert!(result.is_err(), "a duplicate `to` entry must be rejected");
+    }
+
+    /// An unknown `from` scope is a load-time error.
+    #[test]
+    fn unknown_from_is_a_load_error() {
+        let toml_content = r#"
+[[scopes]]
+name = "shared"
+paths = ["src/shared/**"]
+
+[[allow-dep]]
+from = "nope"
+to = ["shared"]
+"#;
+        let result = declarative::load_config_from_toml(toml_content);
+        assert!(result.is_err(), "unknown `from` scope must be rejected");
+    }
+
+    /// An unknown `to` scope is a load-time error.
+    #[test]
+    fn unknown_to_is_a_load_error() {
+        let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[allow-dep]]
+from = "domain"
+to = ["nope"]
+"#;
+        let result = declarative::load_config_from_toml(toml_content);
+        assert!(result.is_err(), "unknown `to` scope must be rejected");
+    }
+
+    /// Two `[[allow-dep]]` blocks for the same `from` are both enforced,
+    /// each against its own `to`.
+    #[test]
+    fn two_blocks_for_the_same_from_are_both_enforced() {
+        let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "shared"
+paths = ["src/shared/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[allow-dep]]
+name = "domain-allows-shared-only"
+from = "domain"
+to = ["shared"]
+
+[[allow-dep]]
+name = "domain-allows-infra-only"
+from = "domain"
+to = ["infra"]
+"#;
+        let violations = allow_dep_violations(
+            toml_content,
+            &[
+                ("src/domain/a.rs", "use crate::shared::util::Util;\n"),
+                ("src/domain/b.rs", "use crate::infra::db::Pool;\n"),
+            ],
+        );
+        // `domain -> infra` violates the first block (only `shared`
+        // allowed), and `domain -> shared` violates the second (only
+        // `infra` allowed) — two violations, neither block widening the
+        // other's allow-list.
+        assert_eq!(violations.len(), 2, "{violations:#?}");
+    }
+
+    /// N1-style: `[rules.allow-dep] enabled = false` disables the rule
+    /// entirely, even though the TOML still has an `[[allow-dep]]` block and
+    /// a real offending reference on disk.
+    #[test]
+    fn rules_table_can_disable_allow_dep() {
+        let toml_content = format!("{DOMAIN_SHARED_INFRA}\n[rules.allow-dep]\nenabled = false\n");
+        let violations = allow_dep_violations(
+            &toml_content,
+            &[("src/domain/a.rs", "use crate::infra::db::Pool;\n")],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// N1-style: `[rules.allow-dep] severity = "warning"` overrides the
+    /// `[[allow-dep]]` block's own (error) severity.
+    #[test]
+    fn rules_table_overrides_severity_to_warning() {
+        let toml_content =
+            format!("{DOMAIN_SHARED_INFRA}\n[rules.allow-dep]\nseverity = \"warning\"\n");
+        let violations = allow_dep_violations(
+            &toml_content,
+            &[("src/domain/a.rs", "use crate::infra::db::Pool;\n")],
+        );
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].severity, Severity::Warning);
+    }
+
+    /// An `allow(allow-dep) reason="..."` comment on the offending `use`
+    /// removes the violation.
+    #[test]
+    fn allow_comment_with_reason_removes_the_violation() {
+        let violations = allow_dep_violations(
+            DOMAIN_SHARED_INFRA,
+            &[(
+                "src/domain/a.rs",
+                "// arch-lint: allow(allow-dep) reason=\"bootstrap wiring\"\nuse crate::infra::db::Pool;\n",
+            )],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// An `#[arch_lint::allow(allow_dep)]` attribute on the `use` item, with
+    /// no `reason`, still suppresses the violation with no warning —
+    /// attributes never require one.
+    #[test]
+    fn item_attribute_without_reason_suppresses_with_no_warning() {
+        let violations = allow_dep_violations(
+            DOMAIN_SHARED_INFRA,
+            &[(
+                "src/domain/a.rs",
+                "#[arch_lint::allow(allow_dep)]\nuse crate::infra::db::Pool;\n",
+            )],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// A comment `allow` with no reason on an error-severity rule reports
+    /// the missing-reason warning in place of the violation.
+    #[test]
+    fn comment_without_reason_on_error_rule_warns() {
+        let violations = allow_dep_violations(
+            DOMAIN_SHARED_INFRA,
+            &[(
+                "src/domain/a.rs",
+                "// arch-lint: allow(allow-dep)\nuse crate::infra::db::Pool;\n",
+            )],
+        );
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].severity, Severity::Warning);
+        assert!(
+            violations[0].message.contains("missing required reason"),
+            "{}",
+            violations[0].message
+        );
+    }
+}
