@@ -147,9 +147,15 @@ A pull request lands as a merge commit; every commit on the branch reaches
 ## Releasing
 
 Releases are manual: bump the workspace version, move `[Unreleased]` under the
-new heading in `CHANGELOG.md`, tag `arch-lint-v<version>`, then `make publish`
-(crates in dependency order: macros, core, rules, ts, arch-lint, cli). Only a
-maintainer does this.
+new heading in `CHANGELOG.md`, merge, then tag `arch-lint-v<version>` and push
+the tag. That push is what starts
+[`.github/workflows/release.yml`](.github/workflows/release.yml): it builds
+the prebuilt binaries for all six supported targets and opens a **draft**
+GitHub Release with them attached — it never touches crates.io. Only once
+that draft looks right does `make publish` run (crates in dependency order:
+macros, core, rules, ts, arch-lint, cli); undraft the release afterwards, once
+its assets (six archives, each with its own `.sha256` file — twelve assets)
+have been checked. Only a maintainer does any of this.
 
 ## License
 

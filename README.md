@@ -22,9 +22,18 @@ Kotlin first) for cross-language layering.
 
 - **CLI**: `cargo install --locked arch-lint-cli` — installs both `arch-lint`
   and `cargo-arch-lint` (so `cargo arch-lint ...` works too).
+- **`cargo binstall`**: `cargo binstall arch-lint-cli` — downloads the
+  prebuilt archive for your platform from the Releases page instead of
+  compiling. binstall reads the `[package.metadata.binstall]` table of the
+  version it is installing, so this works from the next release onward (the
+  first published after this change); earlier releases predate that table
+  and still compile from source.
 - **`cargo test` route**: `cargo add --dev arch-lint`, then add
   `arch_lint::check!();` to a test file (see Quick Start below).
-- **Prebuilt binaries / `cargo binstall`**: not yet — tracked in #14.
+- **Prebuilt archives**: on the
+  [Releases page](https://github.com/ynishi/arch-lint/releases), one archive
+  per platform containing both `arch-lint` and `cargo-arch-lint`, each with
+  its own `.sha256` checksum file.
 
 ## Quick Start (30 seconds)
 

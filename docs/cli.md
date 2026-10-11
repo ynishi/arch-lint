@@ -185,6 +185,27 @@ before piping stdout to `jq`, uploading it, or writing it to a file.
 
 ### GitHub Actions
 
+The recommended way to get the CLI into a workflow is
+[`taiki-e/install-action`](https://github.com/taiki-e/install-action):
+
+```yaml
+- uses: taiki-e/install-action@v2
+  with:
+    tool: arch-lint-cli
+```
+
+`arch-lint-cli` is not in install-action's own manifest of tools it
+downloads directly; for a tool it does not recognize, install-action hands
+off to `cargo-binstall`, which reads the crate's
+`[package.metadata.binstall]` table (issue #14) and downloads the matching
+GitHub Release archive instead of compiling — trying `cargo-quickinstall`
+(a separately hosted prebuilt-binary cache) next, and falling back to a
+source build (`cargo install`) only when neither has a matching archive.
+The `cargo arch-lint`
+step that follows then runs against whatever `cargo` is already on the
+runner (GitHub-hosted runner images ship a Rust toolchain by default); this
+step does not need a `dtolnay/rust-toolchain` step either way.
+
 The simple option fails the step directly on violations:
 
 ```yaml
@@ -196,8 +217,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install --locked arch-lint-cli
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: arch-lint-cli
       - run: cargo arch-lint check   # exit 1 on violations, 2 if it could not run
 ```
 
@@ -223,8 +245,9 @@ jobs:
       security-events: write  # required by upload-sarif
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install --locked arch-lint-cli
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: arch-lint-cli
       - run: cargo arch-lint check . --format sarif --exit-zero > arch-lint.sarif
         # --exit-zero: let upload-sarif turn violations into alerts instead
         # of failing the step before the upload runs — the step still

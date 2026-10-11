@@ -401,6 +401,11 @@ cargo test -p arch-lint       # check!() integration test on this repo
 
 CI (`.github/workflows/ci.yml`) runs rustfmt, clippy (`-D warnings` on lib/bin
 targets), per-crate tests, an MSRV check, rustdoc, and cargo-deny.
+`.github/workflows/release.yml` is separate: on an `arch-lint-v*` tag push it
+builds prebuilt binaries for six targets and opens a draft GitHub Release; it
+never runs `cargo publish`. A manual `workflow_dispatch` run instead only
+builds and uploads the same archives as workflow artifacts, without creating
+or touching a release — a dry run of the build step alone (issue #14).
 
 Each rule includes unit tests with synthetic code examples.
 

@@ -1,0 +1,179 @@
+name: Release
+
+# Builds prebuilt binaries and attaches them to a GitHub Release (issue #14).
+# This workflow never runs `cargo publish` — crates.io publishing stays the
+# manual `make publish` path (CONTRIBUTING.md, "Releasing"), and the tag
+# itself is pushed by a person, not created by CI. The release this workflow
+# creates is always a DRAFT; a maintainer inspects the assets and undrafts it
+# by hand (see CONTRIBUTING.md and docs/cli.md).
+#
+# `workflow_dispatch` is a build-only dry run: it does not create or touch
+# any release, it only builds and archives the six binaries and uploads them
+# as workflow artifacts so a maintainer can inspect them before trusting a
+# real tag push.
+on:
+  push:
+    tags:
+      - 'arch-lint-v*'
+  workflow_dispatch:
+
+# contents: write is required for `gh release create` and for
+# taiki-e/upload-rust-binary-action to upload assets to that release; it
+# applies to the workflow_dispatch dry run too, even though that run does
+# not touch a release — GitHub Actions grants permissions per workflow run,
+# not per job or event.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: create draft release
+    runs-on: ubuntu-latest
+    # Only a real tag push creates anything; workflow_dispatch has no tag to
+    # attach a release to and must not fabricate one (see module header).
+    if: github.event_name == 'push'
+    outputs:
+      # Published once here so `upload`'s matrix legs agree on the same
+      # tag/version instead of re-deriving it.
+      tag: ${{ steps.vars.outputs.tag }}
+      version: ${{ steps.vars.outputs.version }}
+    steps:
+      # No explicit `ref:` — the default checks out `github.sha`, which
+      # pins the exact tagged commit; an explicit `ref` would instead
+      # re-resolve the ref's head at job run time.
+      - uses: actions/checkout@v4
+
+      - name: Determine tag and version
+        id: vars
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # The `on.push.tags` filter above already guarantees TAG matches
+          # arch-lint-v*, so no pattern check is needed here.
+          version="${TAG#arch-lint-v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the tag matches the workspace version
+        env:
+          TAG_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          cargo_version="$(awk -F'"' '/^\[workspace.package\]/{f=1} f && /^version = /{print $2; exit}' Cargo.toml)"
+          if [ "$cargo_version" != "$TAG_VERSION" ]; then
+            echo "error: tag version ($TAG_VERSION) does not match [workspace.package] version in Cargo.toml ($cargo_version)" >&2
+            echo "error: bump Cargo.toml (and CHANGELOG.md) before tagging, or re-tag the right commit" >&2
+            exit 1
+          fi
+
+      - name: Generate release notes from CHANGELOG.md
+        env:
+          TAG_VERSION: ${{ steps.vars.outputs.version }}
+        run: scripts/release-notes.sh "$TAG_VERSION" > "$RUNNER_TEMP/release-notes.md"
+
+      - name: Create draft release (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.vars.outputs.tag }}
+          TAG_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          # A re-run of this job, or a draft a maintainer already created by
+          # hand for this tag, must not fail the workflow.
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+            --draft \
+            --title "arch-lint $TAG_VERSION" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
+
+  upload:
+    name: upload (${{ matrix.target }})
+    needs: create-release
+    # Runs on a real tag push (after create-release succeeds) and on every
+    # workflow_dispatch dry run (where create-release is skipped, not
+    # failed/cancelled); does not run if create-release itself failed, e.g.
+    # the version check above.
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      # No explicit `ref:` — the default checks out `github.sha`, which
+      # pins the exact tagged commit even if the branch moves on while the
+      # matrix is still running; an explicit `ref` would instead re-resolve
+      # the ref's head at job run time.
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up cross-compilation toolchain
+        # Only the two Linux targets that are not the runner's own host
+        # triple need a cross C/C++ toolchain for arch-lint-ts's tree-sitter
+        # (and tree-sitter-kotlin-ng) C sources, built via the `cc` crate.
+        # x86_64-unknown-linux-gnu is native on ubuntu-latest; both Darwin
+        # targets build with Xcode's universal clang on macos-latest; MSVC
+        # is native on windows-latest. This sets CC_<target> / the matching
+        # linker env so the `cc` crate's own compiler probing picks it up;
+        # `build-tool: cargo` below depends on that — if a leg still fails
+        # to cross-compile, the fallback for that leg only is `build-tool:
+        # cross` (cross-rs), not switching every leg over.
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'x86_64-unknown-linux-musl'
+        uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Build archive (dry run, no upload)
+        if: github.event_name != 'push'
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: arch-lint,cargo-arch-lint
+          target: ${{ matrix.target }}
+          # Default archive naming is "$bin-$target", where $bin is only the
+          # first bin name; set explicitly so the one archive carrying both
+          # binaries is still named after the crate, not just one of them.
+          archive: arch-lint-$target
+          checksum: sha256
+          build-tool: cargo
+          # Builds and archives locally but skips the GitHub Release upload
+          # API call. VERIFY on the first manual dispatch run that `dry-run`
+          # is a real input of upload-rust-binary-action@v1 — if it is not,
+          # this step needs a different no-upload mechanism instead.
+          dry-run: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and upload to release
+        if: github.event_name == 'push'
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: arch-lint,cargo-arch-lint
+          target: ${{ matrix.target }}
+          archive: arch-lint-$target
+          checksum: sha256
+          build-tool: cargo
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # upload-rust-binary-action needs the full ref, not a bare tag.
+          ref: refs/tags/${{ needs.create-release.outputs.tag }}
+
+      - name: Upload dry-run archive for inspection
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-lint-${{ matrix.target }}
+          path: arch-lint-${{ matrix.target }}*
+          if-no-files-found: error

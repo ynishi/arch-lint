@@ -9,6 +9,24 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# cargo-binstall resolves this against `.github/workflows/release.yml`'s
+# archive naming (issue #14). `{ repo }` reads from `package.repository`
+# above (inherited from `[workspace.package]`, confirmed via `cargo
+# metadata`). With `pkg-fmt = "tgz"`, binstall tries both the ".tgz" and
+# ".tar.gz" extensions for `{ archive-suffix }` against the URL above (the
+# workflow produces ".tar.gz"); the Windows override's "zip" format resolves
+# `{ archive-suffix }` to ".zip" instead. `bin-dir` has no directory
+# component because taiki-e/upload-rust-binary-action's `archive` value in
+# the workflow (`arch-lint-$target`, no `/`) puts the binaries at the
+# archive root rather than in a subdirectory.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/arch-lint-v{ version }/arch-lint-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [[bin]]
 name = "arch-lint"
 path = "src/main.rs"
