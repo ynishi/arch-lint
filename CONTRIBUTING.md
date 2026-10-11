@@ -113,6 +113,13 @@ one DTO in `config_dto.rs`, validation in `loader.rs`, a model type under
 new table; `crates/arch-lint-cli/src/commands/schema.rs` has the tests that
 catch a missing one.
 
+Any change to a rule's options or a declarative DTO changes the generated
+JSON Schema. Run `make schema` to regenerate the committed
+`schema/arch-lint.schema.json` and include the diff in the same commit —
+`crates/arch-lint-cli/tests/schema_file.rs` fails CI if it drifts from the
+code. `make schema-check` runs the same check without overwriting the
+committed file.
+
 ## Documentation
 
 The reference lives in the code, rustdoc style: the crate-level `//!` docs say

@@ -52,6 +52,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs now show
   `taiki-e/install-action@v2` as the recommended install path (issue #14).
 
+- **Committed JSON Schema and SchemaStore groundwork**: the generated schema
+  is now tracked at `schema/arch-lint.schema.json` and served from the raw
+  file on the default branch —
+  `https://raw.githubusercontent.com/ynishi/arch-lint/main/schema/arch-lint.schema.json`
+  — which is also `SCHEMA_ID` (`crates/arch-lint/src/schema.rs`), changed
+  from the previous `github.com/.../schema/...` placeholder. A new test,
+  `crates/arch-lint-cli/tests/schema_file.rs`
+  (`schema_file_matches_generated`), runs the built binary's `schema`
+  subcommand and diffs its stdout against the committed file, so
+  `cargo test -p arch-lint-cli` — already a CI job — fails on drift with no
+  separate CI job needed. `make schema` regenerates the file locally;
+  `make schema-check` diffs a fresh regeneration against it without
+  touching the committed copy. `docs/configuration.md`'s "JSON Schema"
+  section documents the raw URL, the `#:schema <url>` directive
+  (taplo / Even Better TOML), and that SchemaStore-aware editors pick up
+  `arch-lint.toml` automatically once the SchemaStore catalogue entry
+  (tracked by this issue, opened separately against
+  `SchemaStore/schemastore`) is merged (issue #16).
+
 ## [0.8.0] - 2026-10-11
 
 ### Added

@@ -35,6 +35,10 @@ jobs:
   test:
     name: test (${{ matrix.crate }})
     runs-on: ubuntu-latest
+    # arch-lint-cli's `schema_file_matches_generated` test (issue #16) runs
+    # the built binary's `schema` subcommand and diffs it against the
+    # committed `schema/arch-lint.schema.json`, so this job also is the
+    # schema drift check — no separate job needed.
     strategy:
       fail-fast: false
       matrix:

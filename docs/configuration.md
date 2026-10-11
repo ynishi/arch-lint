@@ -161,19 +161,41 @@ cargo arch-lint schema > arch-lint.schema.json
 cargo arch-lint schema --out arch-lint.schema.json   # same, written directly
 ```
 
-Point your editor at the generated file with the schema directive that
-[taplo](https://taplo.tamasfe.dev/) and the
+The same schema is committed at `schema/arch-lint.schema.json` and served
+from the raw file on the default branch — `make schema-check` (CI runs the
+equivalent as part of `cargo test -p arch-lint-cli`) fails if that file ever
+drifts from what the code generates:
+
+```
+https://raw.githubusercontent.com/ynishi/arch-lint/main/schema/arch-lint.schema.json
+```
+
+That URL is also the schema's `$id`. Once the
+[SchemaStore](https://www.schemastore.org/) catalogue entry for arch-lint is
+merged (issue #16), VS Code with
 [Even Better TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml)
-extension understand — the first line of `arch-lint.toml`:
+(built on [taplo](https://taplo.tamasfe.dev/)) picks up `arch-lint.toml` and
+`.arch-lint.toml` automatically from the catalogue, no local configuration
+needed — this is the only editor path confirmed here. Other editors that
+also read the SchemaStore catalogue should pick it up the same way; check
+each editor's own docs.
+
+Until then, point your editor at it with the `#:schema` directive that taplo
+and Even Better TOML understand — the first line of `arch-lint.toml`:
 
 ```toml
-#:schema ./arch-lint.schema.json
+#:schema https://raw.githubusercontent.com/ynishi/arch-lint/main/schema/arch-lint.schema.json
 
 preset = "recommended"
 
 [rules.no-unwrap-expect]
 allow_in_tests = true
 ```
+
+The `main` URL above tracks the default branch, so it moves — it is not a
+pinned copy. To pin a specific version, point the directive at a release tag
+instead (`https://raw.githubusercontent.com/ynishi/arch-lint/<tag>/schema/arch-lint.schema.json`)
+or at a local file generated with `arch-lint schema --out <path>`.
 
 You then get completion for rule names and option keys, and a warning on a
 misspelled key before the linter ever runs. `arch-lint list-rules --json`

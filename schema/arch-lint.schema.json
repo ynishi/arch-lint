@@ -1,0 +1,1473 @@
+{
+  "$defs": {
+    "AcyclicDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of a project-wide cycle check (`ALD009`).",
+      "properties": {
+        "doc": {
+          "default": null,
+          "description": "Document reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "description": "Optional rule name, used by `allow` directives when several\n`[[acyclic]]` blocks are declared (default rule name: \"acyclic\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopes": {
+          "default": null,
+          "description": "Scopes the cycle check is restricted to (default: every declared\nscope).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "severity": {
+          "default": "error",
+          "description": "Severity (default: \"error\").",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "AllowDepDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of a project-wide allow-list check (`ALD011`).",
+      "properties": {
+        "doc": {
+          "default": null,
+          "description": "Document reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "description": "Source scope name.",
+          "type": "string"
+        },
+        "name": {
+          "default": null,
+          "description": "Optional rule name, used by `allow` directives when several\n`[[allow-dep]]` blocks are declared (default rule name:\n\"allow-dep:{from}\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "default": "error",
+          "description": "Severity (default: \"error\").",
+          "type": "string"
+        },
+        "to": {
+          "description": "The complete list of declared scopes `from` may depend on.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "AnalyzerConfig": {
+      "additionalProperties": false,
+      "description": "Analyzer-level configuration.",
+      "properties": {
+        "exclude": {
+          "default": [],
+          "description": "Glob patterns dropped from the discovered files. Matched against each\nfile's path relative to `root` and against its absolute path.\nDefault: `[\"**/target/**\", \"**/vendor/**\"]`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "default": [],
+          "description": "Glob patterns to include. When non-empty, only matching `*.rs` files\nare analyzed; when empty (the default), every `*.rs` file under `root`\nis analyzed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "parallelism": {
+          "default": null,
+          "description": "Maximum number of parallel file analyses. **Reserved** — parsed, but\nanalysis currently runs sequentially. Default: unset.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "respect_gitignore": {
+          "default": true,
+          "description": "Skip files git ignores — a `.gitignore` at any level,\n`.git/info/exclude`, or the global gitignore (default: `true`).",
+          "type": "boolean"
+        },
+        "root": {
+          "default": ".",
+          "description": "Directory to walk, relative to the configuration file (default: `.`).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "DenyAttrDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of an attribute-denial rule.",
+      "properties": {
+        "attrs": {
+          "description": "Denied attribute patterns.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "doc": {
+          "default": null,
+          "description": "Document reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "files": {
+          "default": null,
+          "description": "Inline file patterns (mutually exclusive with `scope`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "Violation message.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Rule name (e.g., \"no-orm-derives-in-domain\").",
+          "type": "string"
+        },
+        "on": {
+          "default": null,
+          "description": "Item kinds to check (default: all).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "scope": {
+          "default": null,
+          "description": "Named scope reference (mutually exclusive with `files`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "default": "error",
+          "description": "Severity (default: \"error\").",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "attrs",
+        "message"
+      ],
+      "type": "object"
+    },
+    "IndependentDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of a project-wide independence check (`ALD010`).",
+      "properties": {
+        "doc": {
+          "default": null,
+          "description": "Document reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "description": "Optional rule name, used by `allow` directives when several\n`[[independent]]` blocks are declared (default rule name:\n\"independent\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopes": {
+          "description": "Scopes that must not depend on each other, in either direction (at\nleast two).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "severity": {
+          "default": "error",
+          "description": "Severity (default: \"error\").",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scopes"
+      ],
+      "type": "object"
+    },
+    "LayeringDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of an ordered layer stack.",
+      "properties": {
+        "adjacent_only": {
+          "default": false,
+          "description": "Allow only the immediately-next layer (default: false).",
+          "type": "boolean"
+        },
+        "check-inline": {
+          "default": true,
+          "description": "Also check inline qualified paths (default: true).",
+          "type": "boolean"
+        },
+        "doc": {
+          "default": null,
+          "description": "Document reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "Violation message.",
+          "type": "string"
+        },
+        "name": {
+          "default": null,
+          "description": "Optional rule name (e.g., \"clean-arch\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "order": {
+          "description": "Scope names, top layer first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "severity": {
+          "default": "error",
+          "description": "Severity (default: \"error\").",
+          "type": "string"
+        }
+      },
+      "required": [
+        "order",
+        "message"
+      ],
+      "type": "object"
+    },
+    "NamingDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of an identifier naming rule.",
+      "properties": {
+        "doc": {
+          "default": null,
+          "description": "Document reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "files": {
+          "default": null,
+          "description": "Inline file patterns (mutually exclusive with `scope`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "Item kind to check.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Violation message.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Rule name (e.g., \"domain-ports\").",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Regex the identifier must match.",
+          "type": "string"
+        },
+        "scope": {
+          "default": null,
+          "description": "Named scope reference (mutually exclusive with `files`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "default": "warning",
+          "description": "Severity (default: \"warning\").",
+          "type": "string"
+        },
+        "visibility": {
+          "default": "pub",
+          "description": "Visibility filter: \"pub\" (default) or \"any\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "item",
+        "pattern",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RequireAttrDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of an attribute-requirement rule.",
+      "properties": {
+        "attrs": {
+          "description": "Required attribute patterns (at least one must be present).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "doc": {
+          "default": null,
+          "description": "Document reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "files": {
+          "default": null,
+          "description": "Inline file patterns (mutually exclusive with `scope`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "Violation message.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Rule name (e.g., \"instrument-handlers\").",
+          "type": "string"
+        },
+        "on": {
+          "default": null,
+          "description": "Item kinds to check (default: all).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "scope": {
+          "default": null,
+          "description": "Named scope reference (mutually exclusive with `files`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "default": "warning",
+          "description": "Severity (default: \"warning\").",
+          "type": "string"
+        },
+        "visibility": {
+          "default": "pub",
+          "description": "Visibility filter: \"pub\" (default) or \"any\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "attrs",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RequireReturnDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of a return-type rule.",
+      "properties": {
+        "async": {
+          "default": null,
+          "description": "When set, only functions with this asyncness are checked.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "doc": {
+          "default": null,
+          "description": "Document reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "files": {
+          "default": null,
+          "description": "Inline file patterns (mutually exclusive with `scope`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "Violation message.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Rule name (e.g., \"handlers-return-app-result\").",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Regex the normalized return type must match.",
+          "type": "string"
+        },
+        "scope": {
+          "default": null,
+          "description": "Named scope reference (mutually exclusive with `files`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "default": "error",
+          "description": "Severity (default: \"error\").",
+          "type": "string"
+        },
+        "visibility": {
+          "default": "pub",
+          "description": "Visibility filter: \"pub\" (default) or \"any\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "pattern",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RequireUseDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of a require-use rule.",
+      "properties": {
+        "doc": {
+          "default": null,
+          "description": "Document reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "files": {
+          "default": null,
+          "description": "Inline file patterns.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "Violation message.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Rule name (e.g., \"require-tracing-over-log\").",
+          "type": "string"
+        },
+        "over": {
+          "description": "Discouraged crates.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "prefer": {
+          "description": "Preferred crate.",
+          "type": "string"
+        },
+        "scope": {
+          "default": null,
+          "description": "Named scope reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "default": "warning",
+          "description": "Severity (default: \"warning\").",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "prefer",
+        "over",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RestrictUseDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of a restrict-use rule.",
+      "properties": {
+        "check-inline": {
+          "default": true,
+          "description": "Also check inline qualified paths like `sqlx::query(...)` (default: true).",
+          "type": "boolean"
+        },
+        "deny": {
+          "description": "Denied use-path patterns.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "doc": {
+          "default": null,
+          "description": "Document reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "except": {
+          "default": [],
+          "description": "Exceptions to `deny`, same pattern syntax.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "files": {
+          "default": null,
+          "description": "Inline file patterns (mutually exclusive with `scope`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "Violation message.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Rule name (e.g., \"no-sqlx-in-domain\").",
+          "type": "string"
+        },
+        "scope": {
+          "default": null,
+          "description": "Named scope reference (mutually exclusive with `files`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "default": "error",
+          "description": "Severity (default: \"error\").",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "deny",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RuleConfig": {
+      "additionalProperties": true,
+      "description": "Per-rule configuration.",
+      "properties": {
+        "enabled": {
+          "default": null,
+          "description": "Whether this rule runs at all (default: `true`).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "exclude_files": {
+          "default": [],
+          "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Severity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+        }
+      },
+      "type": "object"
+    },
+    "RuntimeMode": {
+      "description": "Runtime execution mode.",
+      "oneOf": [
+        {
+          "const": "single-thread",
+          "description": "Single-threaded runtime (e.g., `LocalSet`, wasm).",
+          "type": "string"
+        },
+        {
+          "const": "multi-thread",
+          "description": "Multi-threaded runtime (e.g., tokio multi-thread).",
+          "type": "string"
+        }
+      ]
+    },
+    "ScopeDepDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of a scope dependency constraint.",
+      "properties": {
+        "check-inline": {
+          "default": true,
+          "description": "Also check inline qualified paths like `crate::infra::Db::new()` (default: true).",
+          "type": "boolean"
+        },
+        "doc": {
+          "default": null,
+          "description": "Document reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "description": "Source scope name.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Violation message.",
+          "type": "string"
+        },
+        "name": {
+          "default": null,
+          "description": "Optional rule name (e.g., \"no-domain-to-infra\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "default": "error",
+          "description": "Severity (default: \"error\").",
+          "type": "string"
+        },
+        "to": {
+          "description": "Denied target scope names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "message"
+      ],
+      "type": "object"
+    },
+    "ScopeDto": {
+      "additionalProperties": false,
+      "description": "TOML representation of a named scope.",
+      "properties": {
+        "exclude": {
+          "default": [],
+          "description": "Glob patterns subtracted from `paths`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Scope name (e.g., \"domain\").",
+          "type": "string"
+        },
+        "paths": {
+          "description": "Glob patterns for file paths.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "paths"
+      ],
+      "type": "object"
+    },
+    "Severity": {
+      "description": "Severity level for lint violations.",
+      "oneOf": [
+        {
+          "const": "info",
+          "description": "Informational message, does not fail lint.",
+          "type": "string"
+        },
+        {
+          "const": "warning",
+          "description": "Warning that should be addressed.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Error that must be fixed.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/ynishi/arch-lint/main/schema/arch-lint.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Top-level configuration for arch-lint.",
+  "properties": {
+    "acyclic": {
+      "description": "Project-wide cycle checks over the scope graph.",
+      "items": {
+        "$ref": "#/$defs/AcyclicDto"
+      },
+      "type": "array"
+    },
+    "allow-dep": {
+      "description": "Project-wide allow-list checks over the scope graph.",
+      "items": {
+        "$ref": "#/$defs/AllowDepDto"
+      },
+      "type": "array"
+    },
+    "analyzer": {
+      "$ref": "#/$defs/AnalyzerConfig",
+      "default": {
+        "exclude": [
+          "**/target/**",
+          "**/vendor/**"
+        ],
+        "include": [],
+        "parallelism": null,
+        "respect_gitignore": true,
+        "root": "."
+      },
+      "description": "File discovery and analysis settings."
+    },
+    "deny-attr": {
+      "description": "Attribute-denial rules.",
+      "items": {
+        "$ref": "#/$defs/DenyAttrDto"
+      },
+      "type": "array"
+    },
+    "deny-scope-dep": {
+      "description": "Scope dependency constraints.",
+      "items": {
+        "$ref": "#/$defs/ScopeDepDto"
+      },
+      "type": "array"
+    },
+    "fail_on": {
+      "default": null,
+      "description": "Severity threshold for test failure (default: `error`).\nViolations at or above this severity cause `check!()` to fail and the\nCLI to exit non-zero. One of `error`, `warning`, `info`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "independent": {
+      "description": "Project-wide independence checks over the scope graph.",
+      "items": {
+        "$ref": "#/$defs/IndependentDto"
+      },
+      "type": "array"
+    },
+    "layering": {
+      "description": "Ordered layer stacks.",
+      "items": {
+        "$ref": "#/$defs/LayeringDto"
+      },
+      "type": "array"
+    },
+    "naming": {
+      "description": "Identifier naming rules.",
+      "items": {
+        "$ref": "#/$defs/NamingDto"
+      },
+      "type": "array"
+    },
+    "preset": {
+      "default": null,
+      "description": "Rule set to start from: `recommended` (default), `strict`, or `minimal`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "require-attr": {
+      "description": "Attribute-requirement rules.",
+      "items": {
+        "$ref": "#/$defs/RequireAttrDto"
+      },
+      "type": "array"
+    },
+    "require-return": {
+      "description": "Return-type rules.",
+      "items": {
+        "$ref": "#/$defs/RequireReturnDto"
+      },
+      "type": "array"
+    },
+    "require-use": {
+      "description": "Use-requirement rules.",
+      "items": {
+        "$ref": "#/$defs/RequireUseDto"
+      },
+      "type": "array"
+    },
+    "restrict-use": {
+      "description": "Use-restriction rules.",
+      "items": {
+        "$ref": "#/$defs/RestrictUseDto"
+      },
+      "type": "array"
+    },
+    "rules": {
+      "additionalProperties": true,
+      "description": "Per-rule settings, keyed by kebab-case rule name (`no-unwrap-expect`). Tables naming a rule arch-lint does not ship belong to custom rules and are not checked here.",
+      "properties": {
+        "async-trait-send-check": {
+          "additionalProperties": false,
+          "description": "AL009 — Checks proper usage of async_trait Send bounds",
+          "properties": {
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "runtime_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RuntimeMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Runtime the crate targets: `single-thread` or `multi-thread`.\nDefault: `single-thread`, under every preset."
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        },
+        "handler-complexity": {
+          "additionalProperties": false,
+          "description": "AL004 — Limits complexity of handler functions",
+          "properties": {
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_enum_variants": {
+              "default": null,
+              "description": "Maximum number of variants in an action-like enum.\nDefault: `30`, under every preset.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_handler_lines": {
+              "default": null,
+              "description": "Maximum number of lines in a handler function body.\nDefault: `150`, under every preset.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_match_arms": {
+              "default": null,
+              "description": "Maximum number of arms in a `match` expression.\nDefault: `20`, under every preset.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        },
+        "no-error-swallowing": {
+          "additionalProperties": false,
+          "description": "AL003 — Forbids catching errors with only logging (no propagation)",
+          "properties": {
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        },
+        "no-panic-in-lib": {
+          "additionalProperties": false,
+          "description": "AL011 — Forbids panic macros in library code",
+          "properties": {
+            "allow_in_tests": {
+              "default": null,
+              "description": "Allow panic macros inside `#[cfg(test)]` code.\nDefault: `true` under `recommended` and `minimal`, `false` under `strict`.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        },
+        "no-silent-result-drop": {
+          "additionalProperties": false,
+          "description": "AL013 — Forbids silently discarding Result error information",
+          "properties": {
+            "allow_in_tests": {
+              "default": null,
+              "description": "Allow dropped `Result`s inside `#[cfg(test)]` code.\nDefault: `true` under `recommended` and `minimal`, `false` under `strict`.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "allow_let_underscore": {
+              "default": null,
+              "description": "Allow discarding the value through `let _ = ...`.\nDefault: `false`, under every preset.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "allow_ok": {
+              "default": null,
+              "description": "Allow discarding the error through `.ok()`.\nDefault: `false`, under every preset.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        },
+        "no-sync-io": {
+          "additionalProperties": false,
+          "description": "AL002 — Forbids synchronous I/O in async contexts",
+          "properties": {
+            "allow_patterns": {
+              "default": null,
+              "description": "Extra call-path prefixes that count as non-blocking, added on top of the\nbuilt-in `tokio::` and `async_std::`.\nDefault: no extra prefixes, under every preset.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        },
+        "no-unwrap-expect": {
+          "additionalProperties": false,
+          "description": "AL001 — Forbids .unwrap() and .expect() in production code",
+          "properties": {
+            "allow_expect": {
+              "default": null,
+              "description": "Allow `.expect()` while still forbidding `.unwrap()`.\nDefault: `true` under `minimal`, `false` under `recommended` and `strict`.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "allow_in_tests": {
+              "default": null,
+              "description": "Allow `.unwrap()` / `.expect()` inside `#[cfg(test)]` code.\nDefault: `true` under `recommended` and `minimal`, `false` under `strict`.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        },
+        "prefer-from-over-into": {
+          "additionalProperties": false,
+          "description": "AL010 — Prefers From trait implementation over Into",
+          "properties": {
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        },
+        "require-doc-comments": {
+          "additionalProperties": false,
+          "description": "AL012 — Requires documentation comments on public items",
+          "properties": {
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "require_enum_docs": {
+              "default": null,
+              "description": "Require a doc comment on public enums.\nDefault: `true`, under every preset.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "require_fn_docs": {
+              "default": null,
+              "description": "Require a doc comment on public functions.\nDefault: `true`, under every preset.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "require_struct_docs": {
+              "default": null,
+              "description": "Require a doc comment on public structs.\nDefault: `true`, under every preset.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        },
+        "require-thiserror": {
+          "additionalProperties": false,
+          "description": "AL005 — Requires thiserror::Error derive for error types",
+          "properties": {
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "patterns": {
+              "default": null,
+              "description": "Extra type-name suffixes that mark a type as an error type and therefore\nrequire a `thiserror::Error` derive. Added on top of the built-in\n`Error` suffix; a type matches when its name ends with any suffix.\nDefault: no extra suffixes, under every preset.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        },
+        "require-tracing": {
+          "additionalProperties": false,
+          "description": "AL006 — Requires tracing crate instead of log crate",
+          "properties": {
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        },
+        "tracing-env-init": {
+          "additionalProperties": false,
+          "description": "AL007 — Prevents hardcoded log levels in tracing initialization",
+          "properties": {
+            "enabled": {
+              "default": null,
+              "description": "Whether this rule runs at all (default: `true`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exclude_files": {
+              "default": [],
+              "description": "Glob patterns (relative to the analyzer root) for files this rule skips.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Severity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Severity override for this rule. When unset, the rule's own default\nseverity applies."
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "scopes": {
+      "description": "Named scope definitions.",
+      "items": {
+        "$ref": "#/$defs/ScopeDto"
+      },
+      "type": "array"
+    }
+  },
+  "title": "arch-lint.toml",
+  "type": "object"
+}

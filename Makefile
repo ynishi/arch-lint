@@ -1,4 +1,4 @@
-.PHONY: all build check test clippy fmt doc clean install publish publish-dry-run
+.PHONY: all build check test clippy fmt doc clean install publish publish-dry-run schema schema-check
 
 # Default target
 all: check test
@@ -46,6 +46,22 @@ clean:
 # Install CLI locally
 install:
 	cargo install --locked --path crates/arch-lint-cli
+
+# Regenerate the committed JSON Schema (issue #16). Runs through `cargo run`
+# rather than invoking `./target/debug/arch-lint` directly, since a
+# `CARGO_TARGET_DIR` override would leave that path empty; `--bin arch-lint`
+# is required because `cargo-arch-lint` shares the same `main.rs`, so `cargo
+# run` cannot otherwise pick a default binary.
+schema:
+	cargo run -q -p arch-lint-cli --locked --bin arch-lint -- schema --out schema/arch-lint.schema.json
+
+# Verify the committed JSON Schema has not drifted from the code: regenerate
+# into a temp file and diff it against schema/arch-lint.schema.json byte for
+# byte. Exits 1 (via diff) on drift. The temp file is removed on both
+# outcomes, success and drift alike.
+schema-check:
+	cargo run -q -p arch-lint-cli --locked --bin arch-lint -- schema --out target/arch-lint.schema.json.check
+	diff schema/arch-lint.schema.json target/arch-lint.schema.json.check; status=$$?; rm -f target/arch-lint.schema.json.check; exit $$status
 
 # Run all CI checks
 preflight: fmt-check clippy test

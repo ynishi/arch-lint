@@ -26,8 +26,10 @@ use arch_lint_rules::{all_rules, rule_option_schemas};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 
-/// Stable identifier of the published schema.
-pub const SCHEMA_ID: &str = "https://github.com/ynishi/arch-lint/schema/arch-lint.schema.json";
+/// Stable identifier of the published schema: the raw file on the default
+/// branch (issue #16). `SchemaStore` and editors resolve `$id` to this URL.
+pub const SCHEMA_ID: &str =
+    "https://raw.githubusercontent.com/ynishi/arch-lint/main/schema/arch-lint.schema.json";
 
 /// Title carried by the generated schema.
 pub const SCHEMA_TITLE: &str = "arch-lint.toml";
