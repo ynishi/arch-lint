@@ -222,6 +222,124 @@ severity = "error"
     assert!(violation.message.contains("super::super::infra::db::Pool"));
 }
 
+/// Acceptance 1 of the trailing-allow-comment fix, end-to-end through
+/// `Analyzer::analyze()`: a `// arch-lint: allow(...)` comment placed after
+/// the offending code on the same line suppresses `ALD003`, on its own
+/// line. The identical `use` without the trailing comment (control) still
+/// reports the violation.
+#[test]
+fn scope_dep_trailing_allow_comment_suppresses_the_violation() {
+    let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[deny-scope-dep]]
+from = "domain"
+to = ["infra"]
+message = "Domain must not depend on infra."
+severity = "error"
+"#;
+
+    let run = |domain_service_rs: &str| -> Vec<arch_lint_core::Violation> {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let domain = root.join("src/domain");
+        let infra = root.join("src/infra");
+        std::fs::create_dir_all(&domain).expect("create domain dir");
+        std::fs::create_dir_all(&infra).expect("create infra dir");
+        std::fs::write(domain.join("service.rs"), domain_service_rs).expect("write domain file");
+        std::fs::write(infra.join("db.rs"), "pub struct Pool;\n").expect("write infra file");
+
+        let (config, rules) = load_config_and_rules(toml_content);
+        let mut builder = Analyzer::builder().root(root).config(config);
+        for rule in rules {
+            builder = builder.rule_box(rule);
+        }
+        builder
+            .build()
+            .unwrap()
+            .analyze()
+            .unwrap()
+            .violations
+            .into_iter()
+            .filter(|v| v.code == "ALD003")
+            .collect()
+    };
+
+    let suppressed =
+        run("use crate::infra::db::Pool; // arch-lint: allow(deny-scope-dep) reason=\"x\"\n");
+    assert!(
+        suppressed.is_empty(),
+        "trailing allow comment should suppress ALD003: {suppressed:#?}"
+    );
+
+    // Control: the same line without the trailing comment still violates.
+    let reported = run("use crate::infra::db::Pool;\n");
+    assert_eq!(reported.len(), 1, "{reported:#?}");
+}
+
+/// A trailing allow comment is scoped to its own line: it must not also
+/// suppress a violation on the next line — exactly one ALD003 is still
+/// reported, on the second `use`.
+#[test]
+fn scope_dep_trailing_allow_comment_does_not_suppress_the_next_line() {
+    let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[deny-scope-dep]]
+from = "domain"
+to = ["infra"]
+message = "Domain must not depend on infra."
+severity = "error"
+"#;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let domain = root.join("src/domain");
+    let infra = root.join("src/infra");
+    std::fs::create_dir_all(&domain).expect("create domain dir");
+    std::fs::create_dir_all(&infra).expect("create infra dir");
+    std::fs::write(
+        domain.join("service.rs"),
+        "use crate::infra::db::Pool; // arch-lint: allow(deny-scope-dep) reason=\"x\"\nuse crate::infra::cache::Redis;\n",
+    )
+    .expect("write domain file");
+    std::fs::write(infra.join("db.rs"), "pub struct Pool;\n").expect("write infra file");
+    std::fs::write(infra.join("cache.rs"), "pub struct Redis;\n").expect("write infra file");
+
+    let (config, rules) = load_config_and_rules(toml_content);
+    let mut builder = Analyzer::builder().root(root).config(config);
+    for rule in rules {
+        builder = builder.rule_box(rule);
+    }
+    let violations: Vec<_> = builder
+        .build()
+        .unwrap()
+        .analyze()
+        .unwrap()
+        .violations
+        .into_iter()
+        .filter(|v| v.code == "ALD003")
+        .collect();
+
+    assert_eq!(violations.len(), 1, "{violations:#?}");
+    assert_eq!(
+        violations[0].location.line, 2,
+        "only the second `use` (Redis) should still violate: {violations:#?}"
+    );
+}
+
 // ── Predefined patterns: ALD004-ALD008 plus except / exclude ──
 
 #[test]
@@ -900,6 +1018,27 @@ scopes = ["domain", "app"]
         assert!(
             violations.is_empty(),
             "the allow directive must remove the edge and so the cycle: {violations:#?}"
+        );
+    }
+
+    /// Acceptance 5 of the trailing-allow-comment fix: the same `allow`
+    /// comment, placed after the `use` on the same line instead of above
+    /// it, also removes the edge and so the cycle.
+    #[test]
+    fn trailing_allow_comment_on_one_use_removes_the_violation() {
+        let violations = acyclic_violations(
+            TWO_SCOPES,
+            &[
+                (
+                    "src/domain/service.rs",
+                    "use crate::infra::db::Pool; // arch-lint: allow(acyclic) reason=\"bootstrap wiring\"\n",
+                ),
+                ("src/infra/db.rs", "use crate::domain::service::Service;\n"),
+            ],
+        );
+        assert!(
+            violations.is_empty(),
+            "the trailing allow directive must remove the edge and so the cycle: {violations:#?}"
         );
     }
 

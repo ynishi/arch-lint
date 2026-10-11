@@ -15,10 +15,11 @@
 //!
 //! `allow` directives are still recorded, not acted on, and the collector is
 //! rule-agnostic about it: every `// arch-lint: allow(...)` comment on a
-//! site's line and every `#[arch_lint::allow(...)]` attribute in scope at it
-//! (the site's own item, for a `use`, plus every enclosing `mod`/`fn`/
-//! `impl`/`trait`) is parsed with the same functions `Suppressions` uses for
-//! the per-file rules (`utils::allowance::parse_allow_directive`,
+//! site's line (or the comment-only line above it) and every
+//! `#[arch_lint::allow(...)]` attribute in scope at it (the site's own
+//! item, for a `use`, plus every enclosing `mod`/`fn`/`impl`/`trait`) is
+//! parsed with the same functions `Suppressions` uses for the per-file
+//! rules (`utils::allowance::directives_for_line`,
 //! `utils::attributes::parse_arch_lint_allow_attr`) and recorded on the
 //! [`EdgeSite`] as an [`AllowDirective`] tagged with a
 //! [`DirectiveSource`](crate::declarative::graph::DirectiveSource) (rule
@@ -39,7 +40,7 @@ use crate::context::FileContext;
 use crate::declarative::graph::{DirectiveSource, EdgeKind, EdgeSite, ScopeGraph};
 use crate::declarative::model::{DeclarativeConfig, ScopeName};
 use crate::types::Location;
-use crate::utils::allowance::{parse_allow_directive, AllowDirective};
+use crate::utils::allowance::{directives_for_line, AllowDirective};
 use crate::utils::attributes::parse_arch_lint_allow_attr;
 
 /// Visitor that records scope-crossing references of one file.
@@ -195,19 +196,11 @@ fn directives_from_attrs(attrs: &[syn::Attribute]) -> Vec<AllowDirective> {
 }
 
 /// Parses the `// arch-lint: allow(...)` comment directive(s) on `line` or
-/// the line above it (the same two lines `check_allow_with_reason` checks).
+/// the comment-only line above it, via the one shared lookup
+/// [`check_allow_with_reason`](crate::utils::allowance::check_allow_with_reason)
+/// also uses, so the two cannot drift apart.
 fn comment_directives_at(content: &str, line: usize) -> Vec<AllowDirective> {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut directives = Vec::new();
-    for check_line in [line.saturating_sub(1), line] {
-        if check_line == 0 || check_line > lines.len() {
-            continue;
-        }
-        if let Some(directive) = parse_allow_directive(lines[check_line - 1]) {
-            directives.push(directive);
-        }
-    }
-    directives
+    directives_for_line(content, line)
 }
 
 impl<'ast> Visit<'ast> for ScopeEdgeCollector<'_> {
@@ -479,6 +472,42 @@ mod tests {
                 .allow_directive("acyclic")
                 .and_then(|(_, d)| d.reason.as_deref()),
             Some("bootstrap")
+        );
+    }
+
+    /// Acceptance 5 (trailing-allow-comment fix): a comment placed after
+    /// the `use` on the same line is recorded on the site exactly as a
+    /// leading comment is, with `DirectiveSource::Comment`.
+    #[test]
+    fn trailing_comment_allow_is_recorded_on_the_site_as_a_comment_source() {
+        let code =
+            "use crate::infra::db::Pool; // arch-lint: allow(acyclic) reason=\"bootstrap\"\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert_eq!(sites.len(), 1);
+        let (source, directive) = sites[0].allow_directive("acyclic").expect("recorded");
+        assert_eq!(source, DirectiveSource::Comment);
+        assert_eq!(directive.reason.as_deref(), Some("bootstrap"));
+    }
+
+    /// A trailing comment is scoped to its own line: it must not also be
+    /// recorded on the following line's site — only a comment-only line
+    /// above a site supplies it a directive.
+    #[test]
+    fn trailing_comment_on_one_use_is_not_recorded_on_the_next_use_site() {
+        let code = "use crate::infra::db::Pool; // arch-lint: allow(acyclic) reason=\"bootstrap\"\nuse crate::infra::cache::Redis;\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert_eq!(sites.len(), 2, "{sites:#?}");
+        assert!(
+            sites[0].allow_directive("acyclic").is_some(),
+            "the trailing directive's own line should carry it: {sites:#?}"
+        );
+        assert!(
+            sites[1].allow_directive("acyclic").is_none(),
+            "the next line must not inherit the trailing directive: {sites:#?}"
         );
     }
 

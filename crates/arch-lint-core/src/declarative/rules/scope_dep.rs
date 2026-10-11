@@ -1061,6 +1061,19 @@ mod tests {
         assert!(violations[0].message.contains("missing required reason"));
     }
 
+    /// Acceptance 4 of the trailing-allow-comment fix: the same
+    /// missing-reason warning fires for the trailing form of the comment.
+    #[test]
+    fn trailing_comment_without_reason_on_error_rule_warns_instead() {
+        let code = "use crate::infra::db::Pool; // arch-lint: allow(no-domain-to-infra)";
+        let violations = check_domain(code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].severity, Severity::Warning);
+        assert_eq!(violations[0].rule, "no-domain-to-infra");
+        assert!(violations[0].message.contains("missing required reason"));
+    }
+
     #[test]
     fn user_name_allow_does_not_suppress_a_sibling_rule() {
         let scopes = vec![

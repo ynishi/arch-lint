@@ -227,6 +227,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stderr (`ignoring ...`) and skipped, and if none remain the default
   applies. Invalid `RUST_LOG` directives are now reported on stderr instead
   of silently disabling logging
+- **A trailing `// arch-lint: allow(...)` comment, after code on the
+  violating line, is now recognized.** `parse_allow_directive` previously
+  required the comment to start the (trimmed) line, so
+  `use crate::infra::db::Pool; // arch-lint: allow(deny-scope-dep)
+  reason="..."` was silently ignored even though the README already
+  documented "comment on the violating line or the line above it." The
+  parser now scans the line for the first `//` that is not inside a
+  `"..."` string literal or a `'.'` char literal and parses the directive
+  from there, so both forms work. The line *above* the violation still
+  only supplies a directive when it is comment-only
+  (`line.trim_start().starts_with("//")`): a trailing directive is scoped
+  to its own line, so a single `allow` after code on line N can no longer
+  also suppress a violation on line N+1. Raw strings (`r"..."`,
+  `r#"..."#`) and block comments (`/* ... */`) are out of scope. Fixes
+  every rule that honours comment directives (built-in, declarative and
+  the scope-graph rules), which all go through the one shared lookup
+  (`utils::allowance::directives_for_line`)
 
 ## [0.6.0] - 2026-09-11
 

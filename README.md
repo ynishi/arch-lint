@@ -973,7 +973,8 @@ declarative rule answers to.
 
 ### Line-level (Comment)
 
-Use inline comments for single expressions:
+Use inline comments for single expressions, on the violating line or the
+line above it:
 
 ```rust
 // arch-lint: allow(no-sync-io) reason="Startup initialization only"
@@ -981,7 +982,15 @@ let config = std::fs::read_to_string("config.toml")?;
 
 // arch-lint: allow(no-unwrap-expect) reason="Guaranteed by loop invariant"
 let value = some_option.unwrap();
+
+let value = some_option.unwrap(); // arch-lint: allow(no-unwrap-expect) reason="Guaranteed by loop invariant"
 ```
+
+The two placements are not interchangeable for *which* line they cover: a
+comment on the line **above** the violation applies to the line below it,
+while a trailing comment applies only to **its own** line — it never also
+reaches the line after it, even if that next line has the same kind of
+violation.
 
 ### Block-level (Attribute)
 
