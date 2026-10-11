@@ -20,6 +20,7 @@ use commands::Outcome;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 mod commands;
@@ -36,7 +37,12 @@ Exit status:
 #[command(name = "arch-lint")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Enable verbose output
+    /// Enable verbose (debug-level) logging on stderr.
+    ///
+    /// Without this flag only warnings and errors are logged. A non-empty
+    /// `RUST_LOG` overrides `--verbose`; invalid directives are reported on
+    /// stderr (`ignoring ...`) and skipped, and if none remain the default
+    /// applies.
     #[arg(short, long, global = true)]
     verbose: bool,
 
@@ -142,16 +148,25 @@ fn main() -> ExitCode {
 /// `Ok` means the command ran; the [`Outcome`] says what it found. `Err`
 /// means it could not run, and `main` reports that as exit status 2.
 fn run(cli: Cli) -> Result<Outcome> {
-    let filter = if cli.verbose {
-        EnvFilter::new("debug")
+    // Logs are diagnostics, not the report: they always go to stderr so
+    // stdout stays machine-readable (`--format json`, `--format compact`).
+    // A non-empty `RUST_LOG` overrides `--verbose`; invalid directives are
+    // reported on stderr (`ignoring ...`) and skipped, and if none remain
+    // the default applies: `--verbose` selects `debug`, otherwise `warn`.
+    let default_level = if cli.verbose {
+        LevelFilter::DEBUG
     } else {
-        EnvFilter::new("info")
+        LevelFilter::WARN
     };
+    let filter = EnvFilter::builder()
+        .with_default_directive(default_level.into())
+        .from_env_lossy();
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
-        .with_ansi(std::io::stdout().is_terminal())
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
         .init();
 
     match cli.command {
