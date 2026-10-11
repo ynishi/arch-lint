@@ -33,30 +33,30 @@ arch-lint.toml without [[layers]]   -->  syn engine
 Override with `--engine`:
 
 ```bash
-arch-lint check --engine ts    # Force tree-sitter
-arch-lint check --engine syn   # Force syn
+cargo arch-lint check --engine ts    # Force tree-sitter
+cargo arch-lint check --engine syn   # Force syn
 ```
 
 ## Quick Start
 
 ```bash
 # Generate tree-sitter config template
-arch-lint init --ts
+cargo arch-lint init --ts
 
 # Edit layers and dependencies for your project
 $EDITOR arch-lint.toml
 
 # Run check (auto-detects tree-sitter engine)
-arch-lint check
+cargo arch-lint check
 
 # Explicit engine selection
-arch-lint check --engine ts
+cargo arch-lint check --engine ts
 
 # JSON output for CI
-arch-lint check --format json
+cargo arch-lint check --format json
 
 # Compact one-line-per-violation output
-arch-lint check --format compact
+cargo arch-lint check --format compact
 ```
 
 ## Configuration (TOML DSL)
@@ -409,10 +409,10 @@ src/.../BadDomain.kt:4:1: error [LAYER001] domain -> infrastructure dependency n
 
 ```yaml
 # GitHub Actions
-- run: arch-lint check --format json > lint-results.json
+- run: cargo arch-lint check --format json > lint-results.json
 - run: |
     if [ $(jq '.violations | length' lint-results.json) -gt 0 ]; then
-      arch-lint check
+      cargo arch-lint check
       exit 1
     fi
 ```

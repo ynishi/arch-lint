@@ -1,8 +1,16 @@
 //! arch-lint CLI tool.
 //!
+//! Installed as two binaries built from this same `main.rs`: `arch-lint`,
+//! and `cargo-arch-lint` so the tool can also be run as the `cargo
+//! arch-lint` subcommand. Cargo's external-subcommand convention invokes a
+//! `cargo-<name>` binary found on `PATH` as `cargo <name> <args>` →
+//! `cargo-<name> <name> <args>` — the subcommand name arrives as the first
+//! argument, which [`parse_cli`] strips before handing the rest to clap.
+//! Both binaries accept the same arguments and print the same output.
+//!
 //! Usage:
 //! ```bash
-//! arch-lint check [OPTIONS] [PATH]
+//! cargo arch-lint check [OPTIONS] [PATH]   # or: arch-lint check [OPTIONS] [PATH]
 //! arch-lint check --format sarif                         # SARIF 2.1.0 for code scanning
 //! arch-lint check --baseline <PATH> --update-baseline   # (re)write a baseline
 //! arch-lint check --baseline <PATH>                      # report only new violations
@@ -19,10 +27,11 @@
 
 use anyhow::Result;
 use arch_lint::session::ConfigSource;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use commands::Outcome;
+use std::ffi::OsString;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -188,7 +197,15 @@ pub enum EngineHint {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let cli = match parse_cli() {
+        Ok(cli) => cli,
+        // Mirrors what `Cli::parse()` does internally: a `--help` / `--version`
+        // request or a usage error is printed by clap and the process exits
+        // (0 for the former, 2 for the latter) — `clap::Error::exit` never
+        // returns.
+        Err(err) => err.exit(),
+    };
+    match run(cli) {
         Ok(Outcome::Clean) => ExitCode::SUCCESS,
         Ok(Outcome::Violations) => ExitCode::from(1),
         Err(err) => {
@@ -196,6 +213,49 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Parses `std::env::args_os()`, adapting usage/help text and the
+/// cargo-subcommand argument-stripping rule to how the binary was invoked.
+///
+/// Detected from the executable's own file name (`argv[0]`), not from an
+/// env var or a cargo-set marker: `cargo-arch-lint` strips exactly one
+/// leading `arch-lint` argument (the subcommand name cargo passes), while
+/// the plain `arch-lint` binary never does — so typing the word twice
+/// (`cargo arch-lint arch-lint check`, or the plain `arch-lint arch-lint
+/// check`) always leaves one copy for clap to reject as an unexpected
+/// argument. Running `cargo-arch-lint` directly, without the `arch-lint`
+/// word (not through cargo), is unaffected: nothing is stripped unless the
+/// first argument is exactly `arch-lint`.
+///
+/// `--version` prints the same `arch-lint <version>` text either way: the
+/// [`Cli`] command's `name` is pinned to `arch-lint`
+/// (`#[command(name = "arch-lint")]`), so `--version` prints the same line
+/// under both invocations; only `bin_name` — used in `Usage:` lines and
+/// "unexpected argument" messages — is switched to `cargo arch-lint` so
+/// those read naturally under the cargo-subcommand invocation.
+fn parse_cli() -> std::result::Result<Cli, clap::Error> {
+    let mut args: Vec<OsString> = std::env::args_os().collect();
+
+    let is_cargo_subcommand = args
+        .first()
+        .map(Path::new)
+        .and_then(Path::file_stem)
+        .and_then(|stem| stem.to_str())
+        == Some("cargo-arch-lint");
+
+    if is_cargo_subcommand && args.get(1).and_then(|a| a.to_str()) == Some("arch-lint") {
+        args.remove(1);
+    }
+
+    let bin_name = if is_cargo_subcommand {
+        "cargo arch-lint"
+    } else {
+        "arch-lint"
+    };
+    let command = Cli::command().bin_name(bin_name);
+    let matches = command.try_get_matches_from(args)?;
+    Cli::from_arg_matches(&matches)
 }
 
 /// Dispatches the parsed command line.

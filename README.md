@@ -47,10 +47,13 @@ cargo add arch-lint --dev
 
 ```bash
 cargo install --locked arch-lint-cli
-arch-lint init
+cargo arch-lint init
 ```
 
 This creates `arch-lint.toml` with sensible defaults (unwrap/sync-io checks enabled).
+The install also places a bare `arch-lint` binary on `PATH`, which accepts the
+exact same arguments (`arch-lint init`, `arch-lint check`, ...) if you prefer
+it over the `cargo` subcommand form.
 
 ### 3. Create the test gate
 
@@ -923,8 +926,8 @@ configuration file — the top-level keys, `[analyzer]`, every built-in rule's
 option keys with their documentation, and the declarative sections:
 
 ```bash
-arch-lint schema > arch-lint.schema.json
-arch-lint schema --out arch-lint.schema.json   # same, written directly
+cargo arch-lint schema > arch-lint.schema.json
+cargo arch-lint schema --out arch-lint.schema.json   # same, written directly
 ```
 
 Point your editor at the generated file with the schema directive that
@@ -1285,23 +1288,28 @@ the built-in Kotlin extractor stays registered.
 ```bash
 cargo install --locked arch-lint-cli
 
-arch-lint init                            # Generate arch-lint.toml
-arch-lint init --ts                       # Generate with tree-sitter layers
-arch-lint check                           # Run all checks
-arch-lint check --rules no-unwrap-expect  # Run specific rules
-arch-lint check --format json             # JSON output for CI
-arch-lint check --format sarif            # SARIF 2.1.0, for GitHub code scanning
-arch-lint check --engine ts               # Force tree-sitter engine
-arch-lint check --exit-zero               # Report, but never fail the step
-arch-lint check --baseline b.toml --update-baseline  # (re)write a baseline
-arch-lint check --baseline b.toml         # Report only violations beyond it
-arch-lint list-rules                      # Show available rules and their options
-arch-lint list-rules --json               # Same, as JSON (option schemas included)
-arch-lint schema                          # JSON Schema of arch-lint.toml
-arch-lint schema --out arch-lint.schema.json
-arch-lint graph                           # Mermaid graph of [[scopes]] (read-only)
-arch-lint graph --format dot              # Graphviz DOT instead
+cargo arch-lint init                            # Generate arch-lint.toml
+cargo arch-lint init --ts                       # Generate with tree-sitter layers
+cargo arch-lint check                           # Run all checks
+cargo arch-lint check --rules no-unwrap-expect  # Run specific rules
+cargo arch-lint check --format json             # JSON output for CI
+cargo arch-lint check --format sarif            # SARIF 2.1.0, for GitHub code scanning
+cargo arch-lint check --engine ts               # Force tree-sitter engine
+cargo arch-lint check --exit-zero               # Report, but never fail the step
+cargo arch-lint check --baseline b.toml --update-baseline  # (re)write a baseline
+cargo arch-lint check --baseline b.toml         # Report only violations beyond it
+cargo arch-lint list-rules                      # Show available rules and their options
+cargo arch-lint list-rules --json               # Same, as JSON (option schemas included)
+cargo arch-lint schema                          # JSON Schema of arch-lint.toml
+cargo arch-lint schema --out arch-lint.schema.json
+cargo arch-lint graph                           # Mermaid graph of [[scopes]] (read-only)
+cargo arch-lint graph --format dot              # Graphviz DOT instead
 ```
+
+`cargo install --locked arch-lint-cli` installs two binaries: `cargo-arch-lint`
+(so `cargo arch-lint ...`, Cargo's convention for external subcommands, works)
+and a bare `arch-lint` binary that accepts the exact same arguments — the two
+are interchangeable, use whichever reads better in your scripts.
 
 Logs go to stderr, never stdout; a successful run prints nothing there (a
 source file that fails to parse still logs a WARN line, an invalid
@@ -1340,7 +1348,7 @@ The fixture under
 (two scopes, one `[[deny-scope-dep]]`-denied reference) renders as:
 
 ```bash
-arch-lint graph crates/arch-lint-core/tests/fixtures/declarative --format mermaid
+cargo arch-lint graph crates/arch-lint-core/tests/fixtures/declarative --format mermaid
 ```
 
 ```mermaid
@@ -1353,7 +1361,7 @@ graph LR
 
 That fixture is the example here, instead of `examples/sample-project`,
 because the sample project declares no `[[scopes]]` at all —
-`arch-lint graph examples/sample-project` prints an empty graph (`graph LR`
+`cargo arch-lint graph examples/sample-project` prints an empty graph (`graph LR`
 alone) and `no [[scopes]] declared in examples/sample-project/arch-lint.toml`
 on stderr, which is correct but has nothing to draw.
 
@@ -1364,10 +1372,10 @@ declared scope, so there is nothing for the graph to draw for it.
 ### Cross-language (tree-sitter engine)
 
 ```bash
-arch-lint init --ts
+cargo arch-lint init --ts
 # Edit [[layers]] and [dependencies] in arch-lint.toml
-arch-lint check              # auto-detects engine from [[layers]]
-arch-lint check --engine ts  # explicit engine selection
+cargo arch-lint check              # auto-detects engine from [[layers]]
+cargo arch-lint check --engine ts  # explicit engine selection
 ```
 
 See [docs/tree-sitter-engine.md](docs/tree-sitter-engine.md) for full documentation.
@@ -1381,9 +1389,9 @@ be fixed before the gate is turned on. A baseline freezes today's violations
 so CI fails only on new ones — three commands:
 
 ```bash
-arch-lint check --baseline arch-lint.baseline.toml --update-baseline
+cargo arch-lint check --baseline arch-lint.baseline.toml --update-baseline
 git add arch-lint.baseline.toml && git commit -m "chore: baseline existing violations"
-arch-lint check --baseline arch-lint.baseline.toml   # in CI from now on
+cargo arch-lint check --baseline arch-lint.baseline.toml   # in CI from now on
 ```
 
 The first command runs the full analysis, prints the full report (so the
@@ -1470,7 +1478,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install --locked arch-lint-cli
-      - run: arch-lint check   # exit 1 on violations, 2 if it could not run
+      - run: cargo arch-lint check   # exit 1 on violations, 2 if it could not run
 ```
 
 To get violations into GitHub's code-scanning UI instead — PR annotations
@@ -1497,7 +1505,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install --locked arch-lint-cli
-      - run: arch-lint check . --format sarif --exit-zero > arch-lint.sarif
+      - run: cargo arch-lint check . --format sarif --exit-zero > arch-lint.sarif
         # --exit-zero: let upload-sarif turn violations into alerts instead
         # of failing the step before the upload runs — the step still
         # exits 2 (and fails) on a configuration error, so a broken config
@@ -1515,7 +1523,7 @@ jobs:
 #!/bin/sh
 # .git/hooks/pre-commit
 
-arch-lint check --format compact
+cargo arch-lint check --format compact
 if [ $? -ne 0 ]; then
     echo "arch-lint found violations. Please fix before committing."
     exit 1

@@ -100,15 +100,22 @@ and in `arch-lint-ts` (`TsSession`). The CLI owns argument parsing, engine
 detection, colour policy and the exit code.
 
 ```bash
-arch-lint check [PATH]           # Run lint checks (auto-detect engine)
-arch-lint check --engine ts      # Force tree-sitter engine
-arch-lint check --format json    # JSON output for CI
-arch-lint list-rules             # Show available rules
-arch-lint init                   # Create syn config
-arch-lint init --ts              # Create tree-sitter config (with [[layers]])
-arch-lint graph [PATH]            # Render the scope graph (Mermaid; syn engine only)
-arch-lint graph --format dot      # Same, as Graphviz DOT
+cargo arch-lint check [PATH]           # Run lint checks (auto-detect engine)
+cargo arch-lint check --engine ts      # Force tree-sitter engine
+cargo arch-lint check --format json    # JSON output for CI
+cargo arch-lint list-rules             # Show available rules
+cargo arch-lint init                   # Create syn config
+cargo arch-lint init --ts              # Create tree-sitter config (with [[layers]])
+cargo arch-lint graph [PATH]            # Render the scope graph (Mermaid; syn engine only)
+cargo arch-lint graph --format dot      # Same, as Graphviz DOT
 ```
+
+`crates/arch-lint-cli` builds two binaries from the same `main.rs`:
+`cargo-arch-lint` (so `cargo arch-lint ...` works, Cargo's convention for
+external subcommands — it strips the leading `arch-lint` argument cargo
+passes before handing the rest to clap) and the bare `arch-lint` binary,
+which accepts the same arguments directly. Both share one `Cli` definition;
+only the clap `bin_name` used in `Usage:` lines differs between them.
 
 Engine auto-detection: the config is parsed as TOML and the tree-sitter engine
 is used when a non-empty `[[layers]]` array is present. `graph` does not

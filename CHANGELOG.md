@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`cargo arch-lint` subcommand**: `crates/arch-lint-cli` now builds a second
+  binary, `cargo-arch-lint`, sharing `main.rs` with the existing `arch-lint`
+  binary — both are installed by `cargo install --locked arch-lint-cli`.
+  Cargo's external-subcommand convention invokes a `cargo-<name>` binary on
+  `PATH` as `cargo <name> <args>` → `cargo-<name> <name> <args>`, so
+  `cargo arch-lint check` runs `cargo-arch-lint arch-lint check`; the binary
+  detects this from its own executable name (`argv[0]`'s file stem) and
+  strips exactly one leading `arch-lint` argument before parsing with clap —
+  conditionally, not unconditionally, so `cargo arch-lint arch-lint check`
+  (the word typed twice) and the plain `arch-lint arch-lint check` both stay
+  clap errors naming the unexpected `arch-lint` argument, and running
+  `cargo-arch-lint` directly without the `arch-lint` word still works.
+  `--version` prints the identical `arch-lint <version>` text under both
+  names: `name` is pinned to `arch-lint` (`#[command(name = "arch-lint")]`),
+  so `--version` prints the same line under both invocations; only
+  `bin_name` differs — used in `Usage:` lines and error messages, it
+  switches to `cargo arch-lint` for the cargo-subcommand invocation, so
+  `--help` under both names lists the same subcommands with a usage line
+  naming the respective form. README, ARCHITECTURE.md and CONTRIBUTING.md
+  now lead with `cargo arch-lint ...` in their CLI examples; the bare
+  `arch-lint` binary stays documented as an equivalent, interchangeable
+  form.
+
+  **Accepted wording deviations from the issue's acceptance text**: item 1
+  ("`cargo arch-lint --help` and `arch-lint --help` print the same text")
+  is met with the two outputs differing only in the `Usage:` line's bin
+  name (`cargo arch-lint` vs. `arch-lint`), not byte-for-byte identical
+  text. Item 3 ("`cargo arch-lint arch-lint check` ... is treated as a path
+  argument error") is met by clap rejecting the repeated word as
+  `unrecognized subcommand 'arch-lint'` — a subcommand error, not a path
+  argument error, since the extra `arch-lint` is consumed as the (invalid)
+  subcommand position rather than reaching the `check` subcommand's `path`
+  argument.
+
 - **Baseline (`--baseline` / `--update-baseline`)**: adopt arch-lint on an
   existing codebase by freezing today's violations and failing only on new
   ones. `arch-lint check --baseline <path> --update-baseline` runs the full
