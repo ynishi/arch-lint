@@ -284,21 +284,24 @@ fn update_baseline_without_baseline_is_a_clap_error_exit_2() {
 
 #[test]
 fn readme_documents_the_adoption_flow() {
+    // Moved out of README.md into docs/cli.md so the README reads as a
+    // front door (issue #13); the assertions are unchanged.
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
-        .join("README.md");
+        .join("docs")
+        .join("cli.md");
     let readme =
         fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
 
     assert!(
         readme.contains("Adopting on an existing codebase"),
-        "README is missing the adoption subsection"
+        "docs/cli.md is missing the adoption subsection"
     );
     assert!(readme.contains("--update-baseline"), "{readme}");
     assert!(
         readme.contains("arch-lint check --baseline"),
-        "README should show the three-command adoption flow"
+        "docs/cli.md should show the three-command adoption flow"
     );
 }
 

@@ -151,6 +151,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crate matching on `Format` exhaustively must add a wildcard arm. No
   in-tree call site needed one — the only matches on `Format` live inside
   `report::render` itself, which is exempt as the defining crate.
+- **`README.md` restructured as a front door** (issue #13): the front-page
+  sections (formerly "Why arch-lint?", "How It Works", "Key Features" and
+  the four-step Quick Start) were rewritten, not moved, into a shorter
+  title + badges + a deterministic SVG of real `cargo arch-lint check
+  examples/sample-project` output (`docs/img/check.svg`, rendered by the
+  new stdlib-only `scripts/render-terminal-svg.py` — SVG instead of a PNG
+  screenshot because it is reproducible from the repository and needs no
+  binary asset), "What it is", Install, a 30-second Quick Start, a
+  declarative-rules showcase, AI Coding Integration, a Documentation
+  section, the rebuilt Comparison table, Crate Structure, Contributing and
+  License — under 200 lines, down from 1,571. The per-rule *reference*
+  sections moved verbatim into `docs/`: `docs/rules.md` (rule table, Rule
+  Details, Presets — the `[rules.<name>]` option tables `arch-lint-rules`'s
+  `readme_options` test now reads from here, alongside `docs/configuration.md`),
+  `docs/declarative-rules.md`, `docs/configuration.md`, `docs/suppression.md`,
+  `docs/cli.md` (CLI Usage + CI Integration — `arch-lint-cli`'s `baseline`
+  test now reads the adoption flow from here), and `docs/sdk.md` (Writing
+  Custom Rules + Programmatic Usage). The Comparison table was rebuilt
+  around cargo-pup, ArchUnitRust, cargo-modules, cargo-strata, dylint,
+  clippy, cargo-deny and ArchUnit (Java), each cell sourced from that
+  tool's own docs (linked from the README).
 
 ## [0.7.0] - 2026-10-11
 
