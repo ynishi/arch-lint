@@ -143,7 +143,10 @@ fn version_is_identical_under_both_names() {
 
     let cargo_version = stdout(&cargo_form);
     let plain_version = stdout(&plain_form);
-    assert!(cargo_version.contains("0.7.0"), "{cargo_version}");
+    assert!(
+        cargo_version.contains(env!("CARGO_PKG_VERSION")),
+        "{cargo_version}"
+    );
     assert_eq!(cargo_version, plain_version);
 }
 

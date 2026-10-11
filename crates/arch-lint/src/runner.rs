@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 /// `baseline = "..."` argument was given. **Signature frozen**: this is the
 /// pre-baseline entry point, kept at its original 3-argument shape so that a
 /// `check!()` call compiled against an older `arch-lint-macros` (within the
-/// same `^0.7` line) still links against a newer `arch-lint` — see
+/// same minor line) still links against a newer `arch-lint` — see
 /// [`run_check_with_baseline`] for the baseline path, added as a new
 /// function rather than a new parameter here for the same reason.
 ///
@@ -39,8 +39,8 @@ pub fn run_check(preset: Option<&str>, config_path: Option<&str>, fail_on: Optio
 ///
 /// Called by the `check!()` macro-generated test function when a
 /// `baseline = "..."` argument was given — a separate function from
-/// [`run_check`] rather than a new parameter on it, so that mixed `^0.7`
-/// versions of `arch-lint-macros` and `arch-lint` never produce an arity
+/// [`run_check`] rather than a new parameter on it, so that mixed versions
+/// of `arch-lint-macros` and `arch-lint` within the same minor line never produce an arity
 /// mismatch: an old macro binary only ever calls `run_check`, a new one
 /// calls this function only when `baseline` is actually used.
 ///

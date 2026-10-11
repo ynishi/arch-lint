@@ -181,7 +181,7 @@ pub fn check(input: TokenStream) -> TokenStream {
     // Two different runtime entry points, not one with an extra argument:
     // a `check!()` with no `baseline` keeps calling the original
     // 3-argument `run_check`, so a `check!()` compiled against an older
-    // `arch-lint-macros` (same `^0.7` line) still links against a newer
+    // `arch-lint-macros` (within the same minor line) still links against a newer
     // `arch-lint` facade. Only a `baseline = "..."` call site reaches the
     // new `run_check_with_baseline`.
     let output = if let Some(b) = &args.baseline {
