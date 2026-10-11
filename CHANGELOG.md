@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-11
+
 ### Added
 
 - **`arch-lint graph [PATH] --format mermaid|dot`**: a read-only subcommand
@@ -148,11 +150,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (nodes = scope names, edges = scope-crossing `use`/inline references with
   the `Location` of each site), collected once per `Analyzer::analyze()` by a
   visitor that runs inside the existing per-file pass (no second parse). Path
-  resolution is the one ALD003 uses (see below); unlike ALD003 the graph
-  records every reference regardless of `check_inline` — rules built on the
-  graph decide what to filter (each `EdgeSite` does carry every `allow`
-  directive in scope at it, for a rule built on the graph to act on, see
-  ALD009 above). Reachable through `ProjectContext::scope_graph()`
+  resolution is the one ALD003 uses — `crate::`, `self::` and `super::`
+  paths relative to the file's module, inline `mod` blocks included (see
+  Changed, below, for the ALD003 / ALD004 behavior change this enables);
+  unlike ALD003 the graph records every reference regardless of
+  `check_inline` — rules built on the graph decide what to filter (each
+  `EdgeSite` does carry every `allow` directive in scope at it, for a rule
+  built on the graph to act on, see ALD009 above). Reachable through
+  `ProjectContext::scope_graph()`
   (for a `ProjectRule`), the standalone `Analyzer::scope_graph()` (builds the
   graph without running any rule) and `Session::scope_graph()` (the SDK
   driver). Enabled by the new
@@ -162,10 +167,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `declarative::create_rules_shared` (builds rules from a shared `Arc`, so the
   same config can also be handed to the analyzer). Prerequisite for
   independence and allow-list rules, and `arch-lint graph` (separate issues)
-- **`deny-scope-dep` (ALD003), `layering` (ALD004) and the `ScopeGraph`** now
-  resolve `self::` and `super::` paths relative to the file's module
-  (inline `mod` blocks included), not just `crate::`; bare paths and `pub use`
-  re-exports remain unresolved
 
 ### Changed
 
@@ -174,6 +175,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (if any); `Format::Json` already serialized them. Affects any custom SDK
   rule that attaches labels — no built-in or declarative rule did before
   `[[acyclic]]` (ALD009, above)
+- **`deny-scope-dep` (ALD003), `layering` (ALD004) and the `ScopeGraph`** now
+  also resolve `self::` and `super::` paths relative to the file's module
+  (inline `mod` blocks included), not just `crate::`; bare paths and `pub use`
+  re-exports remain unresolved
 - **ALD001 `restrict-use` inline checks now also see `self::` / `super::`
   paths**, matched verbatim against the `deny` / `except` patterns, as `use`
   items already were
@@ -193,16 +198,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `1` is reserved for "ran, and found violations at or above `fail_on`".
   Previously both cases exited `1`. The table is in `arch-lint check --help`
   and the README "CI Integration" section
-
-### Documentation
-
 - `CONTRIBUTING.md` rewritten around the workflow: label table with branch
   prefixes, issue template (`.github/ISSUE_TEMPLATE/issue.md`: Problem /
   Evidence / Proposal / Acceptance), pull request template with an acceptance
   table, verification through the installed binary, commit subject prefixes.
   New `PUBLIC_DEVELOPMENT.md` states the public-by-default policy and what
   must not appear in a public artifact
-
 
 ### Fixed
 
@@ -571,7 +572,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Allow directives via attributes and inline comments
 - Comprehensive test coverage
 
-[Unreleased]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.6.0...HEAD
+[Unreleased]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.7.0...HEAD
+[0.7.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.6.0...arch-lint-v0.7.0
 [0.6.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.5.0...arch-lint-v0.6.0
 [0.5.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.4.3...arch-lint-v0.5.0
 [0.4.3]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.4.2...arch-lint-v0.4.3
