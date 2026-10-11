@@ -9,6 +9,7 @@ use crate::OutputFormat;
 
 pub mod check;
 pub mod check_ts;
+pub mod graph;
 pub mod init;
 pub mod init_ts;
 pub mod list_rules;
