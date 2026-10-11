@@ -341,4 +341,88 @@ fn foo() {
         // Should not have any violations when reason is provided
         assert!(violations.is_empty());
     }
+
+    // ── Trailing-allow-comment fix ──
+
+    /// Acceptance 2: a trailing `// arch-lint: allow(...)` comment, on the
+    /// same line as the `.unwrap()` call instead of above it, suppresses
+    /// AL001 just like the leading form.
+    #[test]
+    fn test_trailing_comment_suppresses() {
+        let violations = check_code(
+            r#"
+fn foo() {
+    let x = Some(1).unwrap(); // arch-lint: allow(no-unwrap-expect) reason="x"
+}
+"#,
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// Acceptance 3: a `//` inside a string literal earlier on the line
+    /// must not be mistaken for the start of an allow comment — the
+    /// violation is still reported.
+    #[test]
+    fn test_double_slash_in_string_does_not_suppress() {
+        let violations = check_code(
+            r#"
+fn foo() {
+    let s = "http://x"; let x = Some(1).unwrap();
+}
+"#,
+        );
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+    }
+
+    /// Acceptance 3: an allow directive written inside a string literal
+    /// (so it is not an actual comment) must not suppress the violation.
+    #[test]
+    fn test_directive_inside_a_string_literal_does_not_suppress() {
+        let violations = check_code(
+            r#"
+fn foo() {
+    let s = "// arch-lint: allow(no-unwrap-expect) reason=\"x\""; let x = Some(1).unwrap();
+}
+"#,
+        );
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+    }
+
+    /// Acceptance 4: the trailing form without a reason on this
+    /// error-severity rule still produces the missing-reason warning,
+    /// exactly as the leading form does.
+    #[test]
+    fn test_trailing_comment_without_reason_warns() {
+        let violations = check_code(
+            r#"
+fn foo() {
+    let x = Some(1).unwrap(); // arch-lint: allow(no-unwrap-expect)
+}
+"#,
+        );
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(violations[0].message.contains("missing required reason"));
+        assert_eq!(violations[0].severity, Severity::Warning);
+    }
+
+    /// A trailing directive is scoped to its own line: a directive on
+    /// line N must not also suppress a violation on line N+1 — only a
+    /// comment-only line above the target line supplies it a directive.
+    #[test]
+    fn test_trailing_comment_does_not_suppress_the_next_line() {
+        let violations = check_code(
+            r#"
+fn foo() {
+    let a = Some(1).unwrap(); // arch-lint: allow(no-unwrap-expect) reason="x"
+    let b = Some(2).unwrap();
+}
+"#,
+        );
+        assert_eq!(
+            violations.len(),
+            1,
+            "line 4's unwrap must still be reported: {violations:#?}"
+        );
+        assert_eq!(violations[0].location.line, 4);
+    }
 }

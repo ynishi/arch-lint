@@ -473,10 +473,14 @@ mod tests {
     #[test]
     fn suppress_inline_comment_on_the_same_line() {
         let code = "use sqlx::Pool; // arch-lint: allow(no-sqlx-in-domain) reason=\"legacy\"";
-        // The trailing-comment form is only recognized when the directive is the
-        // whole comment line, exactly as for the built-in rules; here the line
-        // starts with `use`, so the import is still reported.
-        assert_eq!(check_domain(code).len(), 1);
+        // Trailing-allow-comment fix: the directive no longer has to be the
+        // whole comment line — a comment after the offending code, on the
+        // same line, suppresses the violation on *that* line. This is not
+        // identical to a comment on the line above: a leading comment
+        // targets the line *below* it, while a trailing comment targets
+        // only its own line — it does not also reach the next line (see
+        // `scope_dep.rs`'s trailing-allow-comment tests).
+        assert!(check_domain(code).is_empty());
     }
 
     #[test]
