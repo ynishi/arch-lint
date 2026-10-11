@@ -148,9 +148,13 @@ macros, and hosts the driver layer that turns "root + config" into a
   Every failure is a `SessionError` — the driver never panics and never exits.
 - **`session::Session::find_workspace_root`** - the `[workspace]` walk used by
   `check!()`, public and testable.
-- **`report::render`** - `LintResult` → text / JSON / compact string. ANSI
-  colours are opt-in (`Format::Text { color }`, default `false`), so a library
-  caller gets plain output unless it asks otherwise.
+- **`report::render`** - `LintResult` → text / JSON / compact / SARIF
+  2.1.0 string. ANSI colours are opt-in (`Format::Text { color }`, default
+  `false`), so a library caller gets plain output unless it asks otherwise.
+  `Format::Sarif` is built from a small typed model in the private
+  `report::sarif` submodule — `render` stays the single entry point.
+  `Format` is `#[non_exhaustive]` (since `Format::Sarif` was added), so a
+  caller outside this crate matching on it needs a wildcard arm.
 - **`graph::render`** - `ScopeGraph` → Mermaid or Graphviz DOT text
   (`GraphFormat`), both plain string writers with no external dependency,
   the output raw (no fence of its own). Every Mermaid node id is prefixed
@@ -367,7 +371,7 @@ Visitors maintain state as they traverse:
 
 - Clear error messages with location
 - Actionable suggestions for fixes
-- Support for multiple output formats (text, JSON, compact)
+- Support for multiple output formats (text, JSON, compact, SARIF)
 
 ## Future Extensions
 
@@ -375,7 +379,9 @@ Visitors maintain state as they traverse:
 2. **LSP Integration** - IDE support via Language Server Protocol
 3. **Incremental Analysis** - Only re-analyze changed files
 4. **Parallel Execution** - Run rules concurrently (`[analyzer].parallelism`)
-5. **SARIF / GitHub annotations output** - CI-native reporting
+5. **GitHub annotations output** (`::error` workflow commands) - SARIF (issue
+   #11) already covers CI-native reporting; this would be the older,
+   capped-at-10-per-severity alternative, not an upgrade to it
 6. **More tree-sitter languages** - Kotlin is the only extractor today
 
 ## Testing

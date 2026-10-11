@@ -1290,6 +1290,7 @@ arch-lint init --ts                       # Generate with tree-sitter layers
 arch-lint check                           # Run all checks
 arch-lint check --rules no-unwrap-expect  # Run specific rules
 arch-lint check --format json             # JSON output for CI
+arch-lint check --format sarif            # SARIF 2.1.0, for GitHub code scanning
 arch-lint check --engine ts               # Force tree-sitter engine
 arch-lint check --exit-zero               # Report, but never fail the step
 arch-lint check --baseline b.toml --update-baseline  # (re)write a baseline
@@ -1449,12 +1450,14 @@ A CI step can therefore fail on violations and still tell a misconfigured
 linter (`2`) apart from a real finding (`1`). `--exit-zero` turns the step
 into a report-only one.
 
-`--format json` and `--format compact` on stdout are clean machine-readable
-output with no log lines mixed in — tracing diagnostics go to stderr, so
-there is no need to redirect it away (e.g. `2>/dev/null`) before piping
-stdout to `jq` or writing it to a file.
+`--format json`, `--format compact` and `--format sarif` on stdout are clean
+machine-readable output with no log lines mixed in — tracing diagnostics go
+to stderr, so there is no need to redirect it away (e.g. `2>/dev/null`)
+before piping stdout to `jq`, uploading it, or writing it to a file.
 
 ### GitHub Actions
+
+The simple option fails the step directly on violations:
 
 ```yaml
 name: Lint
@@ -1468,6 +1471,42 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install --locked arch-lint-cli
       - run: arch-lint check   # exit 1 on violations, 2 if it could not run
+```
+
+To get violations into GitHub's code-scanning UI instead — PR annotations
+that survive re-runs, plus the Security tab — upload a SARIF report:
+`::error` workflow commands are capped at 10 per severity per step and
+silently drop the rest, which this avoids. `artifactLocation.uri` is
+relative to the path given to `check`, so run it against the repository
+root (`arch-lint check . --format sarif`, as below) — a narrower path
+produces URIs that do not line up with the checkout, and GitHub will not
+be able to anchor the annotations to the right file.
+
+```yaml
+name: Lint
+on: [push, pull_request]
+
+jobs:
+  arch-lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read          # required by actions/checkout
+      actions: read           # required on private repos, per upload-sarif's own example
+      security-events: write  # required by upload-sarif
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install --locked arch-lint-cli
+      - run: arch-lint check . --format sarif --exit-zero > arch-lint.sarif
+        # --exit-zero: let upload-sarif turn violations into alerts instead
+        # of failing the step before the upload runs — the step still
+        # exits 2 (and fails) on a configuration error, so a broken config
+        # is not silently swallowed. Gating the PR then comes from GitHub's
+        # code-scanning checks or branch protection, not this step's exit
+        # code.
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: arch-lint.sarif
 ```
 
 ### Pre-commit Hook
