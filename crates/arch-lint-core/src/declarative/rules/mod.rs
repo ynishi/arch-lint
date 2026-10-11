@@ -1,4 +1,8 @@
-//! Declarative rule implementations (syn visitors).
+//! Declarative rule implementations (syn visitors), plus [`AcyclicRule`]
+//! (`ALD009`), which is the one project-wide
+//! [`ProjectRule`](crate::rule::ProjectRule) in this module: it runs on the
+//! [`ScopeGraph`](crate::declarative::graph::ScopeGraph) collected while the
+//! per-file rules run, rather than on one file's `syn` AST.
 //!
 //! Converts domain model rules into [`Rule`](crate::rule::Rule) trait
 //! implementations that analyze `syn` ASTs. One submodule per rule kind; this
@@ -11,6 +15,7 @@ use crate::context::FileContext;
 use crate::declarative::model::ItemKind;
 use crate::types::{Location, Severity, Violation};
 
+mod acyclic;
 mod collect;
 mod deny_attr;
 mod layering;
@@ -23,8 +28,9 @@ mod scope_dep;
 mod suppress;
 
 pub(crate) use collect::ScopeEdgeCollector;
-pub(crate) use suppress::{Decision, Suppressions};
+pub(crate) use suppress::{missing_reason_violation, Decision, Suppressions};
 
+pub use acyclic::AcyclicRule;
 pub use deny_attr::DenyAttrRule;
 pub use layering::LayeringRule;
 pub use naming::NamingRule;

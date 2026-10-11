@@ -613,3 +613,426 @@ paths = ["src/infra/**"]
         assert!(codes.contains(&"ALD003"));
     }
 }
+
+/// End-to-end coverage of `[[acyclic]]` (ALD009), issue #6's acceptance
+/// items 1-5 (item 6, the CLI surface, is covered in `arch-lint-cli`).
+mod acyclic {
+    use arch_lint_core::declarative::{self, model::DeclarativeConfig};
+    use arch_lint_core::{Analyzer, Severity};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    /// Writes one file, creating its parent directories.
+    fn write(root: &std::path::Path, relative: &str, content: &str) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().expect("has parent")).expect("mkdir");
+        std::fs::write(path, content).expect("write file");
+    }
+
+    /// Builds a tempdir project from `(path, content)` source files plus a
+    /// `arch-lint.toml`-shaped `toml_content`, and returns its ALD009
+    /// violations (any other declarative violation would be a bug in the
+    /// fixture, so none are filtered out silently — callers assert on the
+    /// full set when that matters). `toml_content` is also parsed as the
+    /// base `Config`, so a `[rules.acyclic]` table (N1: `enabled` /
+    /// `severity` overrides) in the same document takes effect, exactly as
+    /// it would through `Session`.
+    fn acyclic_violations(
+        toml_content: &str,
+        files: &[(&str, &str)],
+    ) -> Vec<arch_lint_core::Violation> {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        for (path, content) in files {
+            write(root, path, content);
+        }
+
+        let config: Arc<DeclarativeConfig> = Arc::new(
+            declarative::load_config_from_toml(toml_content).expect("fixture config should load"),
+        );
+        let project_rules = declarative::create_project_rules_shared(&config);
+        let base_config =
+            arch_lint_core::Config::parse(toml_content).expect("fixture config should parse");
+
+        let mut builder = Analyzer::builder()
+            .root(root)
+            .config(base_config)
+            .declarative(Arc::clone(&config));
+        for rule in project_rules {
+            builder = builder.project_rule_box(rule);
+        }
+        let result = builder
+            .build()
+            .expect("analyzer should build")
+            .analyze()
+            .expect("analysis should succeed");
+
+        result
+            .violations
+            .into_iter()
+            .filter(|v| v.code == "ALD009")
+            .collect()
+    }
+
+    const TWO_SCOPES: &str = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[acyclic]]
+"#;
+
+    /// Acceptance 1: `domain -> infra` and `infra -> domain` is one ALD009
+    /// violation naming the full cycle, at error severity.
+    #[test]
+    fn two_scope_cycle_is_one_error_naming_the_full_path() {
+        let violations = acyclic_violations(
+            TWO_SCOPES,
+            &[
+                ("src/domain/service.rs", "use crate::infra::db::Pool;\n"),
+                ("src/infra/db.rs", "use crate::domain::service::Service;\n"),
+            ],
+        );
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        let v = &violations[0];
+        assert_eq!(v.severity, Severity::Error);
+        assert!(
+            v.message.contains("domain \u{2192} infra \u{2192} domain"),
+            "{}",
+            v.message
+        );
+        // N2: the primary location is the first edge's `use` leaf
+        // identifier, and the second edge is attached as exactly one label.
+        assert_eq!(
+            v.location.file,
+            std::path::PathBuf::from("src/domain/service.rs")
+        );
+        assert_eq!(v.location.line, 1);
+        assert_eq!(v.location.column, 23, "column of `Pool`");
+        assert_eq!(v.labels.len(), 1, "{:#?}", v.labels);
+        assert_eq!(
+            v.labels[0].location.file,
+            std::path::PathBuf::from("src/infra/db.rs")
+        );
+        assert_eq!(v.labels[0].location.line, 1);
+        assert_eq!(v.labels[0].location.column, 29, "column of `Service`");
+    }
+
+    /// N1: `[rules.acyclic] enabled = false` disables the rule entirely,
+    /// even though the TOML still has a `[[acyclic]]` block and a real
+    /// cycle on disk.
+    #[test]
+    fn rules_table_can_disable_acyclic() {
+        let toml_content = format!("{TWO_SCOPES}\n[rules.acyclic]\nenabled = false\n");
+        let violations = acyclic_violations(
+            &toml_content,
+            &[
+                ("src/domain/service.rs", "use crate::infra::db::Pool;\n"),
+                ("src/infra/db.rs", "use crate::domain::service::Service;\n"),
+            ],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// N1: `[rules.acyclic] severity = "warning"` overrides the `[[acyclic]]`
+    /// block's own (error) severity, the same generic mechanism every other
+    /// project rule gets.
+    #[test]
+    fn rules_table_overrides_severity_to_warning() {
+        let toml_content = format!("{TWO_SCOPES}\n[rules.acyclic]\nseverity = \"warning\"\n");
+        let violations = acyclic_violations(
+            &toml_content,
+            &[
+                ("src/domain/service.rs", "use crate::infra::db::Pool;\n"),
+                ("src/infra/db.rs", "use crate::domain::service::Service;\n"),
+            ],
+        );
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].severity, Severity::Warning);
+    }
+
+    /// Acceptance 2: a 3-scope cycle lists all three scopes in path order.
+    #[test]
+    fn three_scope_cycle_lists_all_three_in_order() {
+        let toml_content = r#"
+[[scopes]]
+name = "a"
+paths = ["src/a/**"]
+
+[[scopes]]
+name = "b"
+paths = ["src/b/**"]
+
+[[scopes]]
+name = "c"
+paths = ["src/c/**"]
+
+[[acyclic]]
+"#;
+        let violations = acyclic_violations(
+            toml_content,
+            &[
+                ("src/a/x.rs", "use crate::b::y::Y;\n"),
+                ("src/b/y.rs", "use crate::c::z::Z;\n"),
+                ("src/c/z.rs", "use crate::a::x::X;\n"),
+            ],
+        );
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(
+            violations[0]
+                .message
+                .contains("a \u{2192} b \u{2192} c \u{2192} a"),
+            "{}",
+            violations[0].message
+        );
+        assert_eq!(violations[0].labels.len(), 2);
+    }
+
+    /// Acceptance 3: a one-directional dependency is not a cycle.
+    #[test]
+    fn one_directional_dependency_has_no_violation() {
+        let violations = acyclic_violations(
+            TWO_SCOPES,
+            &[("src/domain/service.rs", "use crate::infra::db::Pool;\n")],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// Acceptance 4: restricting `scopes` to `["domain", "app"]` ignores a
+    /// cycle that passes through `infra`.
+    #[test]
+    fn scopes_filter_ignores_a_cycle_through_an_excluded_scope() {
+        let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[scopes]]
+name = "app"
+paths = ["src/app/**"]
+
+[[acyclic]]
+scopes = ["domain", "app"]
+"#;
+        let violations = acyclic_violations(
+            toml_content,
+            &[
+                ("src/domain/service.rs", "use crate::infra::db::Pool;\n"),
+                ("src/infra/db.rs", "use crate::app::handler::Handler;\n"),
+                (
+                    "src/app/handler.rs",
+                    "use crate::domain::service::Service;\n",
+                ),
+            ],
+        );
+        assert!(
+            violations.is_empty(),
+            "the domain -> infra -> app -> domain cycle must be ignored: {violations:#?}"
+        );
+    }
+
+    /// N2 positive control for the test above: the same `scopes` filter
+    /// does report a cycle that stays entirely within the filtered set, so
+    /// the empty result above is the filter at work, not the rule being
+    /// inert.
+    #[test]
+    fn scopes_filter_still_reports_a_cycle_inside_the_filtered_scopes() {
+        let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[scopes]]
+name = "app"
+paths = ["src/app/**"]
+
+[[acyclic]]
+scopes = ["domain", "app"]
+"#;
+        let violations = acyclic_violations(
+            toml_content,
+            &[
+                (
+                    "src/domain/service.rs",
+                    "use crate::app::handler::Handler;\n",
+                ),
+                (
+                    "src/app/handler.rs",
+                    "use crate::domain::service::Service;\n",
+                ),
+            ],
+        );
+        assert_eq!(
+            violations.len(),
+            1,
+            "domain <-> app is entirely inside the filter and must be reported: {violations:#?}"
+        );
+    }
+
+    /// Acceptance 5: an `allow(acyclic)` comment on one `use` of the cycle
+    /// removes the violation.
+    #[test]
+    fn allow_comment_on_one_use_removes_the_violation() {
+        let violations = acyclic_violations(
+            TWO_SCOPES,
+            &[
+                (
+                    "src/domain/service.rs",
+                    "// arch-lint: allow(acyclic) reason=\"bootstrap wiring\"\nuse crate::infra::db::Pool;\n",
+                ),
+                ("src/infra/db.rs", "use crate::domain::service::Service;\n"),
+            ],
+        );
+        assert!(
+            violations.is_empty(),
+            "the allow directive must remove the edge and so the cycle: {violations:#?}"
+        );
+    }
+
+    /// R1 / F6: an `#[arch_lint::allow(acyclic)]` attribute directly on the
+    /// `use` item, with no `reason`, still suppresses the cycle with no
+    /// warning — attributes never require one.
+    #[test]
+    fn item_attribute_without_reason_suppresses_with_no_warning() {
+        let violations = acyclic_violations(
+            TWO_SCOPES,
+            &[
+                (
+                    "src/domain/service.rs",
+                    "#[arch_lint::allow(acyclic)]\nuse crate::infra::db::Pool;\n",
+                ),
+                ("src/infra/db.rs", "use crate::domain::service::Service;\n"),
+            ],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// R1 / F9: an enclosing `fn` attribute with no `reason`, plus a
+    /// reasoned comment on the same site, still suppresses silently — the
+    /// attribute wins, so there is no missing-reason warning either.
+    #[test]
+    fn enclosing_fn_attribute_without_reason_plus_reasoned_comment_suppresses_with_no_warning() {
+        let violations = acyclic_violations(
+            TWO_SCOPES,
+            &[
+                (
+                    "src/domain/service.rs",
+                    "#[arch_lint::allow(acyclic)]\npub fn f() {\n    // arch-lint: allow(acyclic) reason=\"also reasoned\"\n    crate::infra::db::connect();\n}\n",
+                ),
+                ("src/infra/db.rs", "use crate::domain::service::Service;\npub fn connect() {}\n"),
+            ],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// S6, end to end: one edge (`domain -> infra`) has two sites — one
+    /// carries a reason-less comment `allow`, the other is unsuppressed.
+    /// The reason-less site still gets its own missing-reason warning
+    /// (independent of the edge's fate), while the edge itself survives
+    /// through its unsuppressed sibling site, so the cycle is still
+    /// reported as an ALD009 error.
+    #[test]
+    fn reason_less_site_warns_while_the_edge_survives_via_its_sibling() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        write(
+            root,
+            "src/domain/service.rs",
+            "// arch-lint: allow(acyclic)\nuse crate::infra::db::Pool;\n",
+        );
+        write(
+            root,
+            "src/domain/other.rs",
+            "use crate::infra::cache::Redis;\n",
+        );
+        write(
+            root,
+            "src/infra/db.rs",
+            "use crate::domain::service::Service;\n",
+        );
+        write(root, "src/infra/cache.rs", "pub struct Redis;\n");
+
+        let config: Arc<DeclarativeConfig> = Arc::new(
+            declarative::load_config_from_toml(TWO_SCOPES).expect("fixture config should load"),
+        );
+        let project_rules = declarative::create_project_rules_shared(&config);
+        let base_config =
+            arch_lint_core::Config::parse(TWO_SCOPES).expect("fixture config should parse");
+
+        let mut builder = Analyzer::builder()
+            .root(root)
+            .config(base_config)
+            .declarative(Arc::clone(&config));
+        for rule in project_rules {
+            builder = builder.project_rule_box(rule);
+        }
+        let result = builder
+            .build()
+            .expect("analyzer should build")
+            .analyze()
+            .expect("analysis should succeed");
+
+        let ald009: Vec<_> = result
+            .violations
+            .iter()
+            .filter(|v| v.code == "ALD009")
+            .collect();
+        assert_eq!(ald009.len(), 2, "{ald009:#?}");
+
+        let warnings: Vec<_> = ald009
+            .iter()
+            .filter(|v| v.severity == Severity::Warning)
+            .collect();
+        assert_eq!(warnings.len(), 1, "{ald009:#?}");
+        assert_eq!(
+            warnings[0].location.file,
+            std::path::PathBuf::from("src/domain/service.rs"),
+            "the warning must point at the reason-less site, not its unsuppressed sibling"
+        );
+
+        let errors: Vec<_> = ald009
+            .iter()
+            .filter(|v| v.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "the edge survives via the unsuppressed sibling site, so the cycle is still an error: {ald009:#?}"
+        );
+
+        assert!(
+            result.has_violations_at(Severity::Error),
+            "exit-code semantics: this must still fail the build"
+        );
+    }
+
+    /// Unknown scope names in `scopes` are a load-time error, same as
+    /// `[[deny-scope-dep]]`.
+    #[test]
+    fn unknown_scope_in_scopes_list_is_a_load_error() {
+        let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[acyclic]]
+scopes = ["domain", "nope"]
+"#;
+        let result = declarative::load_config_from_toml(toml_content);
+        assert!(result.is_err(), "unknown scope name must be rejected");
+    }
+}

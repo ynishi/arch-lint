@@ -11,8 +11,24 @@
 //! `ScopeDepVisitor` does), resolved against `src/x/y.rs` and
 //! `src/x/y/mod.rs` candidates. Bare paths and `pub use` re-exports are not
 //! followed. Unlike `ALD003`, the graph records every reference regardless
-//! of `allow` suppressions and of `check_inline` — rules built on the graph
-//! decide what to filter.
+//! of `check_inline` — rules built on the graph decide what to filter.
+//!
+//! `allow` directives are still recorded, not acted on, and the collector is
+//! rule-agnostic about it: every `// arch-lint: allow(...)` comment on a
+//! site's line and every `#[arch_lint::allow(...)]` attribute in scope at it
+//! (the site's own item, for a `use`, plus every enclosing `mod`/`fn`/
+//! `impl`/`trait`) is parsed with the same functions `Suppressions` uses for
+//! the per-file rules (`utils::allowance::parse_allow_directive`,
+//! `utils::attributes::parse_arch_lint_allow_attr`) and recorded on the
+//! [`EdgeSite`] as an [`AllowDirective`] tagged with a
+//! [`DirectiveSource`](crate::declarative::graph::DirectiveSource) (rule
+//! names normalized to `snake_case` by `EdgeSite::with_allow_directive`
+//! itself). A rule built on the graph (currently
+//! [`AcyclicRule`](super::AcyclicRule), `ALD009`) decides for itself which
+//! directives name it ([`EdgeSite::allow_directive`]) and drops a site
+//! accordingly before computing anything — the source lets it tell an
+//! attribute (never needs a `reason`) from a comment (does, on an
+//! error-severity rule) apart.
 
 use syn::spanned::Spanned;
 use syn::visit::Visit;
@@ -20,9 +36,11 @@ use syn::visit::Visit;
 use super::scope_dep::{file_module_segments, is_relative_path, resolve_relative_target_scopes};
 use super::{expand_use_tree, inline_path_to_string};
 use crate::context::FileContext;
-use crate::declarative::graph::{EdgeKind, EdgeSite, ScopeGraph};
+use crate::declarative::graph::{DirectiveSource, EdgeKind, EdgeSite, ScopeGraph};
 use crate::declarative::model::{DeclarativeConfig, ScopeName};
 use crate::types::Location;
+use crate::utils::allowance::{parse_allow_directive, AllowDirective};
+use crate::utils::attributes::parse_arch_lint_allow_attr;
 
 /// Visitor that records scope-crossing references of one file.
 pub(crate) struct ScopeEdgeCollector<'a> {
@@ -36,6 +54,11 @@ pub(crate) struct ScopeEdgeCollector<'a> {
     file_module: Option<Vec<String>>,
     /// Names of the inline `mod` blocks currently being visited.
     mod_stack: Vec<String>,
+    /// `#[arch_lint::allow(...)]` directives of every enclosing `mod` (with a
+    /// body) / `fn` / `impl` / `trait`, outermost first; one entry per
+    /// enclosing scope (possibly empty). Flattened onto a site's own
+    /// directives in [`ScopeEdgeCollector::site_directives`].
+    scope_directives: Vec<Vec<AllowDirective>>,
 }
 
 impl<'a> ScopeEdgeCollector<'a> {
@@ -60,6 +83,7 @@ impl<'a> ScopeEdgeCollector<'a> {
             file_scopes,
             graph,
             mod_stack: Vec::new(),
+            scope_directives: Vec::new(),
         };
         collector.visit_file(ast);
     }
@@ -73,7 +97,58 @@ impl<'a> ScopeEdgeCollector<'a> {
         Some(module)
     }
 
-    fn record(&mut self, path: &str, span: proc_macro2::Span, kind: EdgeKind) {
+    /// Pushes one enclosing scope's `#[arch_lint::allow(...)]` directives
+    /// onto the stack; pair with [`ScopeEdgeCollector::pop_scope`].
+    fn push_scope(&mut self, attrs: &[syn::Attribute]) {
+        self.scope_directives.push(directives_from_attrs(attrs));
+    }
+
+    fn pop_scope(&mut self) {
+        self.scope_directives.pop();
+    }
+
+    /// Every directive in scope at a site: enclosing `mod`/`fn`/`impl`/
+    /// `trait` attributes (outermost first), then the site's own item
+    /// attributes (a `use` item; `None` for an inline path, which has no
+    /// item of its own), then the inline comment directive(s) on `span`'s
+    /// line. This order matches the priority `Suppressions` gives the three
+    /// mechanisms for the per-file rules — enclosing scope and item
+    /// attributes (no reason required) before the inline comment (reason
+    /// required for an error-severity rule).
+    fn site_directives(
+        &self,
+        span: proc_macro2::Span,
+        attrs: Option<&[syn::Attribute]>,
+    ) -> Vec<(DirectiveSource, AllowDirective)> {
+        let mut directives: Vec<(DirectiveSource, AllowDirective)> = self
+            .scope_directives
+            .iter()
+            .flatten()
+            .cloned()
+            .map(|d| (DirectiveSource::Scope, d))
+            .collect();
+        if let Some(attrs) = attrs {
+            directives.extend(
+                directives_from_attrs(attrs)
+                    .into_iter()
+                    .map(|d| (DirectiveSource::Item, d)),
+            );
+        }
+        directives.extend(
+            comment_directives_at(self.ctx.content, span.start().line)
+                .into_iter()
+                .map(|d| (DirectiveSource::Comment, d)),
+        );
+        directives
+    }
+
+    fn record(
+        &mut self,
+        path: &str,
+        span: proc_macro2::Span,
+        kind: EdgeKind,
+        attrs: Option<&[syn::Attribute]>,
+    ) {
         // Only `self::`/`super::` paths need the current module; a
         // `crate::`/bare/external path never pays for computing it.
         let current_module = is_relative_path(path)
@@ -84,6 +159,8 @@ impl<'a> ScopeEdgeCollector<'a> {
             return;
         }
 
+        let directives = self.site_directives(span, attrs);
+
         for from in &self.file_scopes {
             for to in &targets {
                 // `add_edge` drops `from == to`; the check here only avoids
@@ -91,18 +168,46 @@ impl<'a> ScopeEdgeCollector<'a> {
                 if from == to {
                     continue;
                 }
-                self.graph.add_edge(
-                    (*from).clone(),
-                    (*to).clone(),
-                    EdgeSite {
-                        location: Location::from_span(self.ctx.relative_path.clone(), span),
-                        kind,
-                        path: path.to_string(),
-                    },
+                let mut site = EdgeSite::new(
+                    Location::from_span(self.ctx.relative_path.clone(), span),
+                    kind,
+                    path,
                 );
+                for (source, directive) in &directives {
+                    site = site.with_allow_directive(*source, directive.clone());
+                }
+                self.graph.add_edge((*from).clone(), (*to).clone(), site);
             }
         }
     }
+}
+
+/// Parses every `#[arch_lint::allow(...)]` attribute of `attrs`.
+///
+/// Rule names are normalized to `snake_case` by
+/// [`EdgeSite::with_allow_directive`](crate::declarative::graph::EdgeSite::with_allow_directive)
+/// itself when the directive is recorded, not here.
+fn directives_from_attrs(attrs: &[syn::Attribute]) -> Vec<AllowDirective> {
+    attrs
+        .iter()
+        .filter_map(parse_arch_lint_allow_attr)
+        .collect()
+}
+
+/// Parses the `// arch-lint: allow(...)` comment directive(s) on `line` or
+/// the line above it (the same two lines `check_allow_with_reason` checks).
+fn comment_directives_at(content: &str, line: usize) -> Vec<AllowDirective> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut directives = Vec::new();
+    for check_line in [line.saturating_sub(1), line] {
+        if check_line == 0 || check_line > lines.len() {
+            continue;
+        }
+        if let Some(directive) = parse_allow_directive(lines[check_line - 1]) {
+            directives.push(directive);
+        }
+    }
+    directives
 }
 
 impl<'ast> Visit<'ast> for ScopeEdgeCollector<'_> {
@@ -110,16 +215,41 @@ impl<'ast> Visit<'ast> for ScopeEdgeCollector<'_> {
         let pushed_mod = node.content.is_some();
         if pushed_mod {
             self.mod_stack.push(node.ident.to_string());
+            self.push_scope(&node.attrs);
         }
         syn::visit::visit_item_mod(self, node);
         if pushed_mod {
             self.mod_stack.pop();
+            self.pop_scope();
         }
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        self.push_scope(&node.attrs);
+        syn::visit::visit_item_fn(self, node);
+        self.pop_scope();
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        self.push_scope(&node.attrs);
+        syn::visit::visit_item_impl(self, node);
+        self.pop_scope();
+    }
+
+    fn visit_item_trait(&mut self, node: &'ast syn::ItemTrait) {
+        self.push_scope(&node.attrs);
+        syn::visit::visit_item_trait(self, node);
+        self.pop_scope();
     }
 
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
         for use_item in expand_use_tree(&node.tree, "") {
-            self.record(&use_item.path, use_item.span, EdgeKind::Use);
+            self.record(
+                &use_item.path,
+                use_item.span,
+                EdgeKind::Use,
+                Some(&node.attrs),
+            );
         }
         syn::visit::visit_item_use(self, node);
     }
@@ -128,7 +258,7 @@ impl<'ast> Visit<'ast> for ScopeEdgeCollector<'_> {
         // `use` items hold `UseTree`s, not `syn::Path`, so a `use` is never
         // recorded twice here.
         if let Some(path) = inline_path_to_string(node) {
-            self.record(&path, node.span(), EdgeKind::Inline);
+            self.record(&path, node.span(), EdgeKind::Inline, None);
         }
         syn::visit::visit_path(self, node);
     }
@@ -331,5 +461,135 @@ mod tests {
         assert!(graph.has_edge(&name("domain"), &name("infra")));
         assert!(graph.has_edge(&name("infra"), &name("domain")));
         assert_eq!(graph.edge_count(), 2);
+    }
+
+    // ── `allow` directives are recorded onto the site ──
+
+    #[test]
+    fn comment_allow_acyclic_is_recorded_on_the_site() {
+        let code =
+            "// arch-lint: allow(acyclic) reason=\"bootstrap\"\nuse crate::infra::db::Pool;\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert_eq!(sites.len(), 1);
+        assert!(sites[0].allow_directive("acyclic").is_some());
+        assert_eq!(
+            sites[0]
+                .allow_directive("acyclic")
+                .and_then(|(_, d)| d.reason.as_deref()),
+            Some("bootstrap")
+        );
+    }
+
+    #[test]
+    fn comment_allow_without_reason_is_still_recorded_with_no_reason() {
+        let code = "// arch-lint: allow(acyclic)\nuse crate::infra::db::Pool;\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        let (_, directive) = sites[0].allow_directive("acyclic").expect("recorded");
+        assert!(directive.reason.is_none());
+    }
+
+    #[test]
+    fn attribute_allow_acyclic_on_a_use_item_is_recorded() {
+        let code =
+            "#[arch_lint::allow(acyclic, reason = \"bootstrap\")]\nuse crate::infra::db::Pool;\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert_eq!(sites.len(), 1);
+        assert!(sites[0].allow_directive("acyclic").is_some());
+    }
+
+    #[test]
+    fn allow_by_code_is_recorded_as_the_code_spelling() {
+        let code = "// arch-lint: allow(ALD009) reason=\"x\"\nuse crate::infra::db::Pool;\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert!(sites[0].allow_directive("ALD009").is_some());
+        // Same directive, looked up by the kind name: `allow_directive`
+        // matches by rule name, not by which spelling was used to find it,
+        // so a directive naming the code also answers to the kind name
+        // only if the code and the kind name are themselves the same
+        // string after normalization — they are not, so this one does not
+        // match "acyclic".
+        assert!(sites[0].allow_directive("acyclic").is_none());
+    }
+
+    #[test]
+    fn user_name_allow_is_recorded_normalized_regardless_of_comment_spelling() {
+        // B2: `name = "no_cycles"` (snake_case in the TOML) is still honored
+        // by a kebab-case comment, and vice versa.
+        let kebab_comment =
+            "// arch-lint: allow(no-cycles) reason=\"x\"\nuse crate::infra::db::Pool;\n";
+        let graph = collect("src/domain/service.rs", kebab_comment);
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert!(sites[0].allow_directive("no_cycles").is_some());
+        assert!(sites[0].allow_directive("no-cycles").is_some());
+
+        let snake_comment =
+            "// arch-lint: allow(no_cycles) reason=\"x\"\nuse crate::infra::db::Pool;\n";
+        let graph = collect("src/domain/service.rs", snake_comment);
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert!(sites[0].allow_directive("no-cycles").is_some());
+    }
+
+    #[test]
+    fn unrelated_use_item_has_no_allow_directives() {
+        let code = "use crate::infra::db::Pool;\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert!(sites[0].allow_directives().is_empty());
+    }
+
+    #[test]
+    fn inline_path_honors_comment_allow_too() {
+        let code =
+            "// arch-lint: allow(acyclic) reason=\"x\"\npub fn f() { crate::infra::db::connect(); }\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert_eq!(sites.len(), 1);
+        assert!(sites[0].allow_directive("acyclic").is_some());
+    }
+
+    // ── S5: outer-scope attribute allows apply to sites inside them ──
+
+    #[test]
+    fn fn_level_attribute_suppresses_an_inline_path_site() {
+        let code = "#[arch_lint::allow(acyclic, reason = \"x\")]\npub fn f() { crate::infra::db::connect(); }\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert_eq!(sites.len(), 1);
+        assert!(sites[0].allow_directive("acyclic").is_some());
+    }
+
+    #[test]
+    fn mod_level_attribute_suppresses_a_use_inside_the_inline_mod() {
+        let code = "#[arch_lint::allow(acyclic, reason = \"x\")]\nmod wiring {\n    use crate::infra::db::Pool;\n}\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert_eq!(sites.len(), 1);
+        assert!(sites[0].allow_directive("acyclic").is_some());
+    }
+
+    #[test]
+    fn a_sibling_outside_the_allowed_mod_is_not_suppressed() {
+        let code = "#[arch_lint::allow(acyclic, reason = \"x\")]\nmod wiring {\n    use crate::infra::db::Pool;\n}\nuse crate::infra::cache::Redis;\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert_eq!(sites.len(), 2);
+        let suppressed: Vec<bool> = sites
+            .iter()
+            .map(|s| s.allow_directive("acyclic").is_some())
+            .collect();
+        assert_eq!(suppressed, [true, false], "{sites:#?}");
     }
 }

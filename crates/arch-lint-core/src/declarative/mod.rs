@@ -6,7 +6,7 @@
 //! Sections: `[[scopes]]`, `[[restrict-use]]` (ALD001), `[[require-use]]`
 //! (ALD002), `[[deny-scope-dep]]` (ALD003), `[[layering]]` (ALD004),
 //! `[[deny-attr]]` (ALD005), `[[require-attr]]` (ALD006), `[[naming]]`
-//! (ALD007) and `[[require-return]]` (ALD008).
+//! (ALD007), `[[require-return]]` (ALD008) and `[[acyclic]]` (ALD009).
 //!
 //! # Architecture
 //!
@@ -14,18 +14,28 @@
 //! TOML text
 //!   ↓ serde (DTO layer)
 //! config_dto types
-//!   ↓ validate + convert           load_config_from_toml()
+//!   ↓ validate + convert                  load_config_from_toml()
 //! DeclarativeConfig (pure domain model)
-//!   ↓ create_rules()               ↓ Analyzer (per-file pass)
-//! Vec<RuleBox>                   graph::ScopeGraph → ProjectContext
+//!   ↓ create_rules()          ↓ create_project_rules()   ↓ Analyzer (per-file pass)
+//! Vec<RuleBox>               Vec<ProjectRuleBox>        graph::ScopeGraph → ProjectContext
 //! ```
 //!
 //! [`load_rules_from_toml`](crate::declarative::load_rules_from_toml) is the
-//! one-call form of the left column. The right column is the scope
-//! dependency graph ([`graph`](crate::declarative::graph)): the analyzer gets
-//! the same [`model::DeclarativeConfig`](crate::declarative::model::DeclarativeConfig)
-//! through [`AnalyzerBuilder::declarative`](crate::AnalyzerBuilder::declarative)
-//! and collects scope-crossing references while it runs the per-file rules.
+//! one-call form of the left column. The middle column is `[[acyclic]]`
+//! (ALD009), the one rule kind that runs once per project rather than once
+//! per file —
+//! [`create_project_rules_shared`](crate::declarative::create_project_rules_shared)
+//! builds it the same way
+//! [`create_rules_shared`](crate::declarative::create_rules_shared) builds
+//! the per-file rules. The right column is the
+//! scope dependency graph ([`graph`](crate::declarative::graph)): the
+//! analyzer gets the same
+//! [`model::DeclarativeConfig`](crate::declarative::model::DeclarativeConfig)
+//! through [`AnalyzerBuilder::declarative`](crate::AnalyzerBuilder::declarative),
+//! collects scope-crossing references while it runs the per-file rules, and
+//! hands the graph to the project rules through
+//! [`ProjectContext::scope_graph`](crate::ProjectContext::scope_graph) — which
+//! is what the middle column reads.
 
 use std::sync::Arc;
 
@@ -122,4 +132,71 @@ pub fn create_rules_shared(config: &Arc<model::DeclarativeConfig>) -> Vec<crate:
     }
 
     result
+}
+
+/// Creates all project-wide declarative rules from a validated
+/// [`model::DeclarativeConfig`].
+///
+/// Returns an empty vec if no `[[acyclic]]` blocks are defined. Use
+/// [`create_project_rules_shared`] when the config is also needed elsewhere
+/// (for example, to hand the same instance to
+/// [`AnalyzerBuilder::declarative`](crate::AnalyzerBuilder::declarative), so
+/// the analyzer collects the [`graph::ScopeGraph`] these rules read).
+#[must_use]
+pub fn create_project_rules(config: model::DeclarativeConfig) -> Vec<crate::rule::ProjectRuleBox> {
+    create_project_rules_shared(&Arc::new(config))
+}
+
+/// Creates all project-wide declarative rules from a shared
+/// [`model::DeclarativeConfig`].
+///
+/// The rules keep a clone of the `Arc`, so the caller can hand the same
+/// config to the analyzer for scope-graph collection without copying it.
+/// Returns an empty vec if no `[[acyclic]]` blocks are defined.
+#[must_use]
+pub fn create_project_rules_shared(
+    config: &Arc<model::DeclarativeConfig>,
+) -> Vec<crate::rule::ProjectRuleBox> {
+    if config.is_empty() {
+        return vec![];
+    }
+
+    let mut result: Vec<crate::rule::ProjectRuleBox> = Vec::new();
+
+    if !config.acyclics().is_empty() {
+        result.push(Box::new(rules::AcyclicRule::new(Arc::clone(config))));
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::declarative::model::{Acyclic, GlobPattern, Scope, ScopeName};
+    use crate::types::Severity;
+
+    #[test]
+    fn create_project_rules_is_empty_without_acyclic() {
+        let config = model::DeclarativeConfig::empty();
+        assert!(create_project_rules(config).is_empty());
+    }
+
+    #[test]
+    fn create_project_rules_shared_builds_the_acyclic_rule() {
+        let config = Arc::new(
+            model::DeclarativeConfig::builder()
+                .scopes(vec![Scope::new(
+                    ScopeName::new("domain").unwrap(),
+                    vec![GlobPattern::new("src/domain/**").unwrap()],
+                )])
+                .acyclics(vec![Acyclic::new(None, None, None, Severity::Error)])
+                .build()
+                .unwrap(),
+        );
+        let rules = create_project_rules_shared(&config);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name(), "acyclic");
+        assert_eq!(rules[0].code(), "ALD009");
+    }
 }

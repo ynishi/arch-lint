@@ -146,7 +146,11 @@ fn is_arch_lint_allow_path(attr: &Attribute) -> bool {
 }
 
 /// Parses `#[arch_lint::allow(rule1, rule2, reason = "...")]` attribute.
-fn parse_arch_lint_allow_attr(attr: &Attribute) -> Option<AllowDirective> {
+///
+/// `pub(crate)`: reused outside this module by
+/// [`ScopeEdgeCollector`](crate::declarative::rules::ScopeEdgeCollector),
+/// which records every directive on an item (not just one named rule).
+pub(crate) fn parse_arch_lint_allow_attr(attr: &Attribute) -> Option<AllowDirective> {
     if !is_arch_lint_allow_path(attr) {
         return None;
     }

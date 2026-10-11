@@ -175,26 +175,40 @@ impl Suppressions {
             if rule.reason_required && check.reason().is_none() {
                 let location =
                     Location::new(ctx.relative_path.clone(), start.line, start.column + 1);
-                let violation = Violation::new(
+                return Decision::MissingReason(Box::new(missing_reason_violation(
                     code,
                     &rule.display_name,
-                    Severity::Warning,
                     location,
-                    format!(
-                        "Allow directive for '{}' is missing required reason",
-                        rule.display_name
-                    ),
-                )
-                .with_suggestion(Suggestion::new(
-                    "Add reason=\"...\" to explain why this exception is necessary",
-                ));
-                return Decision::MissingReason(Box::new(violation));
+                )));
             }
             return Decision::Suppressed;
         }
 
         Decision::Report
     }
+}
+
+/// The warning violation reported in place of a suppressed one when an
+/// error-severity rule's `allow` comment carries no `reason`.
+///
+/// Shared by [`Suppressions::decide`] (the per-file rules) and
+/// [`AcyclicRule`](super::AcyclicRule) (`ALD009`), so every declarative rule
+/// reports the exact same message for this case.
+pub(crate) fn missing_reason_violation(
+    code: &'static str,
+    display_name: &str,
+    location: Location,
+) -> Violation {
+    Violation::new(
+        code,
+        display_name,
+        Severity::Warning,
+        location,
+        format!("Allow directive for '{display_name}' is missing required reason"),
+    )
+    .with_suggestion(Suggestion::new(
+        "Add reason=\"...\" to explain why this exception is necessary",
+    ))
 }
 
 /// Names accepted in a comment directive for one TOML rule.

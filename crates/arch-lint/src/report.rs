@@ -102,6 +102,16 @@ impl std::fmt::Display for TextReport<'_> {
             if let Some(suggestion) = &violation.suggestion {
                 writeln!(f, "  = help: {}", suggestion.message)?;
             }
+            for label in &violation.labels {
+                writeln!(
+                    f,
+                    "  = note: {} at {}:{}:{}",
+                    label.message,
+                    label.location.file.display(),
+                    label.location.line,
+                    label.location.column,
+                )?;
+            }
             writeln!(f)?;
         }
 
@@ -152,7 +162,7 @@ impl std::fmt::Display for CompactReport<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arch_lint_core::{Location, Suggestion, Violation};
+    use arch_lint_core::{Label, Location, Suggestion, Violation};
     use std::path::PathBuf;
 
     fn sample() -> LintResult {
@@ -190,6 +200,35 @@ mod tests {
         assert!(out.contains("  error: Avoid unwrap()"));
         assert!(out.contains("  = help: Use `?` instead"));
         assert!(out.ends_with("Found 1 error(s), 1 warning(s), 0 info(s) in 3 file(s)\n"));
+    }
+
+    #[test]
+    fn text_shows_labels_so_a_cycle_shows_its_whole_path() {
+        let mut result = LintResult::new();
+        result.files_checked = 2;
+        result.violations.push(
+            Violation::new(
+                "ALD009",
+                "acyclic",
+                Severity::Error,
+                Location::new(PathBuf::from("src/domain/a.rs"), 1, 23),
+                "Cycle between scopes: domain \u{2192} infra \u{2192} domain",
+            )
+            .with_label(Label::new(
+                Location::new(PathBuf::from("src/infra/b.rs"), 2, 29),
+                "infra \u{2192} domain",
+            )),
+        );
+
+        let out = render(&result, Format::Text { color: false }).expect("render");
+        assert!(
+            out.contains("Cycle between scopes: domain \u{2192} infra \u{2192} domain"),
+            "{out}"
+        );
+        assert!(
+            out.contains("  = note: infra \u{2192} domain at src/infra/b.rs:2:29"),
+            "{out}"
+        );
     }
 
     #[test]

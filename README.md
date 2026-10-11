@@ -251,6 +251,46 @@ over = ["log"]
 message = "Use tracing instead of log for structured logging."
 ```
 
+### Cycles between scopes
+
+```toml
+[[acyclic]]
+scopes = ["domain", "app", "infra"]   # omitted = every declared scope
+severity = "error"                    # optional, default error
+```
+
+Project-wide, not per-file: after every file has been analyzed, `[[acyclic]]`
+(ALD009) looks at the dependency graph between `[[scopes]]` and reports one
+violation per cycle, however many scopes it passes through — the message
+names every scope in the cycle plus the concrete path in order, and the text
+report shows the other edge(s) of the cycle as `= note:` lines (the JSON
+report carries the same information as `Violation.labels`), e.g.:
+
+```text
+ALD009 acyclic at src/domain/service.rs:1:23
+  error: Cycle between scopes domain, infra: domain → infra → domain
+  = note: infra → domain at src/infra/db.rs:1:29
+```
+
+`scopes` restricts the check to a subset of the declared scopes (a cycle that
+only passes through an excluded scope is not reported); omit it to check
+every declared scope. Overlapping `[[acyclic]]` blocks each report the same
+cycle once — one violation per block that includes it, not a single merged
+one.
+
+An `// arch-lint: allow(acyclic) reason="..."` comment on the line, or an
+`#[arch_lint::allow(acyclic, reason = "...")]` attribute on the `use` item
+itself or on an enclosing `mod`/`fn`/`impl`/`trait`, removes that one site
+from the graph before cycles are computed — same as `[[deny-scope-dep]]`
+honors `allow` directives. Whether a `reason` is required depends on where
+the directive is: an attribute never needs one, on an item or an enclosing
+scope, same as everywhere else in arch-lint; a comment does, on an
+error-severity rule. A comment directive without a reason that suppresses a
+site on an edge lying on a cycle (computed before suppression) reports the
+usual missing-reason warning at that site instead of silently dropping the
+violation, even if another, reasoned `allow` anywhere else on the cycle also
+breaks it.
+
 ### Real-World Example: Review Feedback to Rule
 
 **Before** — a reviewer has to say this every time:
@@ -312,6 +352,7 @@ Declarative rules defined in `arch-lint.toml` (see [Declarative Rules](#declarat
 | ALD006 | `[[require-attr]]` | Requires at least one of the given attributes on items of a scope |
 | ALD007 | `[[naming]]` | Requires identifiers of one item kind to match a regex |
 | ALD008 | `[[require-return]]` | Requires functions to return a type matching a regex |
+| ALD009 | `[[acyclic]]` | Project-wide: forbids a cycle between scopes in the dependency graph |
 
 ### Rule Details
 
@@ -848,8 +889,8 @@ arch-lint provides multiple ways to suppress violations at different scopes.
 | Global | Configuration (`enabled = false`) | Project-wide exclusion |
 
 Both directives apply to the built-in rules (AL001-AL013) **and** to the
-declarative rules from `arch-lint.toml` (ALD001-ALD008); see
-[Declarative rules](#declarative-rules-ald001-ald008) below for the names a
+declarative rules from `arch-lint.toml` (ALD001-ALD009); see
+[Declarative rules](#declarative-rules-ald001-ald009) below for the names a
 declarative rule answers to.
 
 ### Line-level (Comment)
@@ -903,7 +944,7 @@ reason on an error rule suppresses the violation and reports a warning
 (`Allow directive for '<rule>' is missing required reason`) in its place. An
 attribute without a reason suppresses silently.
 
-### Declarative rules (ALD001-ALD008)
+### Declarative rules (ALD001-ALD009)
 
 The declarative rules honor the same two directives, with the same semantics.
 A declarative rule answers to three names, each in kebab-case or `snake_case`:
@@ -915,6 +956,15 @@ A declarative rule answers to three names, each in kebab-case or `snake_case`:
 | Rule code | `ALD001` | every rule reported under that code |
 
 `allow(all)` suppresses everything, as it does for the built-in rules.
+
+`[[acyclic]]` (ALD009) is the one project-wide exception: an `allow`
+directive — a comment on the line, an attribute on the `use` item, or an
+attribute on an enclosing `mod`/`fn`/`impl`/`trait` — removes that one site
+from the scope graph before cycles are computed, rather than suppressing a
+violation already found on that line (see
+[Cycles between scopes](#cycles-between-scopes)). Reporting an
+`allow(acyclic)` directive that no longer has a cycle to suppress as unused
+is not implemented.
 
 ```rust
 // Comment on the violating line or the line above it

@@ -6,8 +6,8 @@
 
 use super::DeclarativeConfig;
 use crate::declarative::model::{
-    DenyAttr, Layering, ModelError, Naming, RequireAttr, RequireReturn, RequireUse, RestrictUse,
-    Scope, ScopeDep, ScopeName, ScopeRef,
+    Acyclic, DenyAttr, Layering, ModelError, Naming, RequireAttr, RequireReturn, RequireUse,
+    RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef,
 };
 use std::collections::HashMap;
 
@@ -25,6 +25,7 @@ pub struct DeclarativeConfigBuilder {
     require_attrs: Vec<RequireAttr>,
     namings: Vec<Naming>,
     require_returns: Vec<RequireReturn>,
+    acyclics: Vec<Acyclic>,
 }
 
 impl DeclarativeConfigBuilder {
@@ -88,6 +89,13 @@ impl DeclarativeConfigBuilder {
     #[must_use]
     pub fn require_returns(mut self, rules: Vec<RequireReturn>) -> Self {
         self.require_returns = rules;
+        self
+    }
+
+    /// Sets the `[[acyclic]]` rules.
+    #[must_use]
+    pub fn acyclics(mut self, rules: Vec<Acyclic>) -> Self {
+        self.acyclics = rules;
         self
     }
 
@@ -165,6 +173,20 @@ impl DeclarativeConfigBuilder {
             }
         }
 
+        // Validate `[[acyclic]]` scope references
+        for rule in &self.acyclics {
+            if let Some(scopes) = rule.scopes() {
+                for scope in scopes {
+                    if !scope_map.contains_key(scope) {
+                        errors.push(ModelError::UnknownScope {
+                            context: format!("acyclic '{}' scopes", rule.display_name()),
+                            name: scope.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
         if errors.is_empty() {
             Ok(DeclarativeConfig {
                 scopes: scope_map,
@@ -176,6 +198,7 @@ impl DeclarativeConfigBuilder {
                 require_attrs: self.require_attrs,
                 namings: self.namings,
                 require_returns: self.require_returns,
+                acyclics: self.acyclics,
             })
         } else {
             Err(errors)
@@ -257,5 +280,43 @@ mod tests {
             )])
             .build();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn acyclic_rejects_unknown_scope() {
+        use crate::declarative::model::Acyclic;
+
+        let result = DeclarativeConfig::builder()
+            .scopes(vec![Scope::new(
+                ScopeName::new("domain").unwrap(),
+                vec![GlobPattern::new("src/domain/**").unwrap()],
+            )])
+            .acyclics(vec![Acyclic::new(
+                None,
+                Some(vec![
+                    ScopeName::new("domain").unwrap(),
+                    ScopeName::new("unknown").unwrap(),
+                ]),
+                None,
+                Severity::Error,
+            )])
+            .build();
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], ModelError::UnknownScope { .. }));
+    }
+
+    #[test]
+    fn acyclic_with_no_scopes_list_needs_no_validation() {
+        use crate::declarative::model::Acyclic;
+
+        let result = DeclarativeConfig::builder()
+            .scopes(vec![Scope::new(
+                ScopeName::new("domain").unwrap(),
+                vec![GlobPattern::new("src/domain/**").unwrap()],
+            )])
+            .acyclics(vec![Acyclic::new(None, None, None, Severity::Error)])
+            .build();
+        assert!(result.is_ok());
     }
 }

@@ -9,7 +9,8 @@ use serde::Deserialize;
 ///
 /// Extends the base `Config` with `[[scopes]]`, `[[restrict-use]]`,
 /// `[[require-use]]`, `[[deny-scope-dep]]`, `[[layering]]`, `[[deny-attr]]`,
-/// `[[require-attr]]`, `[[naming]]`, and `[[require-return]]` sections.
+/// `[[require-attr]]`, `[[naming]]`, `[[require-return]]`, and `[[acyclic]]`
+/// sections.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 pub struct DeclarativeConfigDto {
     /// Named scope definitions.
@@ -47,6 +48,10 @@ pub struct DeclarativeConfigDto {
     /// Return-type rules.
     #[serde(rename = "require-return", default)]
     pub require_return: Vec<RequireReturnDto>,
+
+    /// Project-wide cycle checks over the scope graph.
+    #[serde(rename = "acyclic", default)]
+    pub acyclic: Vec<AcyclicDto>,
 }
 
 /// TOML representation of a named scope.
@@ -283,6 +288,26 @@ pub struct RequireReturnDto {
     pub severity: String,
 }
 
+/// TOML representation of a project-wide cycle check (`ALD009`).
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AcyclicDto {
+    /// Optional rule name, used by `allow` directives when several
+    /// `[[acyclic]]` blocks are declared (default rule name: "acyclic").
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Scopes the cycle check is restricted to (default: every declared
+    /// scope).
+    #[serde(default)]
+    pub scopes: Option<Vec<String>>,
+    /// Document reference.
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Severity (default: "error").
+    #[serde(default = "default_severity_str")]
+    pub severity: String,
+}
+
 fn default_severity_str() -> String {
     "error".to_string()
 }
@@ -350,6 +375,40 @@ message = "No DB."
         assert!(dto.scopes.is_empty());
         assert!(dto.restrict_use.is_empty());
         assert!(dto.deny_scope_dep.is_empty());
+        assert!(dto.acyclic.is_empty());
+    }
+
+    #[test]
+    fn deserialize_acyclic_config() {
+        let toml_str = r#"
+[[acyclic]]
+scopes = ["domain", "app", "infra"]
+severity = "error"
+
+[[acyclic]]
+name = "no-cycles-anywhere"
+"#;
+        let dto: DeclarativeConfigDto = toml::from_str(toml_str).unwrap();
+        assert_eq!(dto.acyclic.len(), 2);
+        assert_eq!(
+            dto.acyclic[0].scopes,
+            Some(vec![
+                "domain".to_string(),
+                "app".to_string(),
+                "infra".to_string()
+            ])
+        );
+        assert_eq!(dto.acyclic[0].severity, "error");
+        assert_eq!(dto.acyclic[0].name, None);
+        assert_eq!(dto.acyclic[1].name, Some("no-cycles-anywhere".to_string()));
+        assert_eq!(dto.acyclic[1].scopes, None);
+        assert_eq!(dto.acyclic[1].severity, "error", "default severity");
+    }
+
+    #[test]
+    fn acyclic_rejects_unknown_key() {
+        let doc = "[[acyclic]]\nscoops = [\"domain\"]\n";
+        assert!(toml::from_str::<DeclarativeConfigDto>(doc).is_err());
     }
 
     #[test]
