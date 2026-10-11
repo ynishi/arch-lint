@@ -80,6 +80,7 @@ struct CheckArgs {
     preset: Option<String>,
     config: Option<String>,
     fail_on: Option<String>,
+    baseline: Option<String>,
 }
 
 impl Parse for CheckArgs {
@@ -87,6 +88,7 @@ impl Parse for CheckArgs {
         let mut preset = None;
         let mut config = None;
         let mut fail_on = None;
+        let mut baseline = None;
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
@@ -97,10 +99,13 @@ impl Parse for CheckArgs {
                 "preset" => preset = Some(value.value()),
                 "config" => config = Some(value.value()),
                 "fail_on" => fail_on = Some(value.value()),
+                "baseline" => baseline = Some(value.value()),
                 other => {
                     return Err(syn::Error::new(
                         key.span(),
-                        format!("unknown option `{other}`, expected: preset, config, fail_on"),
+                        format!(
+                            "unknown option `{other}`, expected: preset, config, fail_on, baseline"
+                        ),
                     ));
                 }
             }
@@ -115,6 +120,7 @@ impl Parse for CheckArgs {
             preset,
             config,
             fail_on,
+            baseline,
         })
     }
 }
@@ -140,11 +146,17 @@ impl Parse for CheckArgs {
 /// // Fail on warnings too (default: fail on errors only)
 /// arch_lint::check!(fail_on = "warning");
 ///
+/// // Baseline known violations (path relative to the workspace root, like
+/// // `config`); run `arch-lint check --baseline <path> --update-baseline`
+/// // first to create the file
+/// arch_lint::check!(baseline = "arch-lint.baseline.toml");
+///
 /// // Combined
 /// arch_lint::check! {
 ///     preset = "strict",
 ///     config = "arch-lint.toml",
 ///     fail_on = "warning",
+///     baseline = "arch-lint.baseline.toml",
 /// }
 /// ```
 #[proc_macro]
@@ -166,15 +178,34 @@ pub fn check(input: TokenStream) -> TokenStream {
     } else {
         quote! { None }
     };
-
-    let output = quote! {
-        #[test]
-        fn arch_lint_check() {
-            ::arch_lint::__internal::run_check(
-                #preset_expr,
-                #config_expr,
-                #fail_on_expr,
-            );
+    // Two different runtime entry points, not one with an extra argument:
+    // a `check!()` with no `baseline` keeps calling the original
+    // 3-argument `run_check`, so a `check!()` compiled against an older
+    // `arch-lint-macros` (same `^0.7` line) still links against a newer
+    // `arch-lint` facade. Only a `baseline = "..."` call site reaches the
+    // new `run_check_with_baseline`.
+    let output = if let Some(b) = &args.baseline {
+        quote! {
+            #[test]
+            fn arch_lint_check() {
+                ::arch_lint::__internal::run_check_with_baseline(
+                    #preset_expr,
+                    #config_expr,
+                    #fail_on_expr,
+                    Some(#b),
+                );
+            }
+        }
+    } else {
+        quote! {
+            #[test]
+            fn arch_lint_check() {
+                ::arch_lint::__internal::run_check(
+                    #preset_expr,
+                    #config_expr,
+                    #fail_on_expr,
+                );
+            }
         }
     };
 

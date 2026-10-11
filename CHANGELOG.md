@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Baseline (`--baseline` / `--update-baseline`)**: adopt arch-lint on an
+  existing codebase by freezing today's violations and failing only on new
+  ones. `arch-lint check --baseline <path> --update-baseline` runs the full
+  analysis, prints the full report, and (re)writes `<path>` as a TOML file
+  of `[[entry]]` records (`code`, `file`, `message`, `count`); exits `0`
+  regardless of violations found, since it is an authoring step, not a
+  check. `arch-lint check --baseline <path>` (without `--update-baseline`)
+  requires the file to already exist (a missing one is exit `2` with a
+  message pointing at `--update-baseline`), reports only violations beyond
+  it, prints `baseline: N suppressed, M stale` to stderr (plus one
+  `baseline: stale entry <code> <file> (<message>) xN` line per baseline
+  entry whose recorded count exceeds what this run found — a fixed
+  violation), and the exit status comes from the new violations only.
+  `check!(baseline = "path")` (relative to the workspace root, like
+  `config`) wires the same behavior into the `cargo test` gate; a missing
+  baseline file panics with a message pointing at
+  `arch-lint check --baseline <path> --update-baseline`, and a panic (new
+  violations found) carries a trailing `baseline: N suppressed, M stale`
+  line. New library API in the `arch-lint` facade: the `baseline` module
+  (`Baseline`, `Entry`, `Applied`, `BaselineError`, `fingerprint`, `apply`)
+  and `Session::{with_baseline, run_with_baseline}`.
+
+  **Design decision**: a violation's baseline identity is computed
+  centrally by `baseline::fingerprint`, not emitted per-rule. The issue
+  proposed a `Violation.fingerprint: Option<String>` field populated by
+  each rule; that was rejected because `Violation`'s fields are all `pub`
+  and the struct is not `#[non_exhaustive]`, so a new field would have
+  broken every existing `Violation::new(...)` call site and every
+  downstream struct literal. Instead the identity is `(code, file,
+  message)` plus a per-file count — exactly PHPStan's `ignoreErrors`
+  scheme — where `file` is the root-relative path as it already appears in
+  `Violation.location.file` and `message` is `Violation.message` verbatim.
+  **Line numbers are never stored or matched on**: this is deliberate, so
+  an unrelated edit above a baselined violation does not invalidate its
+  entry (verified directly — inserting 10 blank lines above a baselined
+  violation does not change the baseline result). An entry survives an edit
+  as long as the edit does not change the message or move the violation to
+  a different file: built-in rule messages are otherwise constant per pattern;
+  `ALD003`/`ALD004` name the denied scope edge and the specific `use` path;
+  `ALD010`/`ALD011` name the scope edge only. **`AL004`
+  (`handler-complexity`) is the one exception shipped today** — its message
+  embeds the measured size (`"... has 12 arms (max: 5)"`), so adding or
+  removing an arm/line/variant in an already-baselined handler changes the
+  fingerprint even though the handler's shape didn't otherwise change (the
+  old entry goes stale, the new size is reported as new; re-run
+  `--update-baseline` to pick it up — pinned by a CLI test). Moving that
+  measurement out of `AL004`'s message is tracked separately, not done
+  here. **Severity is not part of the key**: a baselined warning stays
+  suppressed after a later `[rules.<name>] severity` override changes it.
+  **`ALD009` (`acyclic`)** attributes its one violation per cycle to the
+  *first* edge's file in cycle-path order; a new reference that changes
+  which edge sorts first moves the entry to a different `file` even when
+  the cycle itself is unchanged. The same `fingerprint` function is meant
+  to back SARIF `partialFingerprints` (issue #11), so one identity scheme
+  serves both.
+
+  **Accepted wording deviations from the issue**: the issue's acceptance
+  text says a clean run reports `0 new violations (3 baselined)` and a
+  stale entry "prints a warning"; the shipped wording is
+  `baseline: 3 suppressed, 0 stale` and
+  `baseline: stale entry <code> <file> (<message>) xN` — kept as the
+  clearer, grep-able form rather than matched to the issue's prose.
+
 ## [0.7.0] - 2026-10-11
 
 ### Added

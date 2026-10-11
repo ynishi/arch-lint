@@ -72,6 +72,7 @@ pub mod rules {
     pub use arch_lint_rules::*;
 }
 
+pub mod baseline;
 pub mod graph;
 pub mod report;
 pub mod schema;
@@ -83,5 +84,5 @@ mod runner;
 
 #[doc(hidden)]
 pub mod __internal {
-    pub use crate::runner::run_check;
+    pub use crate::runner::{run_check, run_check_at, run_check_with_baseline};
 }

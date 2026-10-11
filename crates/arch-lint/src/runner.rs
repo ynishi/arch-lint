@@ -7,35 +7,148 @@
 //! adds is the `cargo test` contract — turning errors and violations into
 //! panics.
 
+use crate::baseline::Baseline;
 use crate::session::{Session, SessionError};
 use arch_lint_core::Severity;
 use arch_lint_rules::Preset;
-use std::path::PathBuf;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 
-/// Runs arch-lint analysis as part of `cargo test`.
+/// Runs arch-lint analysis as part of `cargo test`, without a baseline.
 ///
-/// Called by the `check!()` macro-generated test function.
-/// Panics with a formatted report if violations are found.
+/// Called by the `check!()` macro-generated test function when no
+/// `baseline = "..."` argument was given. **Signature frozen**: this is the
+/// pre-baseline entry point, kept at its original 3-argument shape so that a
+/// `check!()` call compiled against an older `arch-lint-macros` (within the
+/// same `^0.7` line) still links against a newer `arch-lint` — see
+/// [`run_check_with_baseline`] for the baseline path, added as a new
+/// function rather than a new parameter here for the same reason.
 ///
 /// Macro arguments take precedence over the configuration file, which takes
 /// precedence over the built-in defaults (`recommended` / `error`).
 ///
 /// # Panics
 ///
-/// Panics if the session cannot be built or the analysis fails, and if
-/// violations at or above `fail_on` severity are found.
+/// Panics if the session cannot be built, the analysis fails, or violations
+/// at or above `fail_on` severity are found.
 pub fn run_check(preset: Option<&str>, config_path: Option<&str>, fail_on: Option<&str>) {
-    let root = find_project_root();
+    run_check_at(&find_project_root(), preset, config_path, fail_on, None);
+}
 
-    let session = build_session(&root, preset, config_path, fail_on)
+/// Runs arch-lint analysis as part of `cargo test`, with a baseline.
+///
+/// Called by the `check!()` macro-generated test function when a
+/// `baseline = "..."` argument was given — a separate function from
+/// [`run_check`] rather than a new parameter on it, so that mixed `^0.7`
+/// versions of `arch-lint-macros` and `arch-lint` never produce an arity
+/// mismatch: an old macro binary only ever calls `run_check`, a new one
+/// calls this function only when `baseline` is actually used.
+///
+/// `baseline` is a path relative to the workspace root (like `config`) to a
+/// file written by `arch-lint check --baseline <path> --update-baseline`.
+/// Only violations beyond it fail the test; both a passing and a failing run
+/// print `baseline: N suppressed, M stale` to stderr (plus one
+/// `baseline: stale entry <code> <file> (<message>) xN` line per stale
+/// entry), and the panic report (when it panics) repeats that summary line
+/// so it is visible even when stderr is captured.
+///
+/// # Panics
+///
+/// Panics if the session cannot be built or the analysis fails, if the
+/// baseline file is missing or invalid, and if violations at or above
+/// `fail_on` severity remain after baseline filtering.
+#[doc(hidden)]
+pub fn run_check_with_baseline(
+    preset: Option<&str>,
+    config_path: Option<&str>,
+    fail_on: Option<&str>,
+    baseline: Option<&str>,
+) {
+    run_check_at(&find_project_root(), preset, config_path, fail_on, baseline);
+}
+
+/// Shared implementation behind [`run_check`] and [`run_check_with_baseline`],
+/// parameterized on the project root so tests can point it at a fixture
+/// instead of `find_project_root()`'s real `CARGO_MANIFEST_DIR` walk.
+///
+/// # Panics
+///
+/// Same conditions as [`run_check`] / [`run_check_with_baseline`].
+#[doc(hidden)]
+pub fn run_check_at(
+    root: &Path,
+    preset: Option<&str>,
+    config_path: Option<&str>,
+    fail_on: Option<&str>,
+    baseline: Option<&str>,
+) {
+    let session = build_session(root, preset, config_path, fail_on)
         .unwrap_or_else(|e| panic!("arch-lint: {e}"));
 
     let fail_on = session.fail_on();
-    let result = session.run().unwrap_or_else(|e| panic!("arch-lint: {e}"));
 
-    if result.has_violations_at(fail_on) {
-        let report = result.format_test_report(fail_on);
+    let Some(baseline_arg) = baseline else {
+        let result = session.run().unwrap_or_else(|e| panic!("arch-lint: {e}"));
+        if result.has_violations_at(fail_on) {
+            let report = result.format_test_report(fail_on);
+            panic!("{report}");
+        }
+        return;
+    };
+
+    let baseline_path = resolve_relative(root, baseline_arg);
+    let baseline_data = Baseline::load(&baseline_path).unwrap_or_else(|e| {
+        panic!(
+            "arch-lint: failed to load baseline {} (resolved from the workspace root): {e}\n\
+             Run `arch-lint check --baseline {baseline_arg} --update-baseline` to create or \
+             regenerate it.",
+            baseline_path.display(),
+        )
+    });
+
+    let applied = session
+        .with_baseline(baseline_data)
+        .run_with_baseline()
+        .unwrap_or_else(|e| panic!("arch-lint: {e}"));
+
+    // Printed on every run with a baseline — passing or failing — so a
+    // stale entry is visible from `cargo test -- --nocapture` even when the
+    // test does not panic.
+    eprintln!(
+        "baseline: {} suppressed, {} stale",
+        applied.suppressed,
+        applied.stale.len()
+    );
+    for entry in &applied.stale {
+        eprintln!(
+            "baseline: stale entry {} {} ({}) x{}",
+            entry.code,
+            entry.file.display(),
+            entry.message,
+            entry.count,
+        );
+    }
+
+    if applied.result.has_violations_at(fail_on) {
+        let mut report = applied.result.format_test_report(fail_on);
+        let _ = writeln!(
+            report,
+            "baseline: {} suppressed, {} stale",
+            applied.suppressed,
+            applied.stale.len()
+        );
         panic!("{report}");
+    }
+}
+
+/// Resolves `path` against `root` the same way `config` does: absolute paths
+/// are kept as-is, relative ones are joined to the workspace root.
+fn resolve_relative(root: &Path, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
     }
 }
 
@@ -47,15 +160,7 @@ fn build_session(
     fail_on: Option<&str>,
 ) -> Result<Session, SessionError> {
     let mut session = match config_path {
-        Some(path) => {
-            let path = PathBuf::from(path);
-            let path = if path.is_absolute() {
-                path
-            } else {
-                root.join(path)
-            };
-            Session::from_config_path(root, path)?
-        }
+        Some(path) => Session::from_config_path(root, resolve_relative(root, path))?,
         None => Session::discover(root)?,
     };
 

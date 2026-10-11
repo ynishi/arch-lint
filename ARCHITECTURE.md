@@ -163,11 +163,30 @@ macros, and hosts the driver layer that turns "root + config" into a
   locations (`offset`/`length` excluded from the comparison). The CLI's
   `graph` subcommand calls `Session::scope_graph` (borrows) before
   `Session::run` (consumes) to get both from one configuration.
+- **`baseline` module** - `Baseline` (freeze today's violations so a gate can
+  turn on before a codebase is clean), `Entry`, `Applied`, `BaselineError`,
+  the standalone `fingerprint(&Violation) -> String` and
+  `apply(LintResult, &Baseline) -> Applied` functions, and
+  `Session::{with_baseline, run_with_baseline}`. A violation's identity is
+  `(code, file, message)` — `fingerprint` joins them into one readable
+  string, computed centrally rather than per-rule (`Violation`'s fields are
+  all `pub` and the struct is not `#[non_exhaustive]`, so a rule-emitted
+  `fingerprint` field would have broken every existing `Violation::new(...)`
+  struct literal) — plus a per-file count kept in `Entry`, the same scheme
+  PHPStan uses and deliberately not line-keyed, so an edit above a
+  baselined violation does not invalidate it. `apply` consumes one count
+  per matching entry per violation, keeping the unmatched remainder as new
+  and reporting any leftover baseline count as `Applied::stale`. The CLI's
+  `check --baseline` / `--update-baseline` and the `check!(baseline = ...)`
+  macro option are both built on this; `fingerprint` is meant to double as
+  the SARIF `partialFingerprints` value (issue #11).
 
 `runner.rs` is what `check!()` calls. It is now only the `cargo test` contract:
 find the workspace root, build a `Session`, apply the macro's `preset` /
-`config` / `fail_on` arguments as overrides, run, and panic with the formatted
-report when violations reach `fail_on`.
+`config` / `fail_on` / `baseline` arguments as overrides, run (applying the
+baseline when given), and panic with the formatted report — a trailing
+`baseline: N suppressed, M stale` line included when a baseline is active —
+when violations reach `fail_on`.
 
 ```
 check!()  ─┐
