@@ -218,8 +218,9 @@ pub struct Session {
     preset: Preset,
     fail_on: Severity,
     declarative: Vec<RuleBox>,
-    /// Project-wide declarative rules (currently only `[[acyclic]]`,
-    /// `ALD009`), built from the same config as `declarative`.
+    /// Project-wide declarative rules (`[[acyclic]]`, `ALD009`, and
+    /// `[[independent]]`, `ALD010`), built from the same config as
+    /// `declarative`.
     declarative_project: Vec<ProjectRuleBox>,
     /// The declarative config the rules were built from; the analyzer uses it
     /// to collect the [`ScopeGraph`]. `None` when the config had no content.

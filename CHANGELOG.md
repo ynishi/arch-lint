@@ -60,6 +60,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `table` key naming its `[[<table>]]` section and an `options` schema
     inlined from `arch-lint.toml`'s generated JSON Schema (previously a bare
     unresolved `$ref`).
+- **`[[independent]]` (ALD010)**: a project-wide rule that reports one
+  violation per offending edge `(from, to)` between the scopes named in
+  `scopes` (`from, to ∈ scopes`, `from != to`), in either direction — the
+  "these N scopes must not depend on each other at all" rule previously
+  only expressible as `N × (N - 1)` `[[deny-scope-dep]]` entries that drift
+  as soon as a scope is added. `scopes` is required and needs at least two
+  entries (a load-time error otherwise, same as an unknown scope name in
+  it); unlike `[[acyclic]]` there is no "every declared scope" default.
+  Each violation is located at the edge's first non-suppressed site, with
+  the edge's other non-suppressed sites attached as `Violation` labels; the
+  message names both scopes plus the arrow (e.g. `Independent scopes
+  billing and shipping must not depend on each other: billing → shipping`).
+  Built the same way `[[acyclic]]` is: paired into
+  `declarative::create_project_rules_shared` /
+  `declarative::create_project_rules` alongside `AcyclicRule`, honors the
+  same `// arch-lint: allow(independent) reason="..."` comment /
+  `#[arch_lint::allow(independent, reason = "...")]` attribute directives
+  with the same reason requirement on error-severity rules (unlike
+  `[[acyclic]]`, the missing-reason warning does not depend on the site
+  lying on a cycle: every in-scope edge is an offence), and reuses the
+  per-site suppression classification extracted out of `AcyclicRule` into
+  `declarative::rules::graph_suppress` for the two to share. `arch-lint
+  list-rules` (text and `--json`) and `arch-lint schema` now cover it
+  alongside the other nine declarative rules. `scopes` rejects a repeated
+  scope name (it would otherwise collapse to one graph node and the rule
+  would silently check nothing against it).
 - **`arch-lint check --exit-zero`** reports violations and exits `0`, for
   report-only CI steps
 - **`ScopeGraph`**: the dependency graph between declared `[[scopes]]`
@@ -97,7 +123,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   items already were
 - **`ProjectContext` is now `#[non_exhaustive]`** and has a new `scope_graph`
   field; construct it with `ProjectContext::new` plus the `with_*` builders,
-  not a struct literal
+  not a struct literal. `DeclarativeConfigDto` also gained public fields in
+  this release (`acyclic`, and now `independent`); construct it via
+  `Default` or TOML deserialization, not a struct literal, for the same
+  reason
+- **`ModelError` is now `#[non_exhaustive]`**; new variants
+  `IndependentTooFewScopes` and `DuplicateIndependentScope` (added for
+  `[[independent]]`, ALD010, above) would otherwise have broken exhaustive
+  matches downstream. Bundled with the `ProjectContext` breaking change
+  above, in the same release
 - **Exit status `2` when the CLI could not run.** Configuration errors,
   unknown `--rules` names, unreadable paths and I/O errors now exit `2`;
   `1` is reserved for "ran, and found violations at or above `fail_on`".

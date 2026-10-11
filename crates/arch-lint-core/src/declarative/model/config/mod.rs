@@ -9,8 +9,8 @@ mod builder;
 pub use builder::DeclarativeConfigBuilder;
 
 use super::{
-    Acyclic, DenyAttr, Layering, ModelError, Naming, RequireAttr, RequireReturn, RequireUse,
-    RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef,
+    Acyclic, DenyAttr, Independent, Layering, ModelError, Naming, RequireAttr, RequireReturn,
+    RequireUse, RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -31,6 +31,7 @@ pub struct DeclarativeConfig {
     namings: Vec<Naming>,
     require_returns: Vec<RequireReturn>,
     acyclics: Vec<Acyclic>,
+    independents: Vec<Independent>,
 }
 
 impl DeclarativeConfig {
@@ -74,6 +75,7 @@ impl DeclarativeConfig {
             namings: Vec::new(),
             require_returns: Vec::new(),
             acyclics: Vec::new(),
+            independents: Vec::new(),
         }
     }
 
@@ -89,6 +91,7 @@ impl DeclarativeConfig {
             && self.namings.is_empty()
             && self.require_returns.is_empty()
             && self.acyclics.is_empty()
+            && self.independents.is_empty()
     }
 
     /// Returns all `[[layering]]` rules.
@@ -125,6 +128,12 @@ impl DeclarativeConfig {
     #[must_use]
     pub fn acyclics(&self) -> &[Acyclic] {
         &self.acyclics
+    }
+
+    /// Returns all `[[independent]]` rules.
+    #[must_use]
+    pub fn independents(&self) -> &[Independent] {
+        &self.independents
     }
 
     /// Returns all defined scopes.
@@ -407,5 +416,36 @@ mod tests {
             .unwrap();
         assert!(!config.is_empty());
         assert_eq!(config.acyclics().len(), 1);
+    }
+
+    #[test]
+    fn config_is_empty_covers_independent() {
+        use crate::declarative::model::Independent;
+
+        let config = DeclarativeConfig::builder()
+            .scopes(vec![
+                Scope::new(
+                    ScopeName::new("billing").unwrap(),
+                    vec![GlobPattern::new("src/billing/**").unwrap()],
+                ),
+                Scope::new(
+                    ScopeName::new("shipping").unwrap(),
+                    vec![GlobPattern::new("src/shipping/**").unwrap()],
+                ),
+            ])
+            .independents(vec![Independent::new(
+                None,
+                vec![
+                    ScopeName::new("billing").unwrap(),
+                    ScopeName::new("shipping").unwrap(),
+                ],
+                None,
+                Severity::Error,
+            )
+            .unwrap()])
+            .build()
+            .unwrap();
+        assert!(!config.is_empty());
+        assert_eq!(config.independents().len(), 1);
     }
 }

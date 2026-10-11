@@ -4,15 +4,15 @@ use anyhow::{Context, Result};
 use arch_lint_rules::{all_rules, rule_option_schemas};
 use serde_json::{Map, Value};
 
-/// One declarative rule (`ALD001`-`ALD009`), as shown by `list-rules`.
+/// One declarative rule (`ALD001`-`ALD010`), as shown by `list-rules`.
 ///
 /// `table` is the TOML section name (`[[<table>]]`) and the matching key
 /// under `properties` in the generated `arch-lint.toml` schema (see
 /// `arch_lint::schema::config_json_schema`), so `options` can be pulled from
-/// there rather than hand-written. `ALD009` (`acyclic`) is the one
-/// project-wide rule of the nine — computed once over the `ScopeGraph`
-/// rather than once per file — which only affects its description, not how
-/// it is presented here.
+/// there rather than hand-written. `ALD009` (`acyclic`) and `ALD010`
+/// (`independent`) are the two project-wide rules of the ten — each
+/// computed once over the `ScopeGraph` rather than once per file — which
+/// only affects their description, not how they are presented here.
 struct DeclarativeRuleInfo {
     code: &'static str,
     name: &'static str,
@@ -74,6 +74,12 @@ const DECLARATIVE_RULES: &[DeclarativeRuleInfo] = &[
         name: "acyclic",
         description: "Project-wide: forbid a cycle between scopes in the dependency graph",
         table: "acyclic",
+    },
+    DeclarativeRuleInfo {
+        code: "ALD010",
+        name: "independent",
+        description: "Project-wide: forbid any dependency between a set of scopes, in either direction",
+        table: "independent",
     },
 ];
 
@@ -463,6 +469,9 @@ pattern = "^Result"
 message = "m"
 
 [[acyclic]]
+
+[[independent]]
+scopes = ["domain", "infra"]
 "#;
         let config =
             arch_lint_core::declarative::load_config_from_toml(toml).expect("valid config");

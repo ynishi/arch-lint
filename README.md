@@ -291,6 +291,43 @@ usual missing-reason warning at that site instead of silently dropping the
 violation, even if another, reasoned `allow` anywhere else on the cycle also
 breaks it.
 
+### Independent scopes
+
+```toml
+[[independent]]
+scopes = ["billing", "shipping", "catalog"]
+severity = "error"   # optional, default error
+```
+
+Project-wide, like `[[acyclic]]`: after every file has been analyzed,
+`[[independent]]` (ALD010) looks at the dependency graph between
+`[[scopes]]` and reports one violation per offending edge — any reference
+from one of `scopes` to another, in either direction — rather than only a
+cycle. This is the "these N scopes must not depend on each other at all"
+rule teams otherwise write as `N × (N - 1)` `[[deny-scope-dep]]` entries
+that drift as soon as a scope is added; `[[independent]]` needs no other
+config change when a scope joins the set. `scopes` is required and needs at
+least two entries — unlike `[[acyclic]]`, there is no "every declared scope"
+default, since independence is only meaningful for a named set.
+
+```text
+ALD010 independent at src/billing/service.rs:1:29
+  error: Independent scopes billing and shipping must not depend on each other: billing → shipping
+```
+
+Each direction is reported separately: `billing → shipping` and
+`shipping → billing` are two violations, one per edge, each at the first
+non-suppressed site of that edge, with the edge's other sites attached as
+`= note:` lines (same as `[[acyclic]]`'s other-edge labels, but here they
+are other occurrences of the *same* edge).
+
+An `// arch-lint: allow(independent) reason="..."` comment on the line, or
+an `#[arch_lint::allow(independent, reason = "...")]` attribute on the `use`
+item itself or on an enclosing `mod`/`fn`/`impl`/`trait`, removes that one
+site before edges are computed — same mechanism, same reason requirement,
+as `[[acyclic]]` (unlike `[[acyclic]]`, the missing-reason warning does not
+depend on the site lying on a cycle: every in-scope edge is an offence).
+
 ### Real-World Example: Review Feedback to Rule
 
 **Before** — a reviewer has to say this every time:
@@ -353,6 +390,7 @@ Declarative rules defined in `arch-lint.toml` (see [Declarative Rules](#declarat
 | ALD007 | `[[naming]]` | Requires identifiers of one item kind to match a regex |
 | ALD008 | `[[require-return]]` | Requires functions to return a type matching a regex |
 | ALD009 | `[[acyclic]]` | Project-wide: forbids a cycle between scopes in the dependency graph |
+| ALD010 | `[[independent]]` | Project-wide: forbids any dependency between a set of scopes, in either direction |
 
 ### Rule Details
 
@@ -889,8 +927,8 @@ arch-lint provides multiple ways to suppress violations at different scopes.
 | Global | Configuration (`enabled = false`) | Project-wide exclusion |
 
 Both directives apply to the built-in rules (AL001-AL013) **and** to the
-declarative rules from `arch-lint.toml` (ALD001-ALD009); see
-[Declarative rules](#declarative-rules-ald001-ald009) below for the names a
+declarative rules from `arch-lint.toml` (ALD001-ALD010); see
+[Declarative rules](#declarative-rules-ald001-ald010) below for the names a
 declarative rule answers to.
 
 ### Line-level (Comment)
@@ -944,7 +982,7 @@ reason on an error rule suppresses the violation and reports a warning
 (`Allow directive for '<rule>' is missing required reason`) in its place. An
 attribute without a reason suppresses silently.
 
-### Declarative rules (ALD001-ALD009)
+### Declarative rules (ALD001-ALD010)
 
 The declarative rules honor the same two directives, with the same semantics.
 A declarative rule answers to three names, each in kebab-case or `snake_case`:
@@ -957,14 +995,16 @@ A declarative rule answers to three names, each in kebab-case or `snake_case`:
 
 `allow(all)` suppresses everything, as it does for the built-in rules.
 
-`[[acyclic]]` (ALD009) is the one project-wide exception: an `allow`
-directive — a comment on the line, an attribute on the `use` item, or an
-attribute on an enclosing `mod`/`fn`/`impl`/`trait` — removes that one site
-from the scope graph before cycles are computed, rather than suppressing a
+`[[acyclic]]` (ALD009) and `[[independent]]` (ALD010) are the two
+project-wide exceptions: an `allow` directive — a comment on the line, an
+attribute on the `use` item, or an attribute on an enclosing
+`mod`/`fn`/`impl`/`trait` — removes that one site from the scope graph
+before cycles (or offending edges) are computed, rather than suppressing a
 violation already found on that line (see
-[Cycles between scopes](#cycles-between-scopes)). Reporting an
-`allow(acyclic)` directive that no longer has a cycle to suppress as unused
-is not implemented.
+[Cycles between scopes](#cycles-between-scopes) and
+[Independent scopes](#independent-scopes)). Reporting an `allow(acyclic)` or
+`allow(independent)` directive that no longer has anything to suppress as
+unused is not implemented.
 
 ```rust
 // Comment on the violating line or the line above it

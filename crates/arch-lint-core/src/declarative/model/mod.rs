@@ -12,7 +12,8 @@
 //! - One entity per rule kind: [`RestrictUse`] (ALD001), [`RequireUse`]
 //!   (ALD002), [`ScopeDep`] (ALD003), [`Layering`] (ALD004), [`DenyAttr`]
 //!   (ALD005), [`RequireAttr`] (ALD006), [`Naming`] (ALD007),
-//!   [`RequireReturn`] (ALD008) and [`Acyclic`] (ALD009).
+//!   [`RequireReturn`] (ALD008), [`Acyclic`] (ALD009) and [`Independent`]
+//!   (ALD010).
 //! - [`DeclarativeConfig`] / [`DeclarativeConfigBuilder`] — the aggregate
 //!   root, which validates cross-references between rules and scopes.
 //!
@@ -22,6 +23,7 @@
 mod acyclic;
 mod attr;
 mod config;
+mod independent;
 mod item;
 mod layering;
 mod naming;
@@ -35,6 +37,7 @@ mod vocab;
 pub use acyclic::Acyclic;
 pub use attr::{DenyAttr, RequireAttr};
 pub use config::{DeclarativeConfig, DeclarativeConfigBuilder};
+pub use independent::Independent;
 pub use item::{ItemKind, VisibilityFilter};
 pub use layering::Layering;
 pub use naming::Naming;
@@ -47,6 +50,7 @@ pub use vocab::{AttrPattern, GlobPattern, RegexPattern, ScopeName, UsePattern};
 
 /// Errors in domain model construction.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum ModelError {
     /// Scope name is empty.
     #[error("scope name must not be empty")]
@@ -137,6 +141,20 @@ pub enum ModelError {
     /// A layering repeats the same scope.
     #[error("layering `order` lists scope `{name}` more than once")]
     DuplicateLayer {
+        /// The repeated scope name.
+        name: ScopeName,
+    },
+
+    /// An `[[independent]]` block has fewer than two scopes.
+    #[error("independent `scopes` needs at least 2 entries, got {count}")]
+    IndependentTooFewScopes {
+        /// How many scopes were given.
+        count: usize,
+    },
+
+    /// An `[[independent]]` block repeats the same scope.
+    #[error("independent `scopes` lists scope `{name}` more than once")]
+    DuplicateIndependentScope {
         /// The repeated scope name.
         name: ScopeName,
     },

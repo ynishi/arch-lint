@@ -6,8 +6,8 @@
 
 use super::DeclarativeConfig;
 use crate::declarative::model::{
-    Acyclic, DenyAttr, Layering, ModelError, Naming, RequireAttr, RequireReturn, RequireUse,
-    RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef,
+    Acyclic, DenyAttr, Independent, Layering, ModelError, Naming, RequireAttr, RequireReturn,
+    RequireUse, RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef,
 };
 use std::collections::HashMap;
 
@@ -26,6 +26,7 @@ pub struct DeclarativeConfigBuilder {
     namings: Vec<Naming>,
     require_returns: Vec<RequireReturn>,
     acyclics: Vec<Acyclic>,
+    independents: Vec<Independent>,
 }
 
 impl DeclarativeConfigBuilder {
@@ -96,6 +97,13 @@ impl DeclarativeConfigBuilder {
     #[must_use]
     pub fn acyclics(mut self, rules: Vec<Acyclic>) -> Self {
         self.acyclics = rules;
+        self
+    }
+
+    /// Sets the `[[independent]]` rules.
+    #[must_use]
+    pub fn independents(mut self, rules: Vec<Independent>) -> Self {
+        self.independents = rules;
         self
     }
 
@@ -187,6 +195,18 @@ impl DeclarativeConfigBuilder {
             }
         }
 
+        // Validate `[[independent]]` scope references
+        for rule in &self.independents {
+            for scope in rule.scopes() {
+                if !scope_map.contains_key(scope) {
+                    errors.push(ModelError::UnknownScope {
+                        context: format!("independent '{}' scopes", rule.display_name()),
+                        name: scope.clone(),
+                    });
+                }
+            }
+        }
+
         if errors.is_empty() {
             Ok(DeclarativeConfig {
                 scopes: scope_map,
@@ -199,6 +219,7 @@ impl DeclarativeConfigBuilder {
                 namings: self.namings,
                 require_returns: self.require_returns,
                 acyclics: self.acyclics,
+                independents: self.independents,
             })
         } else {
             Err(errors)
@@ -316,6 +337,60 @@ mod tests {
                 vec![GlobPattern::new("src/domain/**").unwrap()],
             )])
             .acyclics(vec![Acyclic::new(None, None, None, Severity::Error)])
+            .build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn independent_rejects_unknown_scope() {
+        use crate::declarative::model::Independent;
+
+        let result = DeclarativeConfig::builder()
+            .scopes(vec![Scope::new(
+                ScopeName::new("billing").unwrap(),
+                vec![GlobPattern::new("src/billing/**").unwrap()],
+            )])
+            .independents(vec![Independent::new(
+                None,
+                vec![
+                    ScopeName::new("billing").unwrap(),
+                    ScopeName::new("unknown").unwrap(),
+                ],
+                None,
+                Severity::Error,
+            )
+            .unwrap()])
+            .build();
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], ModelError::UnknownScope { .. }));
+    }
+
+    #[test]
+    fn independent_with_known_scopes_needs_no_further_validation() {
+        use crate::declarative::model::Independent;
+
+        let result = DeclarativeConfig::builder()
+            .scopes(vec![
+                Scope::new(
+                    ScopeName::new("billing").unwrap(),
+                    vec![GlobPattern::new("src/billing/**").unwrap()],
+                ),
+                Scope::new(
+                    ScopeName::new("shipping").unwrap(),
+                    vec![GlobPattern::new("src/shipping/**").unwrap()],
+                ),
+            ])
+            .independents(vec![Independent::new(
+                None,
+                vec![
+                    ScopeName::new("billing").unwrap(),
+                    ScopeName::new("shipping").unwrap(),
+                ],
+                None,
+                Severity::Error,
+            )
+            .unwrap()])
             .build();
         assert!(result.is_ok());
     }

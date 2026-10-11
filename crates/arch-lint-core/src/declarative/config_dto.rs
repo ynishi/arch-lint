@@ -9,8 +9,8 @@ use serde::Deserialize;
 ///
 /// Extends the base `Config` with `[[scopes]]`, `[[restrict-use]]`,
 /// `[[require-use]]`, `[[deny-scope-dep]]`, `[[layering]]`, `[[deny-attr]]`,
-/// `[[require-attr]]`, `[[naming]]`, `[[require-return]]`, and `[[acyclic]]`
-/// sections.
+/// `[[require-attr]]`, `[[naming]]`, `[[require-return]]`, `[[acyclic]]` and
+/// `[[independent]]` sections.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 pub struct DeclarativeConfigDto {
     /// Named scope definitions.
@@ -52,6 +52,10 @@ pub struct DeclarativeConfigDto {
     /// Project-wide cycle checks over the scope graph.
     #[serde(rename = "acyclic", default)]
     pub acyclic: Vec<AcyclicDto>,
+
+    /// Project-wide independence checks over the scope graph.
+    #[serde(rename = "independent", default)]
+    pub independent: Vec<IndependentDto>,
 }
 
 /// TOML representation of a named scope.
@@ -308,6 +312,26 @@ pub struct AcyclicDto {
     pub severity: String,
 }
 
+/// TOML representation of a project-wide independence check (`ALD010`).
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IndependentDto {
+    /// Optional rule name, used by `allow` directives when several
+    /// `[[independent]]` blocks are declared (default rule name:
+    /// "independent").
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Scopes that must not depend on each other, in either direction (at
+    /// least two).
+    pub scopes: Vec<String>,
+    /// Document reference.
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Severity (default: "error").
+    #[serde(default = "default_severity_str")]
+    pub severity: String,
+}
+
 fn default_severity_str() -> String {
     "error".to_string()
 }
@@ -376,6 +400,46 @@ message = "No DB."
         assert!(dto.restrict_use.is_empty());
         assert!(dto.deny_scope_dep.is_empty());
         assert!(dto.acyclic.is_empty());
+        assert!(dto.independent.is_empty());
+    }
+
+    #[test]
+    fn deserialize_independent_config() {
+        let toml_str = r#"
+[[independent]]
+scopes = ["billing", "shipping", "catalog"]
+severity = "error"
+
+[[independent]]
+name = "no-shared-deps"
+scopes = ["a", "b"]
+"#;
+        let dto: DeclarativeConfigDto = toml::from_str(toml_str).unwrap();
+        assert_eq!(dto.independent.len(), 2);
+        assert_eq!(
+            dto.independent[0].scopes,
+            vec![
+                "billing".to_string(),
+                "shipping".to_string(),
+                "catalog".to_string()
+            ]
+        );
+        assert_eq!(dto.independent[0].severity, "error");
+        assert_eq!(dto.independent[0].name, None);
+        assert_eq!(dto.independent[1].name, Some("no-shared-deps".to_string()));
+        assert_eq!(dto.independent[1].severity, "error", "default severity");
+    }
+
+    #[test]
+    fn independent_rejects_unknown_key() {
+        let doc = "[[independent]]\nscoops = [\"a\", \"b\"]\n";
+        assert!(toml::from_str::<DeclarativeConfigDto>(doc).is_err());
+    }
+
+    #[test]
+    fn independent_requires_scopes_field() {
+        let doc = "[[independent]]\nname = \"x\"\n";
+        assert!(toml::from_str::<DeclarativeConfigDto>(doc).is_err());
     }
 
     #[test]
