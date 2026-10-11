@@ -136,7 +136,7 @@ The goal: the AI learns from the same rule set that humans follow, and neither n
 
 - [docs/declarative-rules.md](docs/declarative-rules.md) — scopes, layering, naming, attributes, cycles, independence, and allow-lists, all declared in `arch-lint.toml`.
 - [docs/rules.md](docs/rules.md) — the built-in rule reference (AL001-AL013), their options, and presets.
-- [docs/configuration.md](docs/configuration.md) — `arch-lint.toml` structure, `[analyzer]` options, and the generated JSON Schema.
+- [docs/configuration.md](docs/configuration.md) — `arch-lint.toml` structure, `[analyzer]` options, and the JSON Schema committed at `schema/arch-lint.schema.json` (served for SchemaStore and editor completion).
 - [docs/suppression.md](docs/suppression.md) — line, block, file, and project-wide suppression, and when a reason is mandatory.
 - [docs/cli.md](docs/cli.md) — CLI subcommands, exit codes, baseline adoption, and CI integration (GitHub Actions, SARIF, pre-commit).
 - [docs/sdk.md](docs/sdk.md) — the `check!()` macro options, writing a custom `Rule` in Rust, and the `Session` / `TsSession` programmatic API.
