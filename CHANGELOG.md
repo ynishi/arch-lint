@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Prebuilt release binaries**: `.github/workflows/release.yml`, triggered
+  by an `arch-lint-v*` tag push, builds `arch-lint` and `cargo-arch-lint` for
+  six targets (`x86_64`/`aarch64-unknown-linux-gnu`,
+  `x86_64-unknown-linux-musl`, `x86_64`/`aarch64-apple-darwin`,
+  `x86_64-pc-windows-msvc`) with `taiki-e/upload-rust-binary-action` and
+  attaches one archive per target, each with its own `.sha256` file (twelve
+  assets), to a **draft** GitHub Release — a maintainer undrafts it by hand
+  after checking the assets. It never runs `cargo publish`; `make publish`
+  stays the crates.io path, and the tag is still pushed by a person.
+  `workflow_dispatch` runs the same build as a dry run — no release is
+  created or touched — and uploads the archives as workflow artifacts
+  instead. `arch-lint-cli/Cargo.toml` gained a `[package.metadata.binstall]`
+  table so `cargo binstall arch-lint-cli` resolves to those archives instead
+  of compiling, starting with the next release onward (the first published
+  after this change) — binstall reads the metadata of the version being
+  installed, so earlier releases still compile from source. The README / CI
+  docs now show
+  `taiki-e/install-action@v2` as the recommended install path (issue #14).
+
 ## [0.8.0] - 2026-10-11
 
 ### Added
