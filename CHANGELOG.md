@@ -83,14 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a different file: built-in rule messages are otherwise constant per pattern;
   `ALD003`/`ALD004` name the denied scope edge and the specific `use` path;
   `ALD010`/`ALD011` name the scope edge only. **`AL004`
-  (`handler-complexity`) is the one exception shipped today** — its message
-  embeds the measured size (`"... has 12 arms (max: 5)"`), so adding or
-  removing an arm/line/variant in an already-baselined handler changes the
-  fingerprint even though the handler's shape didn't otherwise change (the
-  old entry goes stale, the new size is reported as new; re-run
-  `--update-baseline` to pick it up — pinned by a CLI test). Moving that
-  measurement out of `AL004`'s message is tracked separately, not done
-  here. **Severity is not part of the key**: a baselined warning stays
+  (`handler-complexity`) was the one exception at the time this baseline
+  shipped** — its message embedded the measured size (`"... has 12 arms
+  (max: 5)"`), so adding or removing an arm/line/variant in an
+  already-baselined handler changed the fingerprint even though the
+  handler's shape didn't otherwise change. That exception is now gone (see
+  `### Changed` below): the measurement moved into the violation's
+  suggestion, so `AL004`'s fingerprint is stable like every other built-in
+  rule's. **Severity is not part of the key**: a baselined warning stays
   suppressed after a later `[rules.<name>] severity` override changes it.
   **`ALD009` (`acyclic`)** attributes its one violation per cycle to the
   *first* edge's file in cycle-path order; a new reference that changes
@@ -146,6 +146,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`AL004` (`handler-complexity`) message no longer embeds the measured
+  size** (issue #21): `` Handler `handle` has 61 lines (max: 50) `` /
+  `` Match expression in `route` has 12 arms (max: 5) `` /
+  `` Enum `Action` has 31 variants (max: 20) `` become
+  `` Handler `handle` exceeds the line limit `` /
+  `` Match expression in `route` exceeds the arm limit `` (or `Match
+  expression exceeds the arm limit` when the match is not directly inside a
+  free function whose name starts with `handle_`, `process_`, `on_` or
+  `update` — the rule's own handler-name patterns; a match inside an `impl`
+  method, a differently-named free function or a closure is unnamed the
+  same way) / `` Enum `Action` exceeds the variant limit `` — user-visible
+  text change for anyone grepping or snapshotting `AL004` output. Unnamed
+  matches in one file now share a single baseline entry (`count = N`), the
+  same as any rule with a constant message. The measured count and the
+  configured limit move into the violation's `Suggestion` instead (e.g.
+  `"61 lines, limit 50 — Split into smaller functions or extract match arms
+  to separate handlers"`), shown on the `= help:` line in `--format text`
+  and in `suggestion.message` in `--format json`. This also fixes `AL004`'s
+  baseline fingerprint churn (see the `### Added` baseline entry above): a
+  baselined handler whose measured size changes no longer goes stale.
 - **`arch_lint::report::Format` is now `#[non_exhaustive]`** (added
   alongside the new `Format::Sarif` variant above): a caller outside this
   crate matching on `Format` exhaustively must add a wildcard arm. No

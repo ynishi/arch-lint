@@ -166,14 +166,12 @@ impl<'ast> Visit<'ast> for ComplexityVisitor<'_> {
                         NAME,
                         self.rule.severity,
                         location,
-                        format!(
-                            "Handler `{}` has {} lines (max: {})",
-                            fn_name, line_count, self.rule.config.max_handler_lines
-                        ),
+                        format!("Handler `{fn_name}` exceeds the line limit"),
                     )
-                    .with_suggestion(Suggestion::new(
-                        "Split into smaller functions or extract match arms to separate handlers",
-                    )),
+                    .with_suggestion(Suggestion::new(format!(
+                        "{} lines, limit {} — Split into smaller functions or extract match arms to separate handlers",
+                        line_count, self.rule.config.max_handler_lines
+                    ))),
                 );
             }
         }
@@ -203,14 +201,12 @@ impl<'ast> Visit<'ast> for ComplexityVisitor<'_> {
                     NAME,
                     self.rule.severity,
                     location,
-                    format!(
-                        "Match expression{} has {} arms (max: {})",
-                        context, arm_count, self.rule.config.max_match_arms
-                    ),
+                    format!("Match expression{context} exceeds the arm limit"),
                 )
-                .with_suggestion(Suggestion::new(
-                    "Group related arms or split into separate match expressions",
-                )),
+                .with_suggestion(Suggestion::new(format!(
+                    "{} arms, limit {} — Group related arms or split into separate match expressions",
+                    arm_count, self.rule.config.max_match_arms
+                ))),
             );
         }
 
@@ -236,14 +232,12 @@ impl<'ast> Visit<'ast> for ComplexityVisitor<'_> {
                         NAME,
                         self.rule.severity,
                         location,
-                        format!(
-                            "Enum `{}` has {} variants (max: {})",
-                            enum_name, variant_count, self.rule.config.max_enum_variants
-                        ),
+                        format!("Enum `{enum_name}` exceeds the variant limit"),
                     )
-                    .with_suggestion(Suggestion::new(
-                        "Split into nested enums (e.g., Action::User(UserAction))",
-                    )),
+                    .with_suggestion(Suggestion::new(format!(
+                        "{} variants, limit {} — Split into nested enums (e.g., Action::User(UserAction))",
+                        variant_count, self.rule.config.max_enum_variants
+                    ))),
                 );
             }
         }
@@ -352,7 +346,13 @@ fn handle_action(action: Action) {
 "#,
         );
         assert_eq!(violations.len(), 1);
-        assert!(violations[0].message.contains("5 arms"));
+        assert_eq!(
+            violations[0].message,
+            "Match expression in `handle_action` exceeds the arm limit"
+        );
+        let suggestion = violations[0].suggestion.as_ref().expect("suggestion");
+        assert!(suggestion.message.contains("5 arms"));
+        assert!(suggestion.message.contains("limit 3"));
     }
 
     #[test]
@@ -369,7 +369,55 @@ enum UserAction {
 "#,
         );
         assert_eq!(violations.len(), 1);
-        assert!(violations[0].message.contains("5 variants"));
+        assert_eq!(
+            violations[0].message,
+            "Enum `UserAction` exceeds the variant limit"
+        );
+        let suggestion = violations[0].suggestion.as_ref().expect("suggestion");
+        assert!(suggestion.message.contains("5 variants"));
+        assert!(suggestion.message.contains("limit 3"));
+    }
+
+    #[test]
+    fn test_detects_large_handler() {
+        let violations = check_rule(
+            &HandlerComplexity::new().max_handler_lines(2),
+            r#"
+fn handle_action(action: Action) {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+}
+"#,
+        );
+        assert_eq!(violations.len(), 1);
+        assert_eq!(
+            violations[0].message,
+            "Handler `handle_action` exceeds the line limit"
+        );
+        let suggestion = violations[0].suggestion.as_ref().expect("suggestion");
+        assert!(suggestion.message.contains("3 lines"));
+        assert!(suggestion.message.contains("limit 2"));
+    }
+
+    #[test]
+    fn test_match_without_enclosing_fn_omits_name() {
+        let violations = check_code(
+            r#"
+static RESULT: &str = match 1 {
+    0 => "a",
+    1 => "b",
+    2 => "c",
+    3 => "d",
+    _ => "e",
+};
+"#,
+        );
+        assert_eq!(violations.len(), 1);
+        assert_eq!(
+            violations[0].message,
+            "Match expression exceeds the arm limit"
+        );
     }
 
     #[test]

@@ -26,16 +26,20 @@
 //! infra"`). None of these change on an edit that does not touch the
 //! reference or the scopes involved.
 //!
-//! **`AL004` (`handler-complexity`) is the exception today**: its message
-//! embeds the measured size (`"Match expression has 12 arms (max: 5)"`), so
-//! adding or removing an arm, line or variant in an already-baselined
-//! handler changes the fingerprint — the old entry goes stale and the
-//! violation is reported as new, even though nothing about the handler's
-//! *shape* changed. Re-running `--update-baseline` picks up the new count.
-//! Moving the size out of `AL004`'s message is tracked separately, not done
-//! here; `fingerprint` does not normalize digits to paper over it, so this
-//! baseline module stays a straightforward reflection of whatever the rule
-//! chose to put in `message`.
+//! **`AL004` (`handler-complexity`) used to be the exception**: its message
+//! embedded the measured size (`"Match expression has 12 arms (max: 5)"`),
+//! so adding or removing an arm, line or variant in an already-baselined
+//! handler changed the fingerprint — the old entry went stale and the
+//! violation was reported as new, even though nothing about the handler's
+//! *shape* changed. The measurement now lives in the violation's
+//! [`Suggestion`](arch_lint_core::Suggestion) instead (e.g. `"61 lines,
+//! limit 50 — ..."`), and the message names only the item (e.g. ``Handler
+//! `handle` exceeds the line limit``); `AL004` is no longer an exception —
+//! every built-in rule's fingerprint is now stable across an edit that only
+//! changes a measured count. `fingerprint` does not normalize digits to
+//! paper over a rule that still put one in `message`; this baseline module
+//! stays a straightforward reflection of whatever the rule chose to put
+//! there.
 //!
 //! **`ALD009` (`acyclic`)** reports one violation per cycle, attributed to
 //! the *first* edge's call site in cycle-path order (not every edge — the
