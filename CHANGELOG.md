@@ -133,9 +133,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `declarative::create_project_rules_shared` /
   `declarative::create_project_rules` alongside `AcyclicRule` and
   `IndependentRule`, honors the same `// arch-lint: allow(allow-dep)
-  reason="..."` comment / `#[arch_lint::allow(allow_dep, reason = "...")]`
-  attribute directives (attributes take the `snake_case` spelling; comments
-  accept either) with the same reason requirement on error-severity rules
+  reason="..."` comment / `#[arch_lint::allow(allow-dep, reason = "...")]`
+  attribute directives with the same reason requirement on error-severity rules
   (like `[[independent]]`, the missing-reason warning does not depend on
   the site lying on a cycle), and reuses the per-site suppression
   classification in `declarative::rules::graph_suppress`. `arch-lint
@@ -244,6 +243,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every rule that honours comment directives (built-in, declarative and
   the scope-graph rules), which all go through the one shared lookup
   (`utils::allowance::directives_for_line`)
+- **`#[arch_lint::allow(...)]` now recognizes a kebab-case rule name.**
+  `parse_allow_attr_tokens` rendered the attribute's token stream with
+  `to_string()` before matching against it, so `deny-scope-dep` — five
+  tokens, `deny`, `-`, `scope`, `-`, `dep` — printed as `deny - scope -
+  dep` and never matched anything; only the `snake_case` spelling
+  (`deny_scope_dep`) or a rule code (`ALD003`) worked in attribute form,
+  while the comment form (`// arch-lint: allow(deny-scope-dep)`) already
+  accepted both, as the README promised for every form. The parser now
+  walks `syn::MetaList::tokens` structurally instead: each
+  comma-separated argument is either `reason = "<literal>"` (the literal
+  read through `syn::Lit`, so a raw string `r"..."` works too) or a rule
+  name built by concatenating its `Ident`/`Punct('-')`/`Punct(':')`
+  tokens in order, plus a digit-only `Literal` segment (so a scope name
+  like `core-2` — scope names may contain `[a-z0-9-]` — comes through,
+  e.g. `allow-dep:core-2`) — the latter also makes the `allow-dep:<scope>`
+  display name (`[[allow-dep]]`, ALD011) work in attribute form for the
+  first time. At most one `:` is accepted, with a name on each side (so
+  `foo::bar` is dropped, not read as a name). An argument that is neither
+  shape (stray punctuation, a group) is dropped rather than rejecting the
+  whole attribute. Rule-name
+  normalization (`-` vs. `_`) is unchanged, at the existing
+  comparison/storage sites (`check_arch_lint_allow`,
+  `EdgeSite::with_allow_directive`), so this only fixes what the parser
+  hands them
 
 ## [0.6.0] - 2026-09-11
 

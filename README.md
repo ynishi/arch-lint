@@ -359,10 +359,9 @@ ALD011 allow-dep:domain at src/domain/b.rs:1:23
 Each offending edge is reported at its first non-suppressed site, with the
 edge's other non-suppressed sites attached as `= note:` lines, the same as
 `[[independent]]`. An `// arch-lint: allow(allow-dep) reason="..."` comment
-on the line, or an `#[arch_lint::allow(allow_dep, reason = "...")]`
+on the line, or an `#[arch_lint::allow(allow-dep, reason = "...")]`
 attribute on the `use` item itself or on an enclosing
-`mod`/`fn`/`impl`/`trait` (attributes take the `snake_case` spelling;
-comments accept either), removes that one site before edges are computed
+`mod`/`fn`/`impl`/`trait`, removes that one site before edges are computed
 — same mechanism, same reason requirement, as `[[independent]]`: every
 in-scope edge is an offence, so the missing-reason warning does not depend
 on the site lying on a cycle.
@@ -1012,24 +1011,37 @@ mod startup {
 
 ### Mandatory Reasoning
 
-For `Severity::Error` rules (AL001, AL002, AL003, AL005), the `reason` parameter is **required**. Omitting it will generate a `Severity::Warning` violation:
+For `Severity::Error` rules (AL001, AL002, AL003, AL005), the `reason`
+parameter is **required on the comment path**: a comment directive without a
+`reason` on an error rule suppresses the violation and generates a
+`Severity::Warning` violation (`Allow directive for '<rule>' is missing
+required reason`) in its place:
 
 ```rust
-// BAD — reason omitted → generates a Warning violation
-#[arch_lint::allow(no_unwrap_expect)]
-fn bad() { ... }
+// BAD — reason omitted on the comment path → generates a Warning violation
+// arch-lint: allow(no-unwrap-expect)
+let value = some_option.unwrap();
 
 // GOOD — reason provided
-#[arch_lint::allow(no_unwrap_expect, reason = "Config validated at startup")]
-fn good() { ... }
+// arch-lint: allow(no-unwrap-expect) reason="Config validated at startup"
+let value = some_option.unwrap();
 ```
 
 This ensures that critical suppressions are always documented and justified.
 
-The reason is required on the **comment** path: a comment directive without a
-reason on an error rule suppresses the violation and reports a warning
-(`Allow directive for '<rule>' is missing required reason`) in its place. An
-attribute without a reason suppresses silently.
+An `#[arch_lint::allow(...)]` **attribute** suppresses silently either way —
+the missing-reason warning above is specific to the comment path, not the
+attribute one:
+
+```rust
+// No warning: an attribute never requires a reason, even on an error rule.
+#[arch_lint::allow(no_unwrap_expect)]
+fn parse_validated_config(input: &str) -> Config {
+    let value = input.parse().unwrap();
+    let count = input.len().try_into().unwrap();
+    Config { value, count }
+}
+```
 
 ### Declarative rules (ALD001-ALD011)
 
