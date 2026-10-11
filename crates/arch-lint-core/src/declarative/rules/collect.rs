@@ -598,6 +598,28 @@ mod tests {
         assert!(sites[0].allow_directive("acyclic").is_some());
     }
 
+    /// Acceptance 4 (kebab-attribute-allow): a kebab-case
+    /// `#[arch_lint::allow(...)]` attribute on an enclosing `fn` is
+    /// recorded on the inline-path site it covers, tagged
+    /// `DirectiveSource::Scope` — the same source an enclosing `mod`'s
+    /// attribute gets (see `mod_level_attribute_suppresses_a_use_inside_the_inline_mod`,
+    /// below). Before the fix, `directives_from_attrs` (via
+    /// `parse_arch_lint_allow_attr`) never produced a rule name matching
+    /// `no-cycles` in attribute form at all, so nothing was ever recorded
+    /// for it here.
+    #[test]
+    fn fn_level_kebab_case_attribute_is_recorded_as_a_scope_source() {
+        let code =
+            "#[arch_lint::allow(no-cycles, reason = \"x\")]\npub fn f() { crate::infra::db::connect(); }\n";
+        let graph = collect("src/domain/service.rs", code);
+
+        let sites = graph.sites(&name("domain"), &name("infra"));
+        assert_eq!(sites.len(), 1);
+        let (source, directive) = sites[0].allow_directive("no-cycles").expect("recorded");
+        assert_eq!(source, DirectiveSource::Scope);
+        assert_eq!(directive.reason.as_deref(), Some("x"));
+    }
+
     #[test]
     fn mod_level_attribute_suppresses_a_use_inside_the_inline_mod() {
         let code = "#[arch_lint::allow(acyclic, reason = \"x\")]\nmod wiring {\n    use crate::infra::db::Pool;\n}\n";

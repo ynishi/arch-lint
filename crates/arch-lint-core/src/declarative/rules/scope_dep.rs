@@ -1025,6 +1025,29 @@ mod tests {
         assert!(check_domain(code).is_empty());
     }
 
+    /// Acceptance 1/2 (kebab-attribute-allow): `allow(deny-scope-dep)` by
+    /// kind name, in attribute form, suppresses the violation — the
+    /// `snake_case` spelling (`deny_scope_dep`, below) and the code
+    /// (`ALD003`, below) are the regression check that the fix did not
+    /// disturb what already worked.
+    #[test]
+    fn suppress_attribute_by_kind_user_and_code_names() {
+        for name in [
+            "deny-scope-dep",
+            "deny_scope_dep",
+            "no-domain-to-infra",
+            "ALD003",
+        ] {
+            let code = format!(
+                "#[arch_lint::allow({name}, reason = \"bootstrap\")]\nuse crate::infra::db::Pool;"
+            );
+            assert!(
+                check_domain(&code).is_empty(),
+                "allow({name}) as an attribute should suppress the violation"
+            );
+        }
+    }
+
     #[test]
     fn suppress_attribute_on_enclosing_fn_for_inline_path() {
         let code = "#[arch_lint::allow(deny_scope_dep, reason = \"bootstrap\")]\nfn wire() {\n    crate::infra::db::connect();\n}";

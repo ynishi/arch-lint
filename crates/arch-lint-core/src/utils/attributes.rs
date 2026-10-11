@@ -1,6 +1,7 @@
 //! Attribute parsing utilities for rule implementations.
 
 use super::allowance::{AllowCheck, AllowDirective};
+use proc_macro2::{TokenStream, TokenTree};
 use std::collections::HashSet;
 use syn::{Attribute, Meta};
 
@@ -160,56 +161,56 @@ pub(crate) fn parse_arch_lint_allow_attr(attr: &Attribute) -> Option<AllowDirect
         return None;
     };
 
-    // Convert tokens to string for parsing
-    let tokens_str = list.tokens.to_string();
-    parse_allow_attr_tokens(&tokens_str)
+    parse_allow_attr_tokens(list.tokens.clone())
 }
 
-/// Parses the tokens inside `allow(...)`.
+/// Parses the token stream inside `allow(...)`.
 ///
-/// Expected formats:
-/// - `rule1, rule2`
-/// - `rule1, reason = "explanation"`
-/// - `rule1, rule2, reason = "explanation"`
-fn parse_allow_attr_tokens(tokens: &str) -> Option<AllowDirective> {
+/// Expected arguments, comma-separated:
+/// - a rule name: one or more `Ident`/`Punct('-')`/`Punct(':')`/digit-leading
+///   `Literal` tokens concatenated in order (see [`parse_rule_name_arg`]),
+///   e.g. `deny_scope_dep`, `deny-scope-dep`, `ALD003`, `allow-dep:domain`
+///   or `allow-dep:core-2`
+/// - `reason = "explanation"`
+///
+/// Walks the tokens structurally (`list.tokens.into_iter()`) rather than
+/// rendering them with `to_string()` first: a kebab-case name like
+/// `deny-scope-dep` is five tokens (`deny`, `-`, `scope`, `-`, `dep`), and
+/// `to_string()` renders it `deny - scope - dep`, which splitting on
+/// whitespace turns into five separate "rule names" that never match
+/// anything. Rule-name normalization (kebab-case vs. `snake_case`) happens
+/// at the comparison/storage sites ([`check_arch_lint_allow`] and
+/// `EdgeSite::with_allow_directive`), not here: this function hands back
+/// whatever spelling the source used.
+///
+/// A bare `reason` with no `=` (so [`parse_reason_arg`] does not recognize
+/// it as `reason = "..."`) is excluded even though it would otherwise parse
+/// as a one-`Ident` rule name — `reason` is never a rule name, matching the
+/// string-based parser this one replaced. Any other argument that is not a
+/// recognized rule name and not a `reason = "..."` pair (stray punctuation,
+/// a group, a quoted or non-alphanumeric literal on its own, `foo::bar`'s
+/// double colon) is dropped silently rather than rejecting the whole
+/// attribute.
+fn parse_allow_attr_tokens(tokens: TokenStream) -> Option<AllowDirective> {
     let mut rules = HashSet::new();
     let mut reason = None;
 
-    // Split by comma, but be careful with reason="..." containing commas
-    let mut remaining = tokens.trim();
-
-    while !remaining.is_empty() {
-        remaining = remaining.trim_start_matches(',').trim();
-        if remaining.is_empty() {
-            break;
-        }
-
-        // Check for reason = "..."
-        if remaining.starts_with("reason") {
-            if let Some(rest) = remaining.strip_prefix("reason") {
-                let rest = rest.trim();
-                if let Some(rest) = rest.strip_prefix('=') {
-                    let rest = rest.trim();
-                    if let Some(rest) = rest.strip_prefix('"') {
-                        if let Some(end) = rest.find('"') {
-                            reason = Some(rest[..end].to_string());
-                            remaining = rest[end + 1..].trim();
-                            continue;
-                        }
+    for arg in split_on_commas(tokens) {
+        match parse_reason_arg(&arg) {
+            ReasonArg::Reason(value) => reason = Some(value),
+            ReasonArg::Unsupported => {}
+            ReasonArg::NotAReason => {
+                if let Some(name) = parse_rule_name_arg(&arg) {
+                    // A bare `reason` (no `=`) is not a rule name.
+                    if name != "reason" {
+                        rules.insert(name);
                     }
                 }
+                // Anything else (stray punctuation, a group, a
+                // non-alphanumeric literal) names neither a rule nor
+                // `reason = "..."`; drop it.
             }
         }
-
-        // Otherwise, it's a rule name
-        let end = remaining
-            .find(|c: char| c == ',' || c.is_whitespace())
-            .unwrap_or(remaining.len());
-        let rule = remaining[..end].trim();
-        if !rule.is_empty() && rule != "reason" {
-            rules.insert(rule.to_string());
-        }
-        remaining = &remaining[end..];
     }
 
     if rules.is_empty() {
@@ -217,6 +218,113 @@ fn parse_allow_attr_tokens(tokens: &str) -> Option<AllowDirective> {
     }
 
     Some(AllowDirective { rules, reason })
+}
+
+/// Splits a token stream into comma-separated argument groups, dropping the
+/// commas themselves. A trailing comma produces no empty trailing group.
+fn split_on_commas(tokens: TokenStream) -> Vec<Vec<TokenTree>> {
+    let mut args = Vec::new();
+    let mut current = Vec::new();
+
+    for tt in tokens {
+        if matches!(&tt, TokenTree::Punct(p) if p.as_char() == ',') {
+            if !current.is_empty() {
+                args.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.push(tt);
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+
+    args
+}
+
+/// Outcome of trying to recognize one argument as `reason = "<literal>"`.
+enum ReasonArg {
+    /// Not this shape at all; the caller tries it as a rule name instead.
+    NotAReason,
+    /// This shape, but the literal is not a string `syn` can read the
+    /// value of; the caller drops the argument rather than mistaking it
+    /// for a rule name.
+    Unsupported,
+    /// This shape, with the reason's string value.
+    Reason(String),
+}
+
+/// Recognizes `reason = "<literal>"`: exactly `Ident("reason")`,
+/// `Punct('=')`, then one literal token.
+fn parse_reason_arg(arg: &[TokenTree]) -> ReasonArg {
+    let [TokenTree::Ident(ident), TokenTree::Punct(eq), TokenTree::Literal(lit)] = arg else {
+        return ReasonArg::NotAReason;
+    };
+    if ident != "reason" || eq.as_char() != '=' {
+        return ReasonArg::NotAReason;
+    }
+
+    let literal_tokens = TokenStream::from(TokenTree::Literal(lit.clone()));
+    match syn::parse2::<syn::Lit>(literal_tokens) {
+        Ok(syn::Lit::Str(s)) => ReasonArg::Reason(s.value()),
+        _ => ReasonArg::Unsupported,
+    }
+}
+
+/// Builds a rule name by concatenating `arg`'s tokens in order: `Ident`s
+/// verbatim, `Punct('-')` and `Punct(':')` as themselves (for kebab-case
+/// names and `allow-dep:<scope>` display names), and a `Literal` whose
+/// `to_string()` is plain ASCII alphanumerics/`_` (so a segment that starts
+/// with a digit, like the `2` in `domain-infra-2` or `allow-dep:core-2`,
+/// comes through as part of the name — a scope name may contain `[a-z0-9-]`,
+/// so `domain-2` is a real scope name a rustc lexer tokenizes as `Ident
+/// "domain"`, `Punct('-')`, `Literal("2")`, not three `Ident`s). A quoted
+/// literal (`"x"`) or one containing `.` (`1.5`) fails the alphanumeric
+/// check and disqualifies the argument, same as any other punctuation, a
+/// group, or a literal that isn't this shape.
+///
+/// `:` is restricted to at most one occurrence, with a name token on each
+/// side (checked after the loop, on the built string): `foo::bar` is
+/// dropped like any other malformed argument, rather than silently
+/// building the string `foo::bar` and asking the comparison sites to make
+/// sense of a double colon that `allow-dep:<scope>` display names never
+/// produce.
+///
+/// A name that starts with a digit cannot always be written at all: `2e`
+/// (for a hypothetical scope literally named `2e`) is not expressible as
+/// `#[arch_lint::allow(...-2e)]` because rustc's own lexer reads `2e` as an
+/// incomplete floating-point exponent and rejects it before this function
+/// — or even `arch_lint_macros::allow` — ever sees the tokens. That is a
+/// lexer limitation, not something fixable here.
+fn parse_rule_name_arg(arg: &[TokenTree]) -> Option<String> {
+    if arg.is_empty() {
+        return None;
+    }
+
+    let mut name = String::new();
+    for tt in arg {
+        match tt {
+            TokenTree::Ident(ident) => name.push_str(&ident.to_string()),
+            TokenTree::Punct(p) if p.as_char() == '-' || p.as_char() == ':' => {
+                name.push(p.as_char());
+            }
+            TokenTree::Literal(lit) => {
+                let text = lit.to_string();
+                if text.is_empty() || !text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    return None;
+                }
+                name.push_str(&text);
+            }
+            _ => return None,
+        }
+    }
+
+    let colons = name.matches(':').count();
+    if colons > 1 || (colons == 1 && (name.starts_with(':') || name.ends_with(':'))) {
+        return None;
+    }
+
+    Some(name)
 }
 
 #[cfg(test)]
@@ -299,18 +407,191 @@ mod tests {
 
     #[test]
     fn test_parse_allow_attr_tokens() {
-        let directive = parse_allow_attr_tokens("no_unwrap_expect").unwrap();
+        let directive = parse_allow_attr_tokens(tokens("no_unwrap_expect")).unwrap();
         assert!(directive.rules.contains("no_unwrap_expect"));
         assert!(directive.reason.is_none());
 
         let directive =
-            parse_allow_attr_tokens("no_unwrap_expect, reason = \"test reason\"").unwrap();
+            parse_allow_attr_tokens(tokens("no_unwrap_expect, reason = \"test reason\"")).unwrap();
         assert!(directive.rules.contains("no_unwrap_expect"));
         assert_eq!(directive.reason, Some("test reason".to_string()));
 
-        let directive = parse_allow_attr_tokens("rule1, rule2, reason = \"multi\"").unwrap();
+        let directive =
+            parse_allow_attr_tokens(tokens("rule1, rule2, reason = \"multi\"")).unwrap();
         assert!(directive.rules.contains("rule1"));
         assert!(directive.rules.contains("rule2"));
         assert_eq!(directive.reason, Some("multi".to_string()));
+    }
+
+    /// Parses `s` the same way rustc would tokenize the inside of
+    /// `#[arch_lint::allow(...)]`, for feeding directly to
+    /// [`parse_allow_attr_tokens`] in isolation (no `Attribute` needed).
+    fn tokens(s: &str) -> TokenStream {
+        s.parse().expect("valid token stream")
+    }
+
+    // ── `parse_allow_attr_tokens` / token walker (kebab-attribute-allow) ──
+
+    #[test]
+    fn token_walker_accepts_a_kebab_case_name() {
+        let directive = parse_allow_attr_tokens(tokens("deny-scope-dep")).unwrap();
+        assert!(directive.rules.contains("deny-scope-dep"));
+        assert!(directive.reason.is_none());
+    }
+
+    #[test]
+    fn token_walker_accepts_a_snake_case_name() {
+        let directive = parse_allow_attr_tokens(tokens("deny_scope_dep")).unwrap();
+        assert!(directive.rules.contains("deny_scope_dep"));
+    }
+
+    #[test]
+    fn token_walker_accepts_a_rule_code() {
+        let directive = parse_allow_attr_tokens(tokens("ALD003")).unwrap();
+        assert!(directive.rules.contains("ALD003"));
+    }
+
+    #[test]
+    fn token_walker_accepts_two_names_and_a_reason() {
+        let directive =
+            parse_allow_attr_tokens(tokens(r#"deny-scope-dep, ALD009, reason = "x""#)).unwrap();
+        assert!(directive.rules.contains("deny-scope-dep"));
+        assert!(directive.rules.contains("ALD009"));
+        assert_eq!(directive.reason, Some("x".to_string()));
+    }
+
+    #[test]
+    fn token_walker_with_only_a_reason_and_no_names_is_none() {
+        assert!(parse_allow_attr_tokens(tokens(r#"reason = "x""#)).is_none());
+    }
+
+    #[test]
+    fn token_walker_accepts_allow_dep_display_name_with_colon() {
+        let directive = parse_allow_attr_tokens(tokens("allow-dep:domain")).unwrap();
+        assert!(directive.rules.contains("allow-dep:domain"));
+    }
+
+    // ── review follow-up: digit-leading segments (`domain-infra-2`) ──
+
+    #[test]
+    fn token_walker_accepts_a_digit_leading_trailing_segment() {
+        // `rule-2` tokenizes as `Ident("rule")`, `Punct('-')`,
+        // `Literal("2")` — the literal is not an `Ident`, but a scope name
+        // may contain `[a-z0-9-]`, so a segment starting with a digit is a
+        // real name that must come through.
+        let directive = parse_allow_attr_tokens(tokens("rule-2")).unwrap();
+        assert!(directive.rules.contains("rule-2"), "{directive:#?}");
+    }
+
+    #[test]
+    fn token_walker_accepts_allow_dep_display_name_with_digit_leading_scope() {
+        let directive = parse_allow_attr_tokens(tokens("allow-dep:core-2")).unwrap();
+        assert!(
+            directive.rules.contains("allow-dep:core-2"),
+            "{directive:#?}"
+        );
+    }
+
+    #[test]
+    fn token_walker_rejects_a_float_literal_segment() {
+        // `1.5` is a single `Literal` token, but its text contains `.`,
+        // which fails the alphanumeric/`_` check — unlike `2` or `1e5`,
+        // this is not a valid scope-name segment and the argument is
+        // dropped.
+        assert!(parse_allow_attr_tokens(tokens("rule-1.5")).is_none());
+    }
+
+    // ── review follow-up: `:` restricted to one occurrence, named both sides ──
+
+    #[test]
+    fn token_walker_ignores_a_double_colon_argument() {
+        // `foo::bar` is dropped (stray punctuation, per the function's own
+        // doc), not read as the two-colon string `"foo::bar"`.
+        let directive = parse_allow_attr_tokens(tokens("foo::bar, deny_scope_dep")).unwrap();
+        assert!(!directive.rules.iter().any(|r| r.contains("foo")));
+        assert!(directive.rules.contains("deny_scope_dep"));
+    }
+
+    // ── review follow-up: a bare `reason` (no `=`) is not a rule name ──
+
+    #[test]
+    fn token_walker_bare_reason_without_equals_is_not_a_rule_name() {
+        let directive = parse_allow_attr_tokens(tokens("reason, deny_scope_dep")).unwrap();
+        assert!(!directive.rules.contains("reason"));
+        assert!(directive.rules.contains("deny_scope_dep"));
+
+        // With no other argument, a bare `reason` alone names nothing.
+        assert!(parse_allow_attr_tokens(tokens("reason")).is_none());
+    }
+
+    // ── review follow-up: more shapes the walker should ignore/handle ──
+
+    #[test]
+    fn token_walker_ignores_a_dotted_argument() {
+        let directive = parse_allow_attr_tokens(tokens("foo.bar, deny_scope_dep")).unwrap();
+        assert!(!directive.rules.iter().any(|r| r.contains("foo")));
+        assert!(directive.rules.contains("deny_scope_dep"));
+    }
+
+    #[test]
+    fn token_walker_ignores_a_bang_suffixed_argument() {
+        let directive = parse_allow_attr_tokens(tokens("foo!, deny_scope_dep")).unwrap();
+        assert!(!directive.rules.iter().any(|r| r.contains("foo")));
+        assert!(directive.rules.contains("deny_scope_dep"));
+    }
+
+    #[test]
+    fn token_walker_trailing_comma_produces_no_empty_argument() {
+        let directive = parse_allow_attr_tokens(tokens("deny_scope_dep,")).unwrap();
+        assert_eq!(directive.rules.len(), 1, "{directive:#?}");
+        assert!(directive.rules.contains("deny_scope_dep"));
+    }
+
+    #[test]
+    fn token_walker_spaced_hyphens_are_still_one_name() {
+        // Whitespace between tokens is not itself a token, so
+        // `deny - scope - dep` tokenizes identically to `deny-scope-dep`.
+        let directive = parse_allow_attr_tokens(tokens("deny - scope - dep")).unwrap();
+        assert_eq!(directive.rules.len(), 1, "{directive:#?}");
+        assert!(directive.rules.contains("deny-scope-dep"));
+    }
+
+    #[test]
+    fn token_walker_ignores_an_argument_with_unknown_punctuation() {
+        // `rule1 + rule2` is not a valid rule-name shape (stray `+`); it is
+        // dropped rather than rejecting the whole attribute, so the other,
+        // valid argument still comes through.
+        let directive = parse_allow_attr_tokens(tokens("rule1 + rule2, deny_scope_dep")).unwrap();
+        assert!(!directive.rules.contains("rule1"));
+        assert!(!directive.rules.contains("rule2"));
+        assert!(directive.rules.contains("deny_scope_dep"));
+    }
+
+    #[test]
+    fn token_walker_ignores_a_group_argument() {
+        // A parenthesized group can't be part of a rule name either.
+        assert!(parse_allow_attr_tokens(tokens("(nested)")).is_none());
+    }
+
+    #[test]
+    fn token_walker_reason_with_raw_string_literal_is_read_via_syn() {
+        // `syn::Lit::Str` covers both `"..."` and raw-string literals the
+        // same way (both are string literals; a raw string just has no
+        // escapes to unescape), so this is not a special case in the
+        // implementation — asserted here so a future change that regresses
+        // it is caught.
+        let directive =
+            parse_allow_attr_tokens(tokens(r##"deny_scope_dep, reason = r"x""##)).unwrap();
+        assert_eq!(directive.reason, Some("x".to_string()));
+    }
+
+    #[test]
+    fn token_walker_reason_with_non_string_literal_is_dropped() {
+        // `reason = 1` matches the `Ident '=' Literal` shape but the
+        // literal is not a string `syn::Lit::Str` can read a value from;
+        // the argument is dropped rather than treated as a rule name.
+        let directive = parse_allow_attr_tokens(tokens("deny_scope_dep, reason = 1")).unwrap();
+        assert!(directive.rules.contains("deny_scope_dep"));
+        assert!(directive.reason.is_none());
     }
 }

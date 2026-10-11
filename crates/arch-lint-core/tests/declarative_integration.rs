@@ -340,6 +340,75 @@ severity = "error"
     );
 }
 
+/// Acceptance 1/2 (kebab-attribute-allow), end-to-end through
+/// `Analyzer::analyze()`: `#[arch_lint::allow(deny-scope-dep, reason =
+/// "x")]` on a `use` that crosses a denied scope boundary suppresses
+/// `ALD003` — the kebab-case spelling, which previously never matched
+/// anything in attribute form because `parse_allow_attr_tokens` rendered
+/// the token stream with `to_string()` first (`deny-scope-dep` is five
+/// tokens, `deny`, `-`, `scope`, `-`, `dep`, which `to_string()` turns into
+/// `deny - scope - dep`). `deny_scope_dep` and `ALD003` are the regression
+/// check that the fix did not disturb what already worked; the same `use`
+/// with no attribute at all is the control that still violates.
+#[test]
+fn scope_dep_attribute_allow_accepts_every_spelling() {
+    let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[deny-scope-dep]]
+from = "domain"
+to = ["infra"]
+message = "Domain must not depend on infra."
+severity = "error"
+"#;
+
+    let run = |domain_service_rs: &str| -> Vec<arch_lint_core::Violation> {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let domain = root.join("src/domain");
+        let infra = root.join("src/infra");
+        std::fs::create_dir_all(&domain).expect("create domain dir");
+        std::fs::create_dir_all(&infra).expect("create infra dir");
+        std::fs::write(domain.join("service.rs"), domain_service_rs).expect("write domain file");
+        std::fs::write(infra.join("db.rs"), "pub struct Pool;\n").expect("write infra file");
+
+        let (config, rules) = load_config_and_rules(toml_content);
+        let mut builder = Analyzer::builder().root(root).config(config);
+        for rule in rules {
+            builder = builder.rule_box(rule);
+        }
+        builder
+            .build()
+            .unwrap()
+            .analyze()
+            .unwrap()
+            .violations
+            .into_iter()
+            .filter(|v| v.code == "ALD003")
+            .collect()
+    };
+
+    for name in ["deny-scope-dep", "deny_scope_dep", "ALD003"] {
+        let source =
+            format!("#[arch_lint::allow({name}, reason = \"x\")]\nuse crate::infra::db::Pool;\n");
+        let suppressed = run(&source);
+        assert!(
+            suppressed.is_empty(),
+            "allow({name}) attribute should suppress ALD003: {suppressed:#?}"
+        );
+    }
+
+    // Control: the same `use`, no attribute, still violates.
+    let reported = run("use crate::infra::db::Pool;\n");
+    assert_eq!(reported.len(), 1, "{reported:#?}");
+}
+
 // ── Predefined patterns: ALD004-ALD008 plus except / exclude ──
 
 #[test]
@@ -1073,6 +1142,51 @@ scopes = ["domain", "app"]
                     "#[arch_lint::allow(acyclic)]\npub fn f() {\n    // arch-lint: allow(acyclic) reason=\"also reasoned\"\n    crate::infra::db::connect();\n}\n",
                 ),
                 ("src/infra/db.rs", "use crate::domain::service::Service;\npub fn connect() {}\n"),
+            ],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// Acceptance 4 (kebab-attribute-allow): a kebab-case `#[arch_lint::allow(...)]`
+    /// attribute on an *enclosing* `fn` — naming the block's own
+    /// kebab-case TOML `name`, not just the single-word kind name
+    /// `acyclic` — suppresses ALD009 for a `use` inside it. Before the
+    /// fix, `deny-scope-dep`-shaped names never matched in attribute form
+    /// at all (see `attributes.rs`); `collect.rs`'s
+    /// `fn_level_kebab_case_attribute_is_recorded_as_a_scope_source` is the
+    /// matching collector-level unit test that the directive lands on the
+    /// `ScopeGraph` site with `DirectiveSource::Scope`, for this same
+    /// enclosing-`fn` shape.
+    #[test]
+    fn enclosing_fn_kebab_case_user_name_attribute_suppresses_the_violation() {
+        // A fresh, single `[[acyclic]]` block (rather than `TWO_SCOPES`,
+        // which already has its own unnamed block): the directive below
+        // names this block's `name` specifically, and an unnamed sibling
+        // block checking the same scopes would not be suppressed by it,
+        // which would defeat the assertion below for the wrong reason.
+        let toml_content = r#"
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[acyclic]]
+name = "no-cycles-domain-infra"
+"#;
+        let violations = acyclic_violations(
+            toml_content,
+            &[
+                (
+                    "src/domain/service.rs",
+                    "#[arch_lint::allow(no-cycles-domain-infra, reason = \"x\")]\npub fn wire() {\n    crate::infra::db::connect();\n}\n",
+                ),
+                (
+                    "src/infra/db.rs",
+                    "use crate::domain::service::Service;\n",
+                ),
             ],
         );
         assert!(violations.is_empty(), "{violations:#?}");
@@ -1847,6 +1961,62 @@ to = ["infra"]
             &[(
                 "src/domain/a.rs",
                 "#[arch_lint::allow(allow_dep)]\nuse crate::infra::db::Pool;\n",
+            )],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// Acceptance 3 (kebab-attribute-allow): `#[arch_lint::allow(allow-dep:domain,
+    /// reason = "x")]` on an *enclosing* `fn` — the display name
+    /// `allow-dep:<from>` that several unnamed `[[allow-dep]]` blocks
+    /// sharing the same `from` answer to, `Punct(':')` included — suppresses
+    /// ALD011 for a `use` inside it. The token walker builds this name by
+    /// concatenating `Ident`/`Punct('-')`/`Punct(':')` tokens in order, so
+    /// the colon comes through unchanged; `EdgeSite::with_allow_directive`
+    /// only ever normalizes `-` to `_`, and `rule.display_name()` goes
+    /// through the same normalization on the comparison side
+    /// (`graph_suppress::matching_directives`), so the colon matches on
+    /// both sides without any special-casing here.
+    #[test]
+    fn enclosing_fn_attribute_with_colon_display_name_suppresses_the_violation() {
+        let violations = allow_dep_violations(
+            DOMAIN_SHARED_INFRA,
+            &[(
+                "src/domain/a.rs",
+                "#[arch_lint::allow(allow-dep:domain, reason = \"x\")]\npub fn wire() {\n    crate::infra::db::connect();\n}\n",
+            )],
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    /// Review follow-up (kebab-attribute-allow): the same colon display
+    /// name, but with a digit-leading segment in the scope name itself
+    /// (`core-2` — scope names may contain `[a-z0-9-]`, so this is a real
+    /// scope, not a hypothetical one). `core-2` tokenizes as
+    /// `Ident("core")`, `Punct('-')`, `Literal("2")`; before the review
+    /// follow-up, `parse_rule_name_arg` dropped the whole argument the
+    /// moment it hit the `Literal`, so `allow-dep:core-2` never matched
+    /// anything in attribute form.
+    #[test]
+    fn enclosing_fn_attribute_with_digit_leading_scope_in_display_name_suppresses_the_violation() {
+        let toml_content = r#"
+[[scopes]]
+name = "core-2"
+paths = ["src/core2/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["src/infra/**"]
+
+[[allow-dep]]
+from = "core-2"
+to = []
+"#;
+        let violations = allow_dep_violations(
+            toml_content,
+            &[(
+                "src/core2/a.rs",
+                "#[arch_lint::allow(allow-dep:core-2, reason = \"x\")]\npub fn wire() {\n    crate::infra::db::connect();\n}\n",
             )],
         );
         assert!(violations.is_empty(), "{violations:#?}");

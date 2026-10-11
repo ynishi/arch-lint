@@ -296,6 +296,25 @@ fn foo() {
         assert!(violations.is_empty());
     }
 
+    /// Acceptance 1/2 (kebab-attribute-allow), built-in-rule path: a
+    /// kebab-case `#[arch_lint::allow(...)]` attribute suppresses a
+    /// built-in rule the same way the `snake_case` spelling always did —
+    /// exercising the `ScopeTracker`/`parse_allow_attr_tokens` path this
+    /// rule shares with every other built-in rule, not just the
+    /// declarative (`ALD*`) ones.
+    #[test]
+    fn test_allows_with_kebab_case_attribute() {
+        let violations = check_code(
+            r#"
+#[arch_lint::allow(no-unwrap-expect, reason = "validated input")]
+fn foo() {
+    let x = Some(1).unwrap();
+}
+"#,
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
     #[test]
     fn test_allows_with_comment_but_warns_missing_reason() {
         let violations = check_code(
