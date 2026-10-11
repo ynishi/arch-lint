@@ -202,11 +202,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ynishi/arch-lint@arch-lint-v<version>
+      - uses: ynishi/arch-lint@arch-lint-v0.9.0
 ```
 
-Use the next release tag after 0.8.0, which is the first to ship
-`action.yml` — 0.8.0 and earlier tags predate it.
+Pin a release tag, for example `arch-lint-v0.9.0` — the first to ship
+`action.yml`; 0.8.0 and earlier tags predate it.
 
 Default `args` is `check --format sarif`: `upload-sarif` defaults to
 `true`, so violations become code-scanning alerts (PR annotations that
@@ -297,7 +297,7 @@ cargo install --locked arch-lint-cli   # or: cargo binstall arch-lint-cli
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ynishi/arch-lint
-    rev: arch-lint-v<version>
+    rev: arch-lint-v0.9.0
     hooks:
       - id: arch-lint
 ```
@@ -319,8 +319,8 @@ of languages in its own sandbox and does not trust an arbitrary system
 locally or in its own CI needs a different hook definition than this one,
 or arch-lint in its own CI step instead (see "GitHub Actions" above).
 
-Use the next release tag after 0.8.0 for `rev`, the same one as for the
-action above — it is the first to ship `.pre-commit-hooks.yaml`. See
+Pin a release tag, for example `arch-lint-v0.9.0`, for `rev` — the same one
+as for the action above; it is the first to ship `.pre-commit-hooks.yaml`. See
 [CONTRIBUTING.md](../CONTRIBUTING.md), "Verification", for the
 `pre-commit try-repo` check a maintainer runs before relying on it.
 

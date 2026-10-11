@@ -25,18 +25,17 @@ Kotlin first) for cross-language layering.
 - **`cargo binstall`**: `cargo binstall arch-lint-cli` — downloads the
   prebuilt archive for your platform from the Releases page instead of
   compiling. binstall reads the `[package.metadata.binstall]` table of the
-  version it is installing, so this works from the next release onward (the
-  first published after this change); earlier releases predate that table
-  and still compile from source.
+  version it is installing, so this works from 0.9.0 on; earlier releases
+  predate that table and still compile from source.
 - **`cargo test` route**: `cargo add --dev arch-lint`, then add
   `arch_lint::check!();` to a test file (see Quick Start below).
 - **Prebuilt archives**: on the
   [Releases page](https://github.com/ynishi/arch-lint/releases), one archive
   per platform containing both `arch-lint` and `cargo-arch-lint`, each with
   its own `.sha256` checksum file.
-- **GitHub Action**: `uses: ynishi/arch-lint@arch-lint-v<version>` — installs
-  the CLI and uploads SARIF to code scanning in one step (use the first
-  release tag after 0.8.0, which is the first to ship the action and the
+- **GitHub Action**: `uses: ynishi/arch-lint@arch-lint-v0.9.0` — installs
+  the CLI and uploads SARIF to code scanning in one step (pin a release tag,
+  for example `arch-lint-v0.9.0` — the first to ship the action and the
   hook; see [docs/cli.md](docs/cli.md#github-actions)).
 
 ## Quick Start (30 seconds)

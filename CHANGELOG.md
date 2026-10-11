@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-11
+
 ### Added
 
 - **GitHub Action and pre-commit hook**: `action.yml` at the repository
@@ -46,9 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   created or touched — and uploads the archives as workflow artifacts
   instead. `arch-lint-cli/Cargo.toml` gained a `[package.metadata.binstall]`
   table so `cargo binstall arch-lint-cli` resolves to those archives instead
-  of compiling, starting with the next release onward (the first published
-  after this change) — binstall reads the metadata of the version being
-  installed, so earlier releases still compile from source. The README / CI
+  of compiling, from 0.9.0 on — binstall reads the metadata of the version
+  being installed, so earlier releases still compile from source. The README / CI
   docs now show
   `taiki-e/install-action@v2` as the recommended install path (issue #14).
 
@@ -823,7 +824,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Allow directives via attributes and inline comments
 - Comprehensive test coverage
 
-[Unreleased]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.8.0...HEAD
+[Unreleased]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.9.0...HEAD
+[0.9.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.8.0...arch-lint-v0.9.0
 [0.8.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.7.0...arch-lint-v0.8.0
 [0.7.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.6.0...arch-lint-v0.7.0
 [0.6.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.5.0...arch-lint-v0.6.0
