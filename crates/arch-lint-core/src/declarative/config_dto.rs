@@ -9,8 +9,8 @@ use serde::Deserialize;
 ///
 /// Extends the base `Config` with `[[scopes]]`, `[[restrict-use]]`,
 /// `[[require-use]]`, `[[deny-scope-dep]]`, `[[layering]]`, `[[deny-attr]]`,
-/// `[[require-attr]]`, `[[naming]]`, `[[require-return]]`, `[[acyclic]]` and
-/// `[[independent]]` sections.
+/// `[[require-attr]]`, `[[naming]]`, `[[require-return]]`, `[[acyclic]]`,
+/// `[[independent]]` and `[[allow-dep]]` sections.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 pub struct DeclarativeConfigDto {
     /// Named scope definitions.
@@ -56,6 +56,10 @@ pub struct DeclarativeConfigDto {
     /// Project-wide independence checks over the scope graph.
     #[serde(rename = "independent", default)]
     pub independent: Vec<IndependentDto>,
+
+    /// Project-wide allow-list checks over the scope graph.
+    #[serde(rename = "allow-dep", default)]
+    pub allow_dep: Vec<AllowDepDto>,
 }
 
 /// TOML representation of a named scope.
@@ -332,6 +336,27 @@ pub struct IndependentDto {
     pub severity: String,
 }
 
+/// TOML representation of a project-wide allow-list check (`ALD011`).
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AllowDepDto {
+    /// Optional rule name, used by `allow` directives when several
+    /// `[[allow-dep]]` blocks are declared (default rule name:
+    /// "allow-dep:{from}").
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Source scope name.
+    pub from: String,
+    /// The complete list of declared scopes `from` may depend on.
+    pub to: Vec<String>,
+    /// Document reference.
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Severity (default: "error").
+    #[serde(default = "default_severity_str")]
+    pub severity: String,
+}
+
 fn default_severity_str() -> String {
     "error".to_string()
 }
@@ -401,6 +426,49 @@ message = "No DB."
         assert!(dto.deny_scope_dep.is_empty());
         assert!(dto.acyclic.is_empty());
         assert!(dto.independent.is_empty());
+        assert!(dto.allow_dep.is_empty());
+    }
+
+    #[test]
+    fn deserialize_allow_dep_config() {
+        let toml_str = r#"
+[[allow-dep]]
+from = "domain"
+to = ["shared"]
+severity = "error"
+
+[[allow-dep]]
+name = "domain-allow"
+from = "domain"
+to = []
+"#;
+        let dto: DeclarativeConfigDto = toml::from_str(toml_str).unwrap();
+        assert_eq!(dto.allow_dep.len(), 2);
+        assert_eq!(dto.allow_dep[0].from, "domain");
+        assert_eq!(dto.allow_dep[0].to, vec!["shared".to_string()]);
+        assert_eq!(dto.allow_dep[0].severity, "error");
+        assert_eq!(dto.allow_dep[0].name, None);
+        assert_eq!(dto.allow_dep[1].name, Some("domain-allow".to_string()));
+        assert!(dto.allow_dep[1].to.is_empty());
+        assert_eq!(dto.allow_dep[1].severity, "error", "default severity");
+    }
+
+    #[test]
+    fn allow_dep_rejects_unknown_key() {
+        let doc = "[[allow-dep]]\nfrom = \"domain\"\ntoo = [\"shared\"]\n";
+        assert!(toml::from_str::<DeclarativeConfigDto>(doc).is_err());
+    }
+
+    #[test]
+    fn allow_dep_requires_from_field() {
+        let doc = "[[allow-dep]]\nto = [\"shared\"]\n";
+        assert!(toml::from_str::<DeclarativeConfigDto>(doc).is_err());
+    }
+
+    #[test]
+    fn allow_dep_requires_to_field() {
+        let doc = "[[allow-dep]]\nfrom = \"domain\"\n";
+        assert!(toml::from_str::<DeclarativeConfigDto>(doc).is_err());
     }
 
     #[test]

@@ -9,8 +9,8 @@ mod builder;
 pub use builder::DeclarativeConfigBuilder;
 
 use super::{
-    Acyclic, DenyAttr, Independent, Layering, ModelError, Naming, RequireAttr, RequireReturn,
-    RequireUse, RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef,
+    Acyclic, AllowDep, DenyAttr, Independent, Layering, ModelError, Naming, RequireAttr,
+    RequireReturn, RequireUse, RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -32,6 +32,7 @@ pub struct DeclarativeConfig {
     require_returns: Vec<RequireReturn>,
     acyclics: Vec<Acyclic>,
     independents: Vec<Independent>,
+    allow_deps: Vec<AllowDep>,
 }
 
 impl DeclarativeConfig {
@@ -76,6 +77,7 @@ impl DeclarativeConfig {
             require_returns: Vec::new(),
             acyclics: Vec::new(),
             independents: Vec::new(),
+            allow_deps: Vec::new(),
         }
     }
 
@@ -92,6 +94,7 @@ impl DeclarativeConfig {
             && self.require_returns.is_empty()
             && self.acyclics.is_empty()
             && self.independents.is_empty()
+            && self.allow_deps.is_empty()
     }
 
     /// Returns all `[[layering]]` rules.
@@ -134,6 +137,12 @@ impl DeclarativeConfig {
     #[must_use]
     pub fn independents(&self) -> &[Independent] {
         &self.independents
+    }
+
+    /// Returns all `[[allow-dep]]` rules.
+    #[must_use]
+    pub fn allow_deps(&self) -> &[AllowDep] {
+        &self.allow_deps
     }
 
     /// Returns all defined scopes.
@@ -447,5 +456,34 @@ mod tests {
             .unwrap();
         assert!(!config.is_empty());
         assert_eq!(config.independents().len(), 1);
+    }
+
+    #[test]
+    fn config_is_empty_covers_allow_dep() {
+        use crate::declarative::model::AllowDep;
+
+        let config = DeclarativeConfig::builder()
+            .scopes(vec![
+                Scope::new(
+                    ScopeName::new("domain").unwrap(),
+                    vec![GlobPattern::new("src/domain/**").unwrap()],
+                ),
+                Scope::new(
+                    ScopeName::new("shared").unwrap(),
+                    vec![GlobPattern::new("src/shared/**").unwrap()],
+                ),
+            ])
+            .allow_deps(vec![AllowDep::new(
+                None,
+                ScopeName::new("domain").unwrap(),
+                vec![ScopeName::new("shared").unwrap()],
+                None,
+                Severity::Error,
+            )
+            .unwrap()])
+            .build()
+            .unwrap();
+        assert!(!config.is_empty());
+        assert_eq!(config.allow_deps().len(), 1);
     }
 }

@@ -86,6 +86,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alongside the other nine declarative rules. `scopes` rejects a repeated
   scope name (it would otherwise collapse to one graph node and the rule
   would silently check nothing against it).
+- **`[[allow-dep]]` (ALD011)**: a project-wide rule that reports one
+  violation per edge `from → X` in the dependency graph where `X` is
+  a declared scope not in `to` (`X != from`) — the inverse of
+  `[[deny-scope-dep]]`'s deny-list, for teams that would rather enumerate
+  what a scope *may* depend on. `to = []` forbids every declared-scope
+  dependency from `from`; a dependency on a path that resolves to no
+  declared scope (an external crate, an unscoped file) is never a
+  violation, same as `[[deny-scope-dep]]`. Several `[[allow-dep]]` blocks
+  may share the same `from`; each is checked independently against its own
+  `to`. Each violation is located at the edge's first non-suppressed site,
+  with the edge's other non-suppressed sites attached as `Violation`
+  labels; the message names the allow-list plus the arrow (e.g. `Scope
+  \`domain\` may only depend on [shared]: domain → infra`). Built the same
+  way `[[acyclic]]` and `[[independent]]` are: paired into
+  `declarative::create_project_rules_shared` /
+  `declarative::create_project_rules` alongside `AcyclicRule` and
+  `IndependentRule`, honors the same `// arch-lint: allow(allow-dep)
+  reason="..."` comment / `#[arch_lint::allow(allow_dep, reason = "...")]`
+  attribute directives (attributes take the `snake_case` spelling; comments
+  accept either) with the same reason requirement on error-severity rules
+  (like `[[independent]]`, the missing-reason warning does not depend on
+  the site lying on a cycle), and reuses the per-site suppression
+  classification in `declarative::rules::graph_suppress`. `arch-lint
+  list-rules` (text and `--json`) and `arch-lint schema` now cover it
+  alongside the other ten declarative rules. `to` rejects an entry equal to
+  `from` and a repeated entry (a load-time error, same shape as
+  `[[independent]]`'s repeated-scope check).
 - **`arch-lint check --exit-zero`** reports violations and exits `0`, for
   report-only CI steps
 - **`ScopeGraph`**: the dependency graph between declared `[[scopes]]`
@@ -124,8 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ProjectContext` is now `#[non_exhaustive]`** and has a new `scope_graph`
   field; construct it with `ProjectContext::new` plus the `with_*` builders,
   not a struct literal. `DeclarativeConfigDto` also gained public fields in
-  this release (`acyclic`, and now `independent`); construct it via
-  `Default` or TOML deserialization, not a struct literal, for the same
+  this release (`acyclic`, `independent`, and now `allow_dep`); construct it
+  via `Default` or TOML deserialization, not a struct literal, for the same
   reason
 - **`ModelError` is now `#[non_exhaustive]`**; new variants
   `IndependentTooFewScopes` and `DuplicateIndependentScope` (added for

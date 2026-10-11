@@ -12,8 +12,8 @@
 //! - One entity per rule kind: [`RestrictUse`] (ALD001), [`RequireUse`]
 //!   (ALD002), [`ScopeDep`] (ALD003), [`Layering`] (ALD004), [`DenyAttr`]
 //!   (ALD005), [`RequireAttr`] (ALD006), [`Naming`] (ALD007),
-//!   [`RequireReturn`] (ALD008), [`Acyclic`] (ALD009) and [`Independent`]
-//!   (ALD010).
+//!   [`RequireReturn`] (ALD008), [`Acyclic`] (ALD009), [`Independent`]
+//!   (ALD010) and [`AllowDep`] (ALD011).
 //! - [`DeclarativeConfig`] / [`DeclarativeConfigBuilder`] — the aggregate
 //!   root, which validates cross-references between rules and scopes.
 //!
@@ -21,6 +21,7 @@
 //! implementations read them through the entities' accessors.
 
 mod acyclic;
+mod allow_dep;
 mod attr;
 mod config;
 mod independent;
@@ -35,6 +36,7 @@ mod scope_dep;
 mod vocab;
 
 pub use acyclic::Acyclic;
+pub use allow_dep::AllowDep;
 pub use attr::{DenyAttr, RequireAttr};
 pub use config::{DeclarativeConfig, DeclarativeConfigBuilder};
 pub use independent::Independent;
@@ -155,6 +157,20 @@ pub enum ModelError {
     /// An `[[independent]]` block repeats the same scope.
     #[error("independent `scopes` lists scope `{name}` more than once")]
     DuplicateIndependentScope {
+        /// The repeated scope name.
+        name: ScopeName,
+    },
+
+    /// An `[[allow-dep]]` block's `to` list contains its own `from` scope.
+    #[error("allow-dep `to` must not contain its own `from` scope `{name}`")]
+    AllowDepToContainsFrom {
+        /// The scope that is both `from` and listed in `to`.
+        name: ScopeName,
+    },
+
+    /// An `[[allow-dep]]` block's `to` list repeats the same scope.
+    #[error("allow-dep `to` lists scope `{name}` more than once")]
+    DuplicateAllowDepTarget {
         /// The repeated scope name.
         name: ScopeName,
     },

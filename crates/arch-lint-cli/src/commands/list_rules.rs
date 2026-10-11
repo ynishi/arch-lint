@@ -4,15 +4,16 @@ use anyhow::{Context, Result};
 use arch_lint_rules::{all_rules, rule_option_schemas};
 use serde_json::{Map, Value};
 
-/// One declarative rule (`ALD001`-`ALD010`), as shown by `list-rules`.
+/// One declarative rule (`ALD001`-`ALD011`), as shown by `list-rules`.
 ///
 /// `table` is the TOML section name (`[[<table>]]`) and the matching key
 /// under `properties` in the generated `arch-lint.toml` schema (see
 /// `arch_lint::schema::config_json_schema`), so `options` can be pulled from
-/// there rather than hand-written. `ALD009` (`acyclic`) and `ALD010`
-/// (`independent`) are the two project-wide rules of the ten — each
-/// computed once over the `ScopeGraph` rather than once per file — which
-/// only affects their description, not how they are presented here.
+/// there rather than hand-written. `ALD009` (`acyclic`), `ALD010`
+/// (`independent`) and `ALD011` (`allow-dep`) are the three project-wide
+/// rules of the eleven — each computed once over the `ScopeGraph` rather
+/// than once per file — which only affects their description, not how they
+/// are presented here.
 struct DeclarativeRuleInfo {
     code: &'static str,
     name: &'static str,
@@ -80,6 +81,12 @@ const DECLARATIVE_RULES: &[DeclarativeRuleInfo] = &[
         name: "independent",
         description: "Project-wide: forbid any dependency between a set of scopes, in either direction",
         table: "independent",
+    },
+    DeclarativeRuleInfo {
+        code: "ALD011",
+        name: "allow-dep",
+        description: "Project-wide: forbid a scope from depending on anything outside an explicit allow-list",
+        table: "allow-dep",
     },
 ];
 
@@ -290,7 +297,7 @@ fn print_json() -> Result<()> {
     Ok(())
 }
 
-/// The JSON entry for one declarative rule (`ALD001`-`ALD009`), shaped like
+/// The JSON entry for one declarative rule (`ALD001`-`ALD011`), shaped like
 /// the built-in rule entries: `code`, `name`, `description`, `options`, plus
 /// `table` naming which `[[<table>]]` these are the fields of (so a reader
 /// does not mistake them for `[rules.<name>]` keys, which is what `options`
@@ -472,6 +479,10 @@ message = "m"
 
 [[independent]]
 scopes = ["domain", "infra"]
+
+[[allow-dep]]
+from = "domain"
+to = ["infra"]
 "#;
         let config =
             arch_lint_core::declarative::load_config_from_toml(toml).expect("valid config");

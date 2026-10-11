@@ -1,11 +1,12 @@
 //! Per-site suppression classification shared by the project-wide rules
 //! built on the [`ScopeGraph`](crate::declarative::graph::ScopeGraph):
-//! `[[acyclic]]` (ALD009) and `[[independent]]` (ALD010).
+//! `[[acyclic]]` (ALD009), `[[independent]]` (ALD010) and `[[allow-dep]]`
+//! (ALD011).
 //!
-//! Both rules decide, independently for each [`EdgeSite`] of an edge,
+//! Each rule decides, independently for each [`EdgeSite`] of an edge,
 //! whether an `allow` directive suppresses it, and if so whether that
-//! suppression needed a `reason`. The logic is identical for both rule
-//! kinds — only the three names a directive may use to address the rule
+//! suppression needed a `reason`. The logic is identical for every rule
+//! kind — only the three names a directive may use to address the rule
 //! (its kind name, its code, and its TOML `name` or fallback) differ — so it
 //! lives here once rather than being copy-pasted.
 

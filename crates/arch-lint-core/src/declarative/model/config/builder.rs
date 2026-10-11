@@ -6,8 +6,8 @@
 
 use super::DeclarativeConfig;
 use crate::declarative::model::{
-    Acyclic, DenyAttr, Independent, Layering, ModelError, Naming, RequireAttr, RequireReturn,
-    RequireUse, RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef,
+    Acyclic, AllowDep, DenyAttr, Independent, Layering, ModelError, Naming, RequireAttr,
+    RequireReturn, RequireUse, RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef,
 };
 use std::collections::HashMap;
 
@@ -27,6 +27,7 @@ pub struct DeclarativeConfigBuilder {
     require_returns: Vec<RequireReturn>,
     acyclics: Vec<Acyclic>,
     independents: Vec<Independent>,
+    allow_deps: Vec<AllowDep>,
 }
 
 impl DeclarativeConfigBuilder {
@@ -107,6 +108,13 @@ impl DeclarativeConfigBuilder {
         self
     }
 
+    /// Sets the `[[allow-dep]]` rules.
+    #[must_use]
+    pub fn allow_deps(mut self, rules: Vec<AllowDep>) -> Self {
+        self.allow_deps = rules;
+        self
+    }
+
     /// Validates all cross-references and builds the config.
     ///
     /// # Errors
@@ -151,61 +159,11 @@ impl DeclarativeConfigBuilder {
             check_ref(rule.scope(), format!("require-return '{}'", rule.name()));
         }
 
-        // Validate scope-dep refs
-        for dep in &self.scope_deps {
-            if !scope_map.contains_key(dep.from_scope()) {
-                errors.push(ModelError::UnknownScope {
-                    context: "deny-scope-dep.from".to_string(),
-                    name: dep.from_scope().clone(),
-                });
-            }
-            for target in dep.denied_targets() {
-                if !scope_map.contains_key(target) {
-                    errors.push(ModelError::UnknownScope {
-                        context: format!("deny-scope-dep.to (from '{}')", dep.from_scope()),
-                        name: target.clone(),
-                    });
-                }
-            }
-        }
-
-        // Validate layer names
-        for layering in &self.layerings {
-            for layer in layering.order() {
-                if !scope_map.contains_key(layer) {
-                    errors.push(ModelError::UnknownScope {
-                        context: format!("layering '{}' order", layering.display_name()),
-                        name: layer.clone(),
-                    });
-                }
-            }
-        }
-
-        // Validate `[[acyclic]]` scope references
-        for rule in &self.acyclics {
-            if let Some(scopes) = rule.scopes() {
-                for scope in scopes {
-                    if !scope_map.contains_key(scope) {
-                        errors.push(ModelError::UnknownScope {
-                            context: format!("acyclic '{}' scopes", rule.display_name()),
-                            name: scope.clone(),
-                        });
-                    }
-                }
-            }
-        }
-
-        // Validate `[[independent]]` scope references
-        for rule in &self.independents {
-            for scope in rule.scopes() {
-                if !scope_map.contains_key(scope) {
-                    errors.push(ModelError::UnknownScope {
-                        context: format!("independent '{}' scopes", rule.display_name()),
-                        name: scope.clone(),
-                    });
-                }
-            }
-        }
+        validate_scope_dep_refs(&self.scope_deps, &scope_map, &mut errors);
+        validate_layering_refs(&self.layerings, &scope_map, &mut errors);
+        validate_acyclic_refs(&self.acyclics, &scope_map, &mut errors);
+        validate_independent_refs(&self.independents, &scope_map, &mut errors);
+        validate_allow_dep_refs(&self.allow_deps, &scope_map, &mut errors);
 
         if errors.is_empty() {
             Ok(DeclarativeConfig {
@@ -220,9 +178,114 @@ impl DeclarativeConfigBuilder {
                 require_returns: self.require_returns,
                 acyclics: self.acyclics,
                 independents: self.independents,
+                allow_deps: self.allow_deps,
             })
         } else {
             Err(errors)
+        }
+    }
+}
+
+/// Validates every `[[deny-scope-dep]]` block's `from` and `to` scopes.
+fn validate_scope_dep_refs(
+    deps: &[ScopeDep],
+    scope_map: &HashMap<ScopeName, Scope>,
+    errors: &mut Vec<ModelError>,
+) {
+    for dep in deps {
+        if !scope_map.contains_key(dep.from_scope()) {
+            errors.push(ModelError::UnknownScope {
+                context: "deny-scope-dep.from".to_string(),
+                name: dep.from_scope().clone(),
+            });
+        }
+        for target in dep.denied_targets() {
+            if !scope_map.contains_key(target) {
+                errors.push(ModelError::UnknownScope {
+                    context: format!("deny-scope-dep.to (from '{}')", dep.from_scope()),
+                    name: target.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// Validates every `[[layering]]` block's `order` scopes.
+fn validate_layering_refs(
+    layerings: &[Layering],
+    scope_map: &HashMap<ScopeName, Scope>,
+    errors: &mut Vec<ModelError>,
+) {
+    for layering in layerings {
+        for layer in layering.order() {
+            if !scope_map.contains_key(layer) {
+                errors.push(ModelError::UnknownScope {
+                    context: format!("layering '{}' order", layering.display_name()),
+                    name: layer.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// Validates every `[[acyclic]]` block's `scopes` list.
+fn validate_acyclic_refs(
+    acyclics: &[Acyclic],
+    scope_map: &HashMap<ScopeName, Scope>,
+    errors: &mut Vec<ModelError>,
+) {
+    for rule in acyclics {
+        if let Some(scopes) = rule.scopes() {
+            for scope in scopes {
+                if !scope_map.contains_key(scope) {
+                    errors.push(ModelError::UnknownScope {
+                        context: format!("acyclic '{}' scopes", rule.display_name()),
+                        name: scope.clone(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Validates every `[[independent]]` block's `scopes` list.
+fn validate_independent_refs(
+    independents: &[Independent],
+    scope_map: &HashMap<ScopeName, Scope>,
+    errors: &mut Vec<ModelError>,
+) {
+    for rule in independents {
+        for scope in rule.scopes() {
+            if !scope_map.contains_key(scope) {
+                errors.push(ModelError::UnknownScope {
+                    context: format!("independent '{}' scopes", rule.display_name()),
+                    name: scope.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// Validates every `[[allow-dep]]` block's `from` and `to` scopes.
+fn validate_allow_dep_refs(
+    allow_deps: &[AllowDep],
+    scope_map: &HashMap<ScopeName, Scope>,
+    errors: &mut Vec<ModelError>,
+) {
+    for rule in allow_deps {
+        if !scope_map.contains_key(rule.from_scope()) {
+            errors.push(ModelError::UnknownScope {
+                context: format!("allow-dep '{}' from", rule.display_name()),
+                name: rule.from_scope().clone(),
+            });
+        }
+        for target in rule.to() {
+            if !scope_map.contains_key(target) {
+                errors.push(ModelError::UnknownScope {
+                    context: format!("allow-dep '{}' to", rule.display_name()),
+                    name: target.clone(),
+                });
+            }
         }
     }
 }
@@ -387,6 +450,100 @@ mod tests {
                     ScopeName::new("billing").unwrap(),
                     ScopeName::new("shipping").unwrap(),
                 ],
+                None,
+                Severity::Error,
+            )
+            .unwrap()])
+            .build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn allow_dep_rejects_unknown_from() {
+        use crate::declarative::model::AllowDep;
+
+        let result = DeclarativeConfig::builder()
+            .scopes(vec![Scope::new(
+                ScopeName::new("shared").unwrap(),
+                vec![GlobPattern::new("src/shared/**").unwrap()],
+            )])
+            .allow_deps(vec![AllowDep::new(
+                None,
+                ScopeName::new("domain").unwrap(),
+                vec![ScopeName::new("shared").unwrap()],
+                None,
+                Severity::Error,
+            )
+            .unwrap()])
+            .build();
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], ModelError::UnknownScope { .. }));
+    }
+
+    #[test]
+    fn allow_dep_rejects_unknown_to_entry() {
+        use crate::declarative::model::AllowDep;
+
+        let result = DeclarativeConfig::builder()
+            .scopes(vec![Scope::new(
+                ScopeName::new("domain").unwrap(),
+                vec![GlobPattern::new("src/domain/**").unwrap()],
+            )])
+            .allow_deps(vec![AllowDep::new(
+                None,
+                ScopeName::new("domain").unwrap(),
+                vec![ScopeName::new("shared").unwrap()],
+                None,
+                Severity::Error,
+            )
+            .unwrap()])
+            .build();
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], ModelError::UnknownScope { .. }));
+    }
+
+    #[test]
+    fn allow_dep_with_known_from_and_to_needs_no_further_validation() {
+        use crate::declarative::model::AllowDep;
+
+        let result = DeclarativeConfig::builder()
+            .scopes(vec![
+                Scope::new(
+                    ScopeName::new("domain").unwrap(),
+                    vec![GlobPattern::new("src/domain/**").unwrap()],
+                ),
+                Scope::new(
+                    ScopeName::new("shared").unwrap(),
+                    vec![GlobPattern::new("src/shared/**").unwrap()],
+                ),
+            ])
+            .allow_deps(vec![AllowDep::new(
+                None,
+                ScopeName::new("domain").unwrap(),
+                vec![ScopeName::new("shared").unwrap()],
+                None,
+                Severity::Error,
+            )
+            .unwrap()])
+            .build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn allow_dep_with_an_empty_to_needs_no_further_validation() {
+        use crate::declarative::model::AllowDep;
+
+        let result = DeclarativeConfig::builder()
+            .scopes(vec![Scope::new(
+                ScopeName::new("domain").unwrap(),
+                vec![GlobPattern::new("src/domain/**").unwrap()],
+            )])
+            .allow_deps(vec![AllowDep::new(
+                None,
+                ScopeName::new("domain").unwrap(),
+                vec![],
                 None,
                 Severity::Error,
             )

@@ -3,12 +3,13 @@
 use crate::types::Severity;
 
 use super::config_dto::{
-    AcyclicDto, DeclarativeConfigDto, DenyAttrDto, IndependentDto, LayeringDto, NamingDto,
-    RequireAttrDto, RequireReturnDto, RequireUseDto, RestrictUseDto, ScopeDepDto, ScopeDto,
+    AcyclicDto, AllowDepDto, DeclarativeConfigDto, DenyAttrDto, IndependentDto, LayeringDto,
+    NamingDto, RequireAttrDto, RequireReturnDto, RequireUseDto, RestrictUseDto, ScopeDepDto,
+    ScopeDto,
 };
 use super::model::{
-    Acyclic, AttrPattern, DeclarativeConfig, DenyAttr, GlobPattern, Independent, ItemKind,
-    Layering, ModelError, Naming, RegexPattern, RequireAttr, RequireReturn, RequireUse,
+    Acyclic, AllowDep, AttrPattern, DeclarativeConfig, DenyAttr, GlobPattern, Independent,
+    ItemKind, Layering, ModelError, Naming, RegexPattern, RequireAttr, RequireReturn, RequireUse,
     RestrictUse, Scope, ScopeDep, ScopeName, ScopeRef, UsePattern, VisibilityFilter,
 };
 
@@ -130,6 +131,13 @@ pub fn load(dto: DeclarativeConfigDto) -> Result<DeclarativeConfig, LoadError> {
         .map(|(i, ind)| convert_independent(ind, i))
         .collect::<Result<Vec<_>, _>>()?;
 
+    let allow_deps = dto
+        .allow_dep
+        .into_iter()
+        .enumerate()
+        .map(|(i, a)| convert_allow_dep(a, i))
+        .collect::<Result<Vec<_>, _>>()?;
+
     DeclarativeConfig::builder()
         .scopes(scopes)
         .restrict_uses(restrict_uses)
@@ -142,6 +150,7 @@ pub fn load(dto: DeclarativeConfigDto) -> Result<DeclarativeConfig, LoadError> {
         .require_returns(require_returns)
         .acyclics(acyclics)
         .independents(independents)
+        .allow_deps(allow_deps)
         .build()
         .map_err(LoadError::CrossRef)
 }
@@ -485,6 +494,37 @@ fn convert_independent(dto: IndependentDto, index: usize) -> Result<Independent,
 
     Independent::new(dto.name, scopes, dto.doc, severity).map_err(|e| LoadError::Validation {
         context: format!("{ctx}.scopes"),
+        source: e,
+    })
+}
+
+fn convert_allow_dep(dto: AllowDepDto, index: usize) -> Result<AllowDep, LoadError> {
+    let ctx = dto.name.clone().map_or_else(
+        || format!("allow-dep[{index}]"),
+        |n| format!("allow-dep '{n}'"),
+    );
+
+    let from = ScopeName::new(&dto.from).map_err(|e| LoadError::Validation {
+        context: format!("{ctx}.from"),
+        source: e,
+    })?;
+
+    let to = dto
+        .to
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            ScopeName::new(name).map_err(|e| LoadError::Validation {
+                context: format!("{ctx}.to[{i}]"),
+                source: e,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let severity = parse_severity(&dto.severity, &ctx)?;
+
+    AllowDep::new(dto.name, from, to, dto.doc, severity).map_err(|e| LoadError::Validation {
+        context: format!("{ctx}.to"),
         source: e,
     })
 }
@@ -1126,5 +1166,128 @@ scopes = ["handler", "domain", "handler"]
         let err = result.unwrap_err().to_string();
         assert!(err.contains("more than once"), "{err}");
         assert!(err.contains("handler"), "{err}");
+    }
+
+    // -- [[allow-dep]] --
+
+    #[test]
+    fn load_allow_dep_with_scopes() {
+        let config = load_with_scopes(
+            r#"
+[[allow-dep]]
+from = "domain"
+to = ["infra"]
+doc = "ARCHITECTURE.md L30"
+severity = "error"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.allow_deps().len(), 1);
+        let rule = &config.allow_deps()[0];
+        assert_eq!(rule.display_name(), "allow-dep:domain");
+        assert_eq!(rule.from_scope().as_str(), "domain");
+        let to: Vec<&str> = rule.to().iter().map(ScopeName::as_str).collect();
+        assert_eq!(to, ["infra"]);
+        assert_eq!(rule.doc_ref(), Some("ARCHITECTURE.md L30"));
+    }
+
+    #[test]
+    fn load_allow_dep_with_an_empty_to() {
+        let config = load_with_scopes(
+            r#"
+[[allow-dep]]
+from = "domain"
+to = []
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.allow_deps().len(), 1);
+        assert!(config.allow_deps()[0].to().is_empty());
+    }
+
+    #[test]
+    fn load_allow_dep_rejects_unknown_from() {
+        let result = load_with_scopes(
+            r#"
+[[allow-dep]]
+from = "nope"
+to = ["infra"]
+"#,
+        );
+        assert!(matches!(result, Err(LoadError::CrossRef(_))));
+    }
+
+    #[test]
+    fn load_allow_dep_rejects_unknown_to_entry() {
+        let result = load_with_scopes(
+            r#"
+[[allow-dep]]
+from = "domain"
+to = ["nope"]
+"#,
+        );
+        assert!(matches!(result, Err(LoadError::CrossRef(_))));
+    }
+
+    #[test]
+    fn load_allow_dep_rejects_unknown_severity() {
+        let result = load_with_scopes(
+            r#"
+[[allow-dep]]
+from = "domain"
+to = ["infra"]
+severity = "critical"
+"#,
+        );
+        assert!(matches!(result, Err(LoadError::UnknownSeverity { .. })));
+    }
+
+    #[test]
+    fn load_allow_dep_rejects_to_containing_from() {
+        let result = load_with_scopes(
+            r#"
+[[allow-dep]]
+from = "domain"
+to = ["infra", "domain"]
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must not contain"), "{err}");
+        assert!(err.contains("domain"), "{err}");
+    }
+
+    #[test]
+    fn load_allow_dep_rejects_a_duplicate_to_entry() {
+        let result = load_with_scopes(
+            r#"
+[[allow-dep]]
+from = "domain"
+to = ["infra", "infra"]
+"#,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("more than once"), "{err}");
+        assert!(err.contains("infra"), "{err}");
+    }
+
+    #[test]
+    fn load_two_allow_dep_blocks_for_the_same_from_are_both_kept() {
+        let config = load_with_scopes(
+            r#"
+[[allow-dep]]
+name = "domain-allow-handler"
+from = "domain"
+to = ["handler"]
+
+[[allow-dep]]
+name = "domain-allow-infra"
+from = "domain"
+to = ["infra"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.allow_deps().len(), 2);
     }
 }

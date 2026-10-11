@@ -6,8 +6,8 @@
 //! Sections: `[[scopes]]`, `[[restrict-use]]` (ALD001), `[[require-use]]`
 //! (ALD002), `[[deny-scope-dep]]` (ALD003), `[[layering]]` (ALD004),
 //! `[[deny-attr]]` (ALD005), `[[require-attr]]` (ALD006), `[[naming]]`
-//! (ALD007), `[[require-return]]` (ALD008), `[[acyclic]]` (ALD009) and
-//! `[[independent]]` (ALD010).
+//! (ALD007), `[[require-return]]` (ALD008), `[[acyclic]]` (ALD009),
+//! `[[independent]]` (ALD010) and `[[allow-dep]]` (ALD011).
 //!
 //! # Architecture
 //!
@@ -23,8 +23,8 @@
 //!
 //! [`load_rules_from_toml`](crate::declarative::load_rules_from_toml) is the
 //! one-call form of the left column. The middle column is `[[acyclic]]`
-//! (ALD009) and `[[independent]]` (ALD010), the two rule kinds that run once
-//! per project rather than once per file —
+//! (ALD009), `[[independent]]` (ALD010) and `[[allow-dep]]` (ALD011), the
+//! three rule kinds that run once per project rather than once per file —
 //! [`create_project_rules_shared`](crate::declarative::create_project_rules_shared)
 //! builds them the same way
 //! [`create_rules_shared`](crate::declarative::create_rules_shared) builds
@@ -138,9 +138,10 @@ pub fn create_rules_shared(config: &Arc<model::DeclarativeConfig>) -> Vec<crate:
 /// Creates all project-wide declarative rules from a validated
 /// [`model::DeclarativeConfig`].
 ///
-/// Returns an empty vec if no `[[acyclic]]` or `[[independent]]` blocks are
-/// defined. Use [`create_project_rules_shared`] when the config is also
-/// needed elsewhere (for example, to hand the same instance to
+/// Returns an empty vec if no `[[acyclic]]`, `[[independent]]` or
+/// `[[allow-dep]]` blocks are defined. Use [`create_project_rules_shared`]
+/// when the config is also needed elsewhere (for example, to hand the same
+/// instance to
 /// [`AnalyzerBuilder::declarative`](crate::AnalyzerBuilder::declarative), so
 /// the analyzer collects the [`graph::ScopeGraph`] these rules read).
 #[must_use]
@@ -153,8 +154,8 @@ pub fn create_project_rules(config: model::DeclarativeConfig) -> Vec<crate::rule
 ///
 /// The rules keep a clone of the `Arc`, so the caller can hand the same
 /// config to the analyzer for scope-graph collection without copying it.
-/// Returns an empty vec if no `[[acyclic]]` or `[[independent]]` blocks are
-/// defined.
+/// Returns an empty vec if no `[[acyclic]]`, `[[independent]]` or
+/// `[[allow-dep]]` blocks are defined.
 #[must_use]
 pub fn create_project_rules_shared(
     config: &Arc<model::DeclarativeConfig>,
@@ -170,6 +171,9 @@ pub fn create_project_rules_shared(
     }
     if !config.independents().is_empty() {
         result.push(Box::new(rules::IndependentRule::new(Arc::clone(config))));
+    }
+    if !config.allow_deps().is_empty() {
+        result.push(Box::new(rules::AllowDepRule::new(Arc::clone(config))));
     }
 
     result
@@ -241,6 +245,39 @@ mod tests {
     }
 
     #[test]
+    fn create_project_rules_shared_builds_the_allow_dep_rule() {
+        use crate::declarative::model::AllowDep;
+
+        let config = Arc::new(
+            model::DeclarativeConfig::builder()
+                .scopes(vec![
+                    Scope::new(
+                        ScopeName::new("domain").unwrap(),
+                        vec![GlobPattern::new("src/domain/**").unwrap()],
+                    ),
+                    Scope::new(
+                        ScopeName::new("shared").unwrap(),
+                        vec![GlobPattern::new("src/shared/**").unwrap()],
+                    ),
+                ])
+                .allow_deps(vec![AllowDep::new(
+                    None,
+                    ScopeName::new("domain").unwrap(),
+                    vec![ScopeName::new("shared").unwrap()],
+                    None,
+                    Severity::Error,
+                )
+                .unwrap()])
+                .build()
+                .unwrap(),
+        );
+        let rules = create_project_rules_shared(&config);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name(), "allow-dep");
+        assert_eq!(rules[0].code(), "ALD011");
+    }
+
+    #[test]
     fn create_project_rules_shared_builds_both_when_both_are_declared() {
         use crate::declarative::model::Independent;
 
@@ -272,5 +309,47 @@ mod tests {
         );
         let rules = create_project_rules_shared(&config);
         assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn create_project_rules_shared_builds_all_three_when_all_are_declared() {
+        use crate::declarative::model::{AllowDep, Independent};
+
+        let config = Arc::new(
+            model::DeclarativeConfig::builder()
+                .scopes(vec![
+                    Scope::new(
+                        ScopeName::new("billing").unwrap(),
+                        vec![GlobPattern::new("src/billing/**").unwrap()],
+                    ),
+                    Scope::new(
+                        ScopeName::new("shipping").unwrap(),
+                        vec![GlobPattern::new("src/shipping/**").unwrap()],
+                    ),
+                ])
+                .acyclics(vec![Acyclic::new(None, None, None, Severity::Error)])
+                .independents(vec![Independent::new(
+                    None,
+                    vec![
+                        ScopeName::new("billing").unwrap(),
+                        ScopeName::new("shipping").unwrap(),
+                    ],
+                    None,
+                    Severity::Error,
+                )
+                .unwrap()])
+                .allow_deps(vec![AllowDep::new(
+                    None,
+                    ScopeName::new("billing").unwrap(),
+                    vec![ScopeName::new("shipping").unwrap()],
+                    None,
+                    Severity::Error,
+                )
+                .unwrap()])
+                .build()
+                .unwrap(),
+        );
+        let rules = create_project_rules_shared(&config);
+        assert_eq!(rules.len(), 3);
     }
 }
