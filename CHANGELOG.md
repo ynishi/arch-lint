@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-11
+
 ### Added
 
 - **`cargo arch-lint` subcommand**: `crates/arch-lint-cli` now builds a second
@@ -139,10 +141,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitHub resolves it to the checkout when the file is uploaded from CI.
   README's CI Integration section now leads with a SARIF upload job.
 
-  **Deferred to the maintainer**: acceptance item 6 (uploading the file in
-  a real GitHub Actions run and confirming the violations surface as
-  code-scanning alerts) — that requires a live run on GitHub's
-  infrastructure, which this PR cannot produce.
+  **Not verified against a live run**: whether the uploaded file surfaces
+  as GitHub code-scanning alerts requires a live GitHub Actions run against
+  GitHub's infrastructure, which this changelog entry cannot attest to.
 
 ### Changed
 
@@ -758,7 +759,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Allow directives via attributes and inline comments
 - Comprehensive test coverage
 
-[Unreleased]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.7.0...HEAD
+[Unreleased]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.8.0...HEAD
+[0.8.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.7.0...arch-lint-v0.8.0
 [0.7.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.6.0...arch-lint-v0.7.0
 [0.6.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.5.0...arch-lint-v0.6.0
 [0.5.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.4.3...arch-lint-v0.5.0
