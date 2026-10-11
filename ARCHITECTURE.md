@@ -34,7 +34,7 @@ The foundation of the linting framework. Provides:
 - **`Violation`** - Represents lint findings with location and suggestions
 - **`Config`** - TOML-based configuration (`preset`, `fail_on`, `[analyzer]`, `[rules.*]` with `enabled` / `severity` / `exclude_files` / rule options)
 - **`declarative`** - TOML-declared rules: `[[scopes]]` + `[[restrict-use]]` (ALD001), `[[require-use]]` (ALD002), `[[deny-scope-dep]]` (ALD003), `[[layering]]` (ALD004), `[[deny-attr]]` (ALD005), `[[require-attr]]` (ALD006), `[[naming]]` (ALD007), `[[require-return]]` (ALD008), `[[acyclic]]` (ALD009), `[[independent]]` (ALD010) and `[[allow-dep]]` (ALD011). Pipeline: `config_dto` (serde) → `loader` (validation) → `model` (domain) → `rules` (visitors). `create_rules_shared()` builds the per-file `RuleBox`es (ALD001-ALD008); `create_project_rules_shared()` builds the three project-wide `ProjectRuleBox`es, `AcyclicRule` (ALD009), `IndependentRule` (ALD010) and `AllowDepRule` (ALD011), which each run once per project against the `ScopeGraph` rather than once per file. The per-site suppression classification all three share (`rules::graph_suppress::classify_site`) lives in its own module rather than being copy-pasted
-- **`ScopeGraph`** - Dependency graph between declared scopes (nodes = `[[scopes]]` names, edges = scope-crossing `use`/inline references with their sites). Collected once per `Analyzer::analyze()` by a `ScopeEdgeCollector` visitor that runs inside the existing per-file pass. Path resolution is the one ALD003 uses (`crate::`, `self::` and `super::` paths — the latter two rewritten relative to the file's module, inline `mod` blocks included — against `src/x/y.rs` / `src/x/y/mod.rs` candidates; bare paths and `pub use` re-exports are not followed); unlike ALD003 the graph records every reference regardless of `check_inline` — rules built on the graph decide what to filter. Every `EdgeSite` does carry every `allow` directive in scope at it, each tagged with a `DirectiveSource` (`Scope`/`Item`/`Comment`) saying where it came from (enclosing `mod`/`fn`/`impl`/`trait` attributes, the site's own item attributes, or the inline comment), parsed with the same functions `Suppressions` uses for the per-file rules, rule names normalized to `snake_case`, reachable through `EdgeSite::allow_directive` / `allow_directives`; `AcyclicRule` is the first consumer, dropping a site from its working graph when a directive names it, and — only when every matching directive on that site is `Comment`-sourced and none carries a reason, on an error-severity rule, for a site that actually sat on a cycle before suppression — reporting a missing-reason warning (mirroring `Suppressions::decide`) in its place instead. `IndependentRule` (ALD010) and `AllowDepRule` (ALD011) reuse the same per-site classification (every matching edge is offending by definition, so their missing-reason warning fires unconditionally rather than only when the site sat on a cycle). Reachable via `ProjectContext::scope_graph()` (for a `ProjectRule`), `Analyzer::scope_graph()` (standalone, no rule run), and `Session::scope_graph()` (the SDK driver); enabled by `AnalyzerBuilder::declarative(Arc<DeclarativeConfig>)`. `[[acyclic]]` (ALD009) is the cycle-detection consumer (Tarjan SCC over the induced sub-graph); `[[independent]]` (ALD010) is the pairwise-independence consumer (one violation per offending edge within a named scope set); `[[allow-dep]]` (ALD011) is the allow-list consumer (one violation per edge out of `from` landing outside its declared `to`); `arch-lint graph` remains a separate issue
+- **`ScopeGraph`** - Dependency graph between declared scopes (nodes = `[[scopes]]` names, edges = scope-crossing `use`/inline references with their sites). Collected once per `Analyzer::analyze()` by a `ScopeEdgeCollector` visitor that runs inside the existing per-file pass. Path resolution is the one ALD003 uses (`crate::`, `self::` and `super::` paths — the latter two rewritten relative to the file's module, inline `mod` blocks included — against `src/x/y.rs` / `src/x/y/mod.rs` candidates; bare paths and `pub use` re-exports are not followed); unlike ALD003 the graph records every reference regardless of `check_inline` — rules built on the graph decide what to filter. Every `EdgeSite` does carry every `allow` directive in scope at it, each tagged with a `DirectiveSource` (`Scope`/`Item`/`Comment`) saying where it came from (enclosing `mod`/`fn`/`impl`/`trait` attributes, the site's own item attributes, or the inline comment), parsed with the same functions `Suppressions` uses for the per-file rules, rule names normalized to `snake_case`, reachable through `EdgeSite::allow_directive` / `allow_directives`; `AcyclicRule` is the first consumer, dropping a site from its working graph when a directive names it, and — only when every matching directive on that site is `Comment`-sourced and none carries a reason, on an error-severity rule, for a site that actually sat on a cycle before suppression — reporting a missing-reason warning (mirroring `Suppressions::decide`) in its place instead. `IndependentRule` (ALD010) and `AllowDepRule` (ALD011) reuse the same per-site classification (every matching edge is offending by definition, so their missing-reason warning fires unconditionally rather than only when the site sat on a cycle). Reachable via `ProjectContext::scope_graph()` (for a `ProjectRule`), `Analyzer::scope_graph()` (standalone, no rule run), and `Session::scope_graph()` (the SDK driver); enabled by `AnalyzerBuilder::declarative(Arc<DeclarativeConfig>)`. `[[acyclic]]` (ALD009) is the cycle-detection consumer (Tarjan SCC over the induced sub-graph); `[[independent]]` (ALD010) is the pairwise-independence consumer (one violation per offending edge within a named scope set); `[[allow-dep]]` (ALD011) is the allow-list consumer (one violation per edge out of `from` landing outside its declared `to`); `arch-lint graph` (below, under `arch-lint` facade + driver) is the rendering consumer
 - **`utils`** - Helpers for attribute parsing, allowance directives, path matching
 
 ### arch-lint-rules
@@ -106,10 +106,14 @@ arch-lint check --format json    # JSON output for CI
 arch-lint list-rules             # Show available rules
 arch-lint init                   # Create syn config
 arch-lint init --ts              # Create tree-sitter config (with [[layers]])
+arch-lint graph [PATH]            # Render the scope graph (Mermaid; syn engine only)
+arch-lint graph --format dot      # Same, as Graphviz DOT
 ```
 
 Engine auto-detection: the config is parsed as TOML and the tree-sitter engine
-is used when a non-empty `[[layers]]` array is present.
+is used when a non-empty `[[layers]]` array is present. `graph` does not
+auto-detect: a `[[layers]]` configuration is rejected outright, since there is
+no scope graph to draw for the tree-sitter engine.
 
 `check` (syn engine) selects rules the same way `check!()` does:
 `--rules` > `preset` in config > `recommended`, then adds declarative rules
@@ -147,6 +151,18 @@ macros, and hosts the driver layer that turns "root + config" into a
 - **`report::render`** - `LintResult` → text / JSON / compact string. ANSI
   colours are opt-in (`Format::Text { color }`, default `false`), so a library
   caller gets plain output unless it asks otherwise.
+- **`graph::render`** - `ScopeGraph` → Mermaid or Graphviz DOT text
+  (`GraphFormat`), both plain string writers with no external dependency,
+  the output raw (no fence of its own). Every Mermaid node id is prefixed
+  `s_` so a scope named after a Mermaid keyword (`end`, `style`, ...)
+  cannot be parsed as that keyword instead of a node id. `graph::violating_edges`
+  maps a `LintResult` to the `(from, to)` pairs a renderer should style as
+  violating: a violation whose code is `ALD003`, `ALD004`, `ALD009`,
+  `ALD010` or `ALD011` and whose primary location or a label's location
+  names the same `file`/`line`/`column` as one of the edge's `EdgeSite`
+  locations (`offset`/`length` excluded from the comparison). The CLI's
+  `graph` subcommand calls `Session::scope_graph` (borrows) before
+  `Session::run` (consumes) to get both from one configuration.
 
 `runner.rs` is what `check!()` calls. It is now only the `cargo test` contract:
 find the workspace root, build a `Session`, apply the macro's `preset` /

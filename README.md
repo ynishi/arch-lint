@@ -1261,6 +1261,8 @@ arch-lint list-rules                      # Show available rules and their optio
 arch-lint list-rules --json               # Same, as JSON (option schemas included)
 arch-lint schema                          # JSON Schema of arch-lint.toml
 arch-lint schema --out arch-lint.schema.json
+arch-lint graph                           # Mermaid graph of [[scopes]] (read-only)
+arch-lint graph --format dot              # Graphviz DOT instead
 ```
 
 Logs go to stderr, never stdout; a successful run prints nothing there (a
@@ -1269,6 +1271,57 @@ source file that fails to parse still logs a WARN line, an invalid
 line). `--verbose` turns on `INFO`/`DEBUG` logs; a non-empty `RUST_LOG`
 overrides `--verbose` — invalid directives are reported on stderr
 (`ignoring ...`) and skipped, and if none remain the default applies.
+
+### Visualising the scope graph
+
+`arch-lint graph [PATH] --format mermaid|dot` renders the same scope
+dependency graph that `[[deny-scope-dep]]`, `[[acyclic]]`, `[[independent]]`
+and `[[allow-dep]]` see: every declared scope is a node (an isolated one
+included), every edge is a `from → to` reference labelled with its site
+count, and an edge that a rule (`ALD003`, `ALD004`, `ALD009`, `ALD010` or
+`ALD011`) currently flags is styled red. It never fails the command —
+violations are styling, not an exit code — and only the `syn` engine has a
+scope graph to draw: a configuration with `[[layers]]` is rejected.
+
+Every Mermaid node id is `s_<name>` (hyphens mapped to `_`), with the real
+scope name kept as the node's label (`s_my_scope["my-scope"]`). Without the
+prefix, a scope literally named `end` or `style` would be parsed as a
+Mermaid flowchart keyword instead of a node id, silently breaking the
+diagram (`end -->|1| x` closes the surrounding block, it does not draw an
+edge) — the prefix makes every id a non-keyword unconditionally, so there
+is no keyword list to maintain.
+
+Command output is the **raw** Mermaid or DOT text — `graph` does not wrap
+it in a Markdown `mermaid` fenced code block itself, so it can be piped
+straight to `dot -Tsvg` or pasted as-is into a fence of the reader's
+choosing. The fence around the example below is this document's, not the
+command's.
+
+The fixture under
+[`crates/arch-lint-core/tests/fixtures/declarative`](crates/arch-lint-core/tests/fixtures/declarative)
+(two scopes, one `[[deny-scope-dep]]`-denied reference) renders as:
+
+```bash
+arch-lint graph crates/arch-lint-core/tests/fixtures/declarative --format mermaid
+```
+
+```mermaid
+graph LR
+    s_domain["domain"]
+    s_infra["infra"]
+    s_domain -->|1| s_infra
+    linkStyle 0 stroke:#d33,stroke-width:2px
+```
+
+That fixture is the example here, instead of `examples/sample-project`,
+because the sample project declares no `[[scopes]]` at all —
+`arch-lint graph examples/sample-project` prints an empty graph (`graph LR`
+alone) and `no [[scopes]] declared in examples/sample-project/arch-lint.toml`
+on stderr, which is correct but has nothing to draw.
+
+There is no node for an unscoped file: the collector behind `ScopeGraph`
+never records a reference whose source or target falls outside every
+declared scope, so there is nothing for the graph to draw for it.
 
 ### Cross-language (tree-sitter engine)
 

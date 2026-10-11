@@ -6,6 +6,7 @@
 //! arch-lint list-rules [--json]
 //! arch-lint schema [--out <PATH>]
 //! arch-lint init
+//! arch-lint graph [PATH] [--format dot|mermaid]
 //! ```
 //!
 //! Exit status: `0` when the command ran and found nothing to fail on, `1`
@@ -109,6 +110,37 @@ enum Commands {
         #[arg(long)]
         ts: bool,
     },
+
+    /// Render the scope dependency graph (read-only, syn engine only)
+    Graph {
+        /// Path to analyze (default: current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output format
+        #[arg(long, default_value = "mermaid")]
+        format: GraphFormatArg,
+    },
+}
+
+/// Output format for the `graph` command.
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+pub enum GraphFormatArg {
+    /// Mermaid flowchart text (`graph LR`), pasteable into a Markdown
+    /// `mermaid` fenced code block.
+    #[default]
+    Mermaid,
+    /// Graphviz DOT text, accepted by `dot -Tsvg`.
+    Dot,
+}
+
+impl From<GraphFormatArg> for arch_lint::graph::GraphFormat {
+    fn from(value: GraphFormatArg) -> Self {
+        match value {
+            GraphFormatArg::Mermaid => Self::Mermaid,
+            GraphFormatArg::Dot => Self::Dot,
+        }
+    }
 }
 
 /// Output format for lint results.
@@ -194,6 +226,10 @@ fn run(cli: Cli) -> Result<Outcome> {
             commands::init::run(force)
         }
         .map(|()| Outcome::Clean),
+        Commands::Graph { path, format } => {
+            let source = ConfigSource::resolve(&path, cli.config.as_deref());
+            commands::graph::run(&path, format.into(), &source)
+        }
     }
 }
 
@@ -217,8 +253,10 @@ fn detect_engine(source: &ConfigSource) -> EngineHint {
 /// Returns `true` if the TOML content defines a non-empty `[[layers]]` array.
 ///
 /// Parses the document instead of substring-matching so that commented-out
-/// or quoted `[[layers]]` text does not switch engines.
-fn has_layers_table(content: &str) -> bool {
+/// or quoted `[[layers]]` text does not switch engines. Also used by
+/// `commands::graph` to reject a tree-sitter configuration before building a
+/// `syn`-engine session.
+pub(crate) fn has_layers_table(content: &str) -> bool {
     content
         .parse::<toml::Table>()
         .ok()

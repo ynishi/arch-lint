@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`arch-lint graph [PATH] --format mermaid|dot`**: a read-only subcommand
+  (`syn` engine only — a `[[layers]]` configuration is rejected) that
+  renders the `[[scopes]]` dependency graph as raw Mermaid flowchart text
+  (default) or Graphviz DOT — pipeable to `dot -Tsvg` or pasteable into a
+  Markdown fenced code block of the reader's choosing; the command does not
+  wrap its own output in a fence (a deviation from the issue's acceptance
+  wording, recorded here and in the README). Nodes are every declared
+  scope, isolated ones included; edges are labelled with their site count;
+  an edge that `ALD003`, `ALD004`, `ALD009`, `ALD010` or `ALD011` currently
+  flags is styled red (a `linkStyle` line in Mermaid, `color="red"` in
+  DOT). Every Mermaid node id is prefixed `s_` (e.g. `s_my_scope`, with the
+  real name, hyphens included, kept as its label) so a scope literally
+  named `end` or `style` — a Mermaid flowchart keyword — cannot be parsed
+  as that keyword instead of a node and silently break the diagram.
+  Violations never fail the command — only `check` does. A project without
+  `[[scopes]]` prints an empty graph and a one-line hint on stderr, exit
+  `0` (`examples/sample-project` is one such project, which is why the
+  README's example graph instead renders
+  `crates/arch-lint-core/tests/fixtures/declarative`, the second recorded
+  deviation from the issue's acceptance wording). New library API in the
+  `arch-lint` facade crate: `arch_lint::graph::{render, violating_edges,
+  GraphFormat}` (plus a re-export of `ScopeName`), both plain string
+  writers with no external dependency and deterministic (the same
+  node/edge order `ScopeGraph` already iterates in).
+  `violating_edges` compares only a `Location`'s `file`/`line`/`column`,
+  not `offset`/`length`, so a rule that starts filling those in later does
+  not silently stop matching. There is no `--include-unscoped` option: the
+  collector behind `ScopeGraph` never records an unscoped reference target,
+  so there is nothing for the graph to draw for it.
+
 - **`[[acyclic]]` (ALD009)**: a project-wide rule that reports a cycle
   between `[[scopes]]` — Tarjan's strongly-connected-components algorithm
   over the sub-graph induced by `scopes` (every declared scope when

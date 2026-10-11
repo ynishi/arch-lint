@@ -72,6 +72,7 @@ pub mod rules {
     pub use arch_lint_rules::*;
 }
 
+pub mod graph;
 pub mod report;
 pub mod schema;
 pub mod session;
