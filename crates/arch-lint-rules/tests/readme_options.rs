@@ -1,17 +1,30 @@
-//! Guards the README against option drift.
+//! Guards the rule reference against option drift.
 //!
 //! Every option key a built-in rule accepts must be documented in that rule's
-//! `[rules.<name>]` configuration block in `README.md`.
+//! `[rules.<name>]` configuration block in `docs/rules.md` or
+//! `docs/configuration.md` (moved out of `README.md` so the README reads as
+//! a front door; see issue #13).
 
 use arch_lint_rules::rule_option_schemas;
 
-/// Reads the repository README.
-fn readme() -> String {
+/// Reads and concatenates the repository's rule-reference docs: `rules.md`
+/// (Rule Details) and `configuration.md` (the `arch-lint.toml` example),
+/// the same two places `[rules.<name>]` blocks could appear when they were
+/// both still part of a single `README.md`.
+fn docs_dir_file(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
-        .join("README.md");
+        .join("docs")
+        .join(name);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
+fn rules_reference() -> String {
+    let mut combined = docs_dir_file("rules.md");
+    combined.push('\n');
+    combined.push_str(&docs_dir_file("configuration.md"));
+    combined
 }
 
 /// Returns every fenced TOML block in `readme` whose first content line is the
@@ -42,7 +55,7 @@ fn option_keys(schema: schemars::Schema) -> Vec<String> {
 
 #[test]
 fn readme_documents_every_rule_option() {
-    let readme = readme();
+    let reference = rules_reference();
 
     for entry in rule_option_schemas() {
         let keys = option_keys(entry.schema);
@@ -50,10 +63,10 @@ fn readme_documents_every_rule_option() {
             continue;
         }
 
-        let blocks = config_blocks(&readme, entry.name);
+        let blocks = config_blocks(&reference, entry.name);
         assert!(
             !blocks.is_empty(),
-            "README has no `[rules.{}]` block, but {} accepts {:?}",
+            "docs/rules.md and docs/configuration.md have no `[rules.{}]` block, but {} accepts {:?}",
             entry.name,
             entry.code,
             keys
@@ -65,7 +78,7 @@ fn readme_documents_every_rule_option() {
 
         assert!(
             documented,
-            "no `[rules.{}]` block in README documents every option of {}: {:?}",
+            "no `[rules.{}]` block in docs/rules.md or docs/configuration.md documents every option of {}: {:?}",
             entry.name, entry.code, keys
         );
     }

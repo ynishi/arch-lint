@@ -45,7 +45,7 @@ clean:
 
 # Install CLI locally
 install:
-	cargo install --path crates/arch-lint-cli
+	cargo install --locked --path crates/arch-lint-cli
 
 # Run all CI checks
 preflight: fmt-check clippy test

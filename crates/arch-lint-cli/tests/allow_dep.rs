@@ -36,8 +36,9 @@ fn code(output: &Output) -> i32 {
 
 /// Acceptance 1: `domain -> shared` (allowed) and `domain -> infra` (not
 /// allowed) with `to = ["shared"]` makes `arch-lint check` print one
-/// `ALD011` violation naming `domain → infra` and exit `1`. This is
-/// also the README example: its output is quoted verbatim there.
+/// `ALD011` violation naming `domain → infra` and exit `1`. This is also
+/// the `docs/declarative-rules.md` example: its output is quoted
+/// verbatim there.
 #[test]
 fn domain_to_infra_exits_1_with_ald011() {
     let config = r#"

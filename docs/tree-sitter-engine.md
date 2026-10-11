@@ -1,6 +1,6 @@
 # Tree-sitter Engine
 
-Cross-language architecture enforcement powered by Tree-sitter.
+Cross-language architecture enforcement powered by Tree-sitter. [Back to README](../README.md).
 
 ## Overview
 

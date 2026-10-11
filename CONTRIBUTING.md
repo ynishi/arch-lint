@@ -92,8 +92,8 @@ that the sample does not exercise gets a fixture under the relevant crate's
    `ALL`, map its code in `canonical_rule_name`, and wire any `[rules.<name>]`
    options in `build_rule`. This is what `list-rules`, `--rules`, and the
    `strict` preset use, so a rule missing here is invisible to users.
-4. Document it in `README.md` (rule table + "Rule Details") and `CHANGELOG.md`
-   under `[Unreleased]`.
+4. Document it in `docs/rules.md` (rule table + "Rule Details") and
+   `CHANGELOG.md` under `[Unreleased]`.
 
 Declarative rules (`ALD*`) live in `crates/arch-lint-core/src/declarative/`:
 one DTO in `config_dto.rs`, validation in `loader.rs`, a model type under
@@ -107,7 +107,7 @@ The reference lives in the code, rustdoc style: the crate-level `//!` docs say
 what the crate is for and how its parts fit, each type and function documents
 what it promises, and `cargo doc` is where a reader is sent. A new flag is done
 when its clap doc says what it does; a new rule when its `description()` and
-its README entry do; a new config key when its field doc does.
+its `docs/rules.md` entry do; a new config key when its field doc does.
 
 README.md is the front door, not a reference: what arch-lint is, how to install
 it, one example of each way in, and links to the rest. Write a rule once, where
