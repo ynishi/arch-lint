@@ -13,7 +13,10 @@ name: Self-check
 # job instead omits `--exit-zero`, so `cargo arch-lint` exits 1 on this
 # fixture's real violations and the action step fails — `continue-on-error:
 # true` on that step is what lets this job assert on that failure
-# (`outputs.exit-code` and `outcome`) instead of the job itself failing.
+# (`outcome`, not `outputs.exit-code`: a composite action's outputs are not
+# exposed to the caller when the composite itself fails, even though the
+# inner step wrote `exit-code` to $GITHUB_OUTPUT before exiting non-zero —
+# see the `plain` job's final step below) instead of the job itself failing.
 # Both jobs set `upload-sarif: false`: the fixture's violations are not
 # this repository's own code and must not show up as code-scanning alerts
 # on it.
@@ -93,8 +96,15 @@ jobs:
         # action step itself does `exit "$code"` directly — this is the
         # case continue-on-error: true above is for, so this assertion
         # step still runs instead of the job stopping at the step above.
+        #
+        # Only `outcome` is asserted here, not `outputs.exit-code`: a
+        # composite action's `outputs:` are published to the caller only
+        # when the composite succeeds. The inner "Run cargo arch-lint" step
+        # in action.yml does write `exit-code` to $GITHUB_OUTPUT before
+        # calling `exit "$code"`, but because that step (and so the
+        # composite) fails, GitHub never surfaces `outputs.exit-code` to
+        # this job — `steps.arch-lint.outputs.exit-code` reads as empty
+        # here. The failure is observable only through the step's `outcome`.
         run: |
-          echo "exit-code output: ${{ steps.arch-lint.outputs.exit-code }}"
           echo "step outcome: ${{ steps.arch-lint.outcome }}"
-          test "${{ steps.arch-lint.outputs.exit-code }}" = "1"
           test "${{ steps.arch-lint.outcome }}" = "failure"

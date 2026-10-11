@@ -223,7 +223,11 @@ All inputs: `args` (default `check --format sarif`), `version` (an
 arch-lint-cli version, or `latest`, forwarded to the installer),
 `working-directory` (default `.`), `upload-sarif` (default `true`),
 `sarif-file` (default `arch-lint.sarif`, relative to `working-directory`).
-Outputs: `exit-code`, `sarif-file`.
+Outputs: `exit-code`, `sarif-file`. `exit-code` is readable
+(`steps.<id>.outputs.exit-code`) only when the action step succeeds (a
+clean run or `--exit-zero`) — GitHub does not expose a failed composite
+action's outputs to its caller, so when arch-lint fails the job, read the
+step's `outcome` instead.
 
 Pin the tag to an actual release, not a floating major — `arch-lint-v<version>`
 as above, not `@v0` or `@main` (see [CONTRIBUTING.md](../CONTRIBUTING.md),

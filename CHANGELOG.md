@@ -7,12 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`self-check.yml`'s `plain` job no longer asserts a composite action
+  output that GitHub does not expose on failure.** The job's action step
+  fails as intended (no `--exit-zero`), but a composite action's
+  `outputs:` are only published to the caller when the composite itself
+  succeeds, so `steps.arch-lint.outputs.exit-code` reads as empty there
+  even though `action.yml`'s inner step wrote it to `$GITHUB_OUTPUT`
+  before failing; the assertion now checks only `steps.arch-lint.outcome`.
+  `action.yml`'s `exit-code` output and `docs/cli.md`'s "GitHub Actions"
+  section now document this as success-only, pointing at the step's
+  `outcome` for the failure case.
+
 ## [0.9.0] - 2026-10-11
 
 ### Added
 
 - **GitHub Action and pre-commit hook**: `action.yml` at the repository
-  root is a composite action (`uses: ynishi/arch-lint@arch-lint-v<version>`)
+  root is a composite action (`uses: ynishi/arch-lint@arch-lint-v0.9.0`)
   that installs `arch-lint-cli` via `taiki-e/install-action`, runs
   `cargo arch-lint`, and uploads a SARIF report to GitHub code scanning
   (`github/codeql-action/upload-sarif@v4`) — the job still fails on

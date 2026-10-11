@@ -15,6 +15,14 @@ branding:
 # report-only run that never touches the Security tab; pair it with
 # `args: check --exit-zero --format sarif` so the step itself never fails
 # either.
+#
+# The `exit-code` output below is readable by the caller only when the
+# caller's `uses:` step for this action succeeds (the composite as a
+# whole; with the default upload-sarif the inner run step exits 0 and it
+# is the final enforce step that fails) — the inner run step always
+# writes `exit-code` to $GITHUB_OUTPUT, but GitHub does not expose a
+# failed composite action's outputs. When arch-lint fails the job, read
+# the step's `outcome` instead.
 
 inputs:
   args:
@@ -45,7 +53,12 @@ inputs:
 
 outputs:
   exit-code:
-    description: Exit code `cargo arch-lint` returned (0 clean/exit-zero, 1 violations, 2 could not run)
+    description: >-
+      Exit code `cargo arch-lint` returned (0 clean/exit-zero, 1
+      violations, 2 could not run). Available only when the action step
+      succeeds, i.e. a clean run or `--exit-zero`; when arch-lint fails
+      the job, read the step's `outcome` instead — GitHub does not
+      expose a failed composite action's outputs.
     value: ${{ steps.run.outputs.exit-code }}
   sarif-file:
     description: Path to the SARIF file that was written, relative to working-directory (only meaningful when args requests SARIF output)
