@@ -16,7 +16,7 @@
 //! use arch_lint_core::{Analyzer, Rule, Severity};
 //!
 //! let analyzer = Analyzer::builder()
-//!     .root("./src")
+//!     .root(".")
 //!     .rule(MyRule::new())
 //!     .build()?;
 //!

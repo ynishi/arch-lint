@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Session::analysis_root()`.** The directory the analysis walks:
+  `[analyzer] root` if absolute, otherwise joined to `Session::root()`.
+
+### Changed
+
+- **For projects that set `[analyzer] root`, report paths, `include` /
+  `exclude`, `exclude_files`, scope globs and baseline entries are now
+  relative to it, and `Cargo.toml` discovery is limited to it.** An existing
+  baseline goes stale: rerun with `--update-baseline`. A warning is logged
+  when `root` is inside a Cargo package, since the package's manifest is then
+  not seen. A `root` that is missing or is not a directory is now an error
+  (exit code 2).
+- **`AnalyzerError` is `#[non_exhaustive]` and has two new variants,
+  `RootInaccessible` and `RootNotADirectory`,** returned by
+  `AnalyzerBuilder::build` for a root that cannot be read or is not a
+  directory. `Session::root()` is documented as the project directory, which
+  is what a relative `[analyzer] root` is joined to.
+
+### Fixed
+
+- **`[analyzer] root` is honoured by `arch-lint check`, `arch-lint graph`,
+  `check!()`, `Session::run` and `Session::scope_graph` (#24).** `Session`
+  always passed its own root to the analyzer, which prefers it over the
+  configuration, so the key was ignored. A relative value is joined to the
+  project directory (the `PATH` given to the CLI), not to the configuration
+  file, matching the tree-sitter engine.
+
 ## [0.10.0] - 2026-10-21
 
 ### Added

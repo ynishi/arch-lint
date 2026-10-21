@@ -16,6 +16,7 @@ use tracing::{debug, info, warn};
 
 /// Errors that can occur during analysis.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AnalyzerError {
     /// IO error reading files.
     #[error("IO error: {0}")]
@@ -37,6 +38,24 @@ pub enum AnalyzerError {
     /// Configuration error.
     #[error("Configuration error: {0}")]
     Config(#[from] crate::config::ConfigError),
+
+    /// The analysis root could not be read (it does not exist, or access is
+    /// denied).
+    #[error("Cannot access analysis root {}", .path.display())]
+    RootInaccessible {
+        /// The resolved, absolute root.
+        path: PathBuf,
+        /// Underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The analysis root exists but is not a directory.
+    #[error("Analysis root {} is not a directory", .path.display())]
+    RootNotADirectory {
+        /// The resolved, absolute root.
+        path: PathBuf,
+    },
 }
 
 /// Builder for configuring an [`Analyzer`].
@@ -61,6 +80,12 @@ impl AnalyzerBuilder {
     }
 
     /// Sets the root directory to analyze.
+    ///
+    /// A relative path is resolved against the current working directory. When
+    /// this is not called, `[analyzer] root` from [`AnalyzerBuilder::config`]
+    /// is used, and a relative value there is resolved against the current
+    /// working directory too; resolving it against the project directory is
+    /// what `arch_lint::Session` does, by passing the result here.
     #[must_use]
     pub fn root(mut self, path: impl Into<PathBuf>) -> Self {
         self.root = Some(path.into());
@@ -188,7 +213,13 @@ impl AnalyzerBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error if the root directory doesn't exist.
+    /// Returns [`AnalyzerError::RootInaccessible`] if the root directory cannot
+    /// be read (for example, it does not exist) and
+    /// [`AnalyzerError::RootNotADirectory`] if it is not a directory.
+    ///
+    /// The root is the one set with [`AnalyzerBuilder::root`] or, failing that,
+    /// `[analyzer] root` from the configuration, made absolute against the
+    /// current working directory.
     pub fn build(self) -> Result<Analyzer, AnalyzerError> {
         let root = self
             .root
@@ -200,6 +231,16 @@ impl AnalyzerBuilder {
         } else {
             std::env::current_dir()?.join(&root)
         };
+        // Drop interior `.` components (`/project/.` → `/project`) so the
+        // walked paths, and the absolute form exclude/include globs match
+        // against, carry no `/./`.
+        let root: PathBuf = root.components().collect();
+
+        match std::fs::metadata(&root) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Err(AnalyzerError::RootNotADirectory { path: root }),
+            Err(source) => return Err(AnalyzerError::RootInaccessible { path: root, source }),
+        }
 
         // Merge exclude patterns from config
         let mut exclude_patterns = self.exclude_patterns;
@@ -684,6 +725,54 @@ mod tests {
         assert!(analyzer.should_exclude(Path::new("/foo/target/debug/main.rs")));
         assert!(analyzer.should_exclude(Path::new("/foo/vendor/lib.rs")));
         assert!(!analyzer.should_exclude(Path::new("/foo/src/lib.rs")));
+    }
+
+    #[test]
+    fn build_rejects_a_missing_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("missing");
+
+        let err = match Analyzer::builder().root(&missing).build() {
+            Ok(_) => panic!("a missing root must be rejected"),
+            Err(e) => e,
+        };
+        match err {
+            AnalyzerError::RootInaccessible { path, .. } => assert_eq!(path, missing),
+            other => panic!("expected RootInaccessible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_rejects_a_file_as_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_file(tmp.path(), "lib.rs", "");
+        let file = tmp.path().join("lib.rs");
+
+        let err = match Analyzer::builder().root(&file).build() {
+            Ok(_) => panic!("a file root must be rejected"),
+            Err(e) => e,
+        };
+        match err {
+            AnalyzerError::RootNotADirectory { path } => assert_eq!(path, file),
+            other => panic!("expected RootNotADirectory, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn absolute_exclude_matches_under_a_root_ending_in_cur_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_file(tmp.path(), "src/gen/x.rs", "");
+        write_file(tmp.path(), "src/lib.rs", "");
+        let pattern = format!("{}/src/gen/**", tmp.path().display());
+
+        let analyzer = Analyzer::builder()
+            .root(tmp.path().join("."))
+            .exclude(pattern)
+            .build()
+            .expect("build");
+        assert_eq!(analyzer.root(), tmp.path());
+        let files = analyzer.discover_files().expect("discover");
+        assert_eq!(files, vec![tmp.path().join("src/lib.rs")]);
     }
 
     /// Writes `contents` to `root/rel`, creating parent directories.

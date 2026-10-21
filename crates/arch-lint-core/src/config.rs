@@ -76,7 +76,14 @@ impl Config {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AnalyzerConfig {
-    /// Directory to walk, relative to the configuration file (default: `.`).
+    /// Directory to walk. A relative path is joined to the project directory
+    /// (the `PATH` given to `arch-lint check`, or the workspace root for
+    /// `check!()`), not to the configuration file (default: `.`).
+    ///
+    /// Report paths, `include` / `exclude`, `exclude_files` and scope globs are
+    /// relative to it, and `Cargo.toml` discovery stops at it. Pointing it
+    /// inside a package loses crate-relative module paths; see "How scope
+    /// paths resolve" in docs/declarative-rules.md.
     #[serde(default = "default_root")]
     pub root: PathBuf,
 
