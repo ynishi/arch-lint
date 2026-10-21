@@ -29,7 +29,7 @@
 //! use arch_lint_rules::{NoUnwrapExpect, NoSyncIo};
 //!
 //! let analyzer = Analyzer::builder()
-//!     .root("./src")
+//!     .root(".")
 //!     .rule(NoUnwrapExpect::new())
 //!     .rule(NoSyncIo::new())
 //!     .build()?;

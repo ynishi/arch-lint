@@ -13,11 +13,11 @@ pub(crate) const DEFAULT_CONFIG: &str = r#"# arch-lint configuration
 # fail_on = "error"
 
 [analyzer]
-# Root directory to analyze (default: current directory)
-# root = "./src"
+# Directory to walk, relative to the project directory (default: ".")
+# root = "."
 
 # Glob patterns to exclude from analysis
-# Matched against each file's path relative to the root and its absolute path.
+# Matched against each file's path relative to the analysis root and its absolute path.
 exclude = [
     "**/target/**",
     "**/vendor/**",
@@ -32,7 +32,7 @@ exclude = [
 
 # Rule configurations
 # Each rule can be enabled/disabled, have its severity overridden,
-# and skip specific files via `exclude_files` (globs relative to the root).
+# and skip specific files via `exclude_files` (globs relative to the analysis root).
 
 [rules.no-unwrap-expect]
 enabled = true

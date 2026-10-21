@@ -1,8 +1,5 @@
 # arch-lint configuration for sample-project
 
-[analyzer]
-root = "./src"
-
 [rules.no-unwrap-expect]
 enabled = true
 severity = "error"

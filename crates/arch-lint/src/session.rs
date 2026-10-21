@@ -1,8 +1,8 @@
-//! End-to-end driver: a project root plus a configuration file become a
+//! End-to-end driver: a project directory plus a configuration file become a
 //! [`LintResult`].
 //!
 //! A [`Session`] owns everything the `syn`-based engine needs for one run:
-//! the analysis root, the parsed [`Config`], the declarative rules loaded from
+//! the project directory, the parsed [`Config`], the declarative rules loaded from
 //! the same TOML document, the effective preset and the effective `fail_on`
 //! severity. It never panics and never exits the process — every failure is a
 //! [`SessionError`].
@@ -30,6 +30,10 @@
 //! 4. no file at all — built-in defaults
 //!
 //! The winning candidate is recorded in [`Session::config_source`].
+//!
+//! The project directory is also what a relative `[analyzer] root` is joined
+//! to, whichever file the configuration came from; see
+//! [`Session::analysis_root`].
 
 use arch_lint_core::declarative::model::DeclarativeConfig;
 use arch_lint_core::declarative::LoadRulesError;
@@ -42,7 +46,7 @@ use crate::baseline::{Applied, Baseline};
 use arch_lint_rules::{
     rule_from_config, validate_rule_tables, ParsePresetError, Preset, RuleOptionsError,
 };
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 /// Project-level configuration file names, checked in order.
@@ -214,6 +218,7 @@ pub enum SessionError {
 /// [`Session::from_config_str`], adjust it with the `with_*` methods, then
 /// call [`Session::run`].
 pub struct Session {
+    /// The project directory; see [`Session::root`].
     root: PathBuf,
     config: Config,
     config_source: ConfigSource,
@@ -237,6 +242,7 @@ impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Session")
             .field("root", &self.root)
+            .field("analysis_root", &self.analysis_root())
             .field("config_source", &self.config_source)
             .field("preset", &self.preset)
             .field("fail_on", &self.fail_on)
@@ -394,7 +400,7 @@ impl Session {
         let mut candidate = start;
         loop {
             let cargo_toml = candidate.join("Cargo.toml");
-            if cargo_toml.exists() && has_workspace_section(&cargo_toml) {
+            if manifest_has_section(&cargo_toml, "workspace") {
                 return candidate.to_path_buf();
             }
             match candidate.parent() {
@@ -466,10 +472,39 @@ impl Session {
         Ok(self)
     }
 
-    /// The directory this session analyzes.
+    /// The project directory: where the configuration file is looked up and
+    /// what a relative `[analyzer] root` is joined to.
+    ///
+    /// This is the `PATH` the CLI was given, or the workspace root for
+    /// `check!()`. The directory that is walked is
+    /// [`Session::analysis_root`], which is the same unless the configuration
+    /// sets `[analyzer] root`.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The directory the analysis walks: `[analyzer] root` if it is absolute,
+    /// otherwise `[analyzer] root` joined to [`Session::root`].
+    ///
+    /// A relative value is joined to the project directory, not to the
+    /// configuration file and not to the current working directory, so
+    /// `arch-lint check <dir>` behaves the same wherever it is run from and
+    /// whichever file `--config` names.
+    ///
+    /// Everything the analysis reports is relative to it: violation paths,
+    /// `include` / `exclude`, scope globs, `exclude_files` and baseline
+    /// entries. Cargo.toml discovery is limited to it, so a package manifest
+    /// above it is not seen.
+    #[must_use]
+    pub fn analysis_root(&self) -> PathBuf {
+        // `join` replaces the base when the configured root is absolute;
+        // collecting the components drops interior `.` (the default `.`
+        // yields the project directory itself, not `<project>/.`).
+        self.root
+            .join(&self.config.analyzer.root)
+            .components()
+            .collect()
     }
 
     /// The parsed configuration.
@@ -508,8 +543,14 @@ impl Session {
     ///
     /// Returns [`SessionError::RuleOptions`] if a `[rules.<name>]` table
     /// carries an option that rule does not accept,
-    /// [`SessionError::Build`] if the analyzer rejects the configuration, and
-    /// [`SessionError::Analyze`] if the analysis itself fails.
+    /// [`SessionError::Build`] if the analyzer rejects the configuration
+    /// (including an [`analysis_root`](Session::analysis_root) that is missing
+    /// or not a directory), and [`SessionError::Analyze`] if the analysis
+    /// itself fails.
+    ///
+    /// When `[analyzer] root` is inside a Cargo package, a warning is logged
+    /// through `tracing`; see [`Session::scope_graph`] for why that is not
+    /// done there.
     pub fn run(self) -> Result<LintResult, SessionError> {
         // Computed before destructuring `self`: an explicit `with_rules` (or
         // `with_rule_filter`) wins and the preset is not evaluated at all;
@@ -518,6 +559,7 @@ impl Session {
             Some(_) => None,
             None => Some(self.preset.rules_with_config(&self.config)?),
         };
+        let analysis_root = self.analysis_root();
         let Self {
             root,
             config,
@@ -530,7 +572,13 @@ impl Session {
         } = self;
         let rules = explicit.or(preset_rules).unwrap_or_default();
 
-        let mut builder = Self::base_builder(&root, config, excludes, declarative_config.as_ref());
+        let configured_root = config.analyzer.root.clone();
+        let mut builder = Self::base_builder(
+            &analysis_root,
+            config,
+            excludes,
+            declarative_config.as_ref(),
+        );
         for rule in rules {
             builder = builder.rule_box(rule);
         }
@@ -543,7 +591,14 @@ impl Session {
 
         let analyzer = builder.build().map_err(SessionError::Build)?;
 
-        tracing::info!("Analyzing {:?} with {} rules", root, analyzer.rule_count());
+        if let Some(placement) = root_placement(&root, &analysis_root) {
+            placement.warn(&configured_root);
+        }
+        tracing::info!(
+            "Analyzing {:?} with {} rules",
+            analysis_root,
+            analyzer.rule_count()
+        );
 
         analyzer.analyze().map_err(SessionError::Analyze)
     }
@@ -575,10 +630,14 @@ impl Session {
 
     /// Builds the [`ScopeGraph`] of the project without running any rule.
     ///
-    /// Same file discovery (root, `[analyzer]` settings, `with_exclude`
-    /// overrides) and the same `[[scopes]]` as [`Session::run`], so the graph
-    /// equals the one project rules see during a run. A config without
-    /// `[[scopes]]` yields an empty graph.
+    /// Same file discovery ([`Session::analysis_root`], `[analyzer]` settings,
+    /// `with_exclude` overrides) and the same `[[scopes]]` as [`Session::run`],
+    /// so the graph equals the one project rules see during a run. A config
+    /// without `[[scopes]]` yields an empty graph.
+    ///
+    /// Unlike [`Session::run`] it does not warn about an `[analyzer] root`
+    /// inside a Cargo package: `arch-lint graph` calls both, and the warning
+    /// would be logged twice.
     ///
     /// # Errors
     ///
@@ -586,7 +645,7 @@ impl Session {
     /// fails.
     pub fn scope_graph(&self) -> Result<ScopeGraph, SessionError> {
         let analyzer = Self::base_builder(
-            &self.root,
+            &self.analysis_root(),
             self.config.clone(),
             self.excludes.clone(),
             self.declarative_config.as_ref(),
@@ -597,15 +656,15 @@ impl Session {
     }
 
     /// The analyzer builder shared by [`Session::run`] and
-    /// [`Session::scope_graph`]: root, config, excludes and the declarative
-    /// config, without rules.
+    /// [`Session::scope_graph`]: analysis root, config, excludes and the
+    /// declarative config, without rules.
     fn base_builder(
-        root: &Path,
+        analysis_root: &Path,
         config: Config,
         excludes: Vec<String>,
         declarative_config: Option<&Arc<DeclarativeConfig>>,
     ) -> arch_lint_core::AnalyzerBuilder {
-        let mut builder = Analyzer::builder().root(root).config(config);
+        let mut builder = Analyzer::builder().root(analysis_root).config(config);
         for pattern in excludes {
             builder = builder.exclude(pattern);
         }
@@ -616,15 +675,95 @@ impl Session {
     }
 }
 
-/// Returns `true` if `cargo_toml` parses as TOML and has a `[workspace]` key.
-fn has_workspace_section(cargo_toml: &Path) -> bool {
+/// Returns `true` if `cargo_toml` exists, parses as TOML and has a top-level
+/// `key` (`"workspace"`, `"package"`).
+fn manifest_has_section(cargo_toml: &Path, key: &str) -> bool {
     let Ok(content) = std::fs::read_to_string(cargo_toml) else {
         return false;
     };
     let Ok(table) = content.parse::<toml::Table>() else {
         return false;
     };
-    table.contains_key("workspace")
+    table.contains_key(key)
+}
+
+/// How an `[analyzer] root` below the project directory sits against the
+/// Cargo package that contains it.
+#[derive(Debug, PartialEq, Eq)]
+enum RootPlacement {
+    /// The root is the package's `src` directory or below it.
+    InsideSource {
+        /// The directory holding the package's `Cargo.toml`.
+        package_dir: PathBuf,
+    },
+    /// The root is elsewhere in the package, away from its `Cargo.toml`.
+    ManifestOutside {
+        /// The directory holding the package's `Cargo.toml`.
+        package_dir: PathBuf,
+    },
+}
+
+impl RootPlacement {
+    /// Logs what the placement costs; `configured` is the `[analyzer] root`
+    /// value as written.
+    fn warn(&self, configured: &Path) {
+        match self {
+            Self::InsideSource { package_dir } => tracing::warn!(
+                "[analyzer] root ({}) is inside the source directory of the package at {}: \
+                 crate-relative module paths and crate::/self::/super:: resolution are lost, \
+                 and the package's Cargo.toml is not seen",
+                configured.display(),
+                package_dir.display()
+            ),
+            Self::ManifestOutside { package_dir } => tracing::warn!(
+                "The package manifest at {} is outside [analyzer] root ({}): rules that read \
+                 Cargo.toml do not see it, and files resolve as if the analysis root were the \
+                 package root",
+                package_dir.display(),
+                configured.display()
+            ),
+        }
+    }
+}
+
+/// Finds the Cargo package that encloses `analysis_root` from above, when the
+/// analysis root was narrowed below `session_root`.
+///
+/// Returns `None` when the two are the same directory, when `analysis_root`
+/// is not below `session_root` (an absolute root elsewhere, or `../x`), when
+/// `analysis_root` has a `Cargo.toml` of its own, or when no directory from
+/// its parent up to `session_root` has a manifest with a `[package]` table.
+fn root_placement(session_root: &Path, analysis_root: &Path) -> Option<RootPlacement> {
+    // Collecting the components drops interior `.` (`<project>/./src`) but
+    // keeps a leading one, so a project directory of `.` stays `.` and is
+    // never shown as an empty package path.
+    let normalize = |path: &Path| -> PathBuf { path.components().collect() };
+    let session_root = normalize(session_root);
+    let analysis_root = normalize(analysis_root);
+
+    if analysis_root == session_root {
+        return None;
+    }
+    let below = analysis_root.strip_prefix(&session_root).ok()?;
+    if below.components().any(|c| c == Component::ParentDir) {
+        return None;
+    }
+    if analysis_root.join("Cargo.toml").exists() {
+        return None;
+    }
+
+    let package_dir = analysis_root
+        .ancestors()
+        .skip(1)
+        .take_while(|dir| dir.starts_with(&session_root))
+        .find(|dir| manifest_has_section(&dir.join("Cargo.toml"), "package"))?
+        .to_path_buf();
+
+    Some(if analysis_root.starts_with(package_dir.join("src")) {
+        RootPlacement::InsideSource { package_dir }
+    } else {
+        RootPlacement::ManifestOutside { package_dir }
+    })
 }
 
 #[cfg(test)]
@@ -1131,5 +1270,241 @@ severity = "error"
             layering[0].location.file,
             PathBuf::from("crates/a-core/src/domain/mod.rs")
         );
+    }
+
+    // ── [analyzer] root ──
+
+    /// Writes `content` to `root/relative`, creating parent directories.
+    fn write_file(root: &Path, relative: &str, content: &str) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    const PACKAGE_MANIFEST: &str = "[package]\nname = \"p\"\nversion = \"0.1.0\"\n";
+    const UNWRAP_SRC: &str = "pub fn a() { let x: Option<u8> = None; x.unwrap(); }\n";
+
+    /// The layout from issue 24: a package whose `sub` directory is the
+    /// analysis root, with an unwrap outside it.
+    fn issue_layout(root: &Path) {
+        write_file(root, "Cargo.toml", PACKAGE_MANIFEST);
+        write_file(root, "arch-lint.toml", "[analyzer]\nroot = \"sub\"\n");
+        write_file(root, "sub/src/lib.rs", "pub fn b() {}\n");
+        write_file(root, "other/src/lib.rs", UNWRAP_SRC);
+    }
+
+    #[test]
+    fn analyzer_root_limits_the_run_to_that_directory() {
+        let tmp = TempDir::new().unwrap();
+        issue_layout(tmp.path());
+
+        let session = Session::discover(tmp.path()).expect("discover");
+        assert_eq!(session.analysis_root(), tmp.path().join("sub"));
+        let result = session.run().expect("run");
+
+        assert_eq!(result.files_checked, 1, "{:#?}", result.violations);
+        assert!(
+            result.violations.iter().all(|v| v.code != "AL001"),
+            "{:#?}",
+            result.violations
+        );
+        assert_eq!(
+            root_placement(tmp.path(), &tmp.path().join("sub")),
+            Some(RootPlacement::ManifestOutside {
+                package_dir: tmp.path().to_path_buf()
+            })
+        );
+    }
+
+    #[test]
+    fn violation_paths_are_relative_to_the_analysis_root() {
+        let tmp = TempDir::new().unwrap();
+        issue_layout(tmp.path());
+        write_file(tmp.path(), "sub/src/bad.rs", UNWRAP_SRC);
+
+        let result = Session::discover(tmp.path())
+            .expect("discover")
+            .run()
+            .expect("run");
+        let unwrap: Vec<_> = result
+            .violations
+            .iter()
+            .filter(|v| v.code == "AL001")
+            .collect();
+        assert_eq!(unwrap.len(), 1, "{:#?}", result.violations);
+        assert_eq!(unwrap[0].location.file, PathBuf::from("src/bad.rs"));
+    }
+
+    #[test]
+    fn absolute_analyzer_root_is_used_as_is() {
+        let project = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        write_file(project.path(), "src/lib.rs", UNWRAP_SRC);
+        write_file(elsewhere.path(), "src/lib.rs", "pub fn b() {}\n");
+        write_file(
+            project.path(),
+            "arch-lint.toml",
+            &format!(
+                "[analyzer]\nroot = {:?}\n",
+                elsewhere.path().display().to_string()
+            ),
+        );
+
+        let session = Session::discover(project.path()).expect("discover");
+        assert_eq!(session.analysis_root(), elsewhere.path());
+        let result = session.run().expect("run");
+        assert_eq!(result.files_checked, 1);
+        assert!(result.violations.iter().all(|v| v.code != "AL001"));
+    }
+
+    #[test]
+    fn missing_analyzer_root_fails_the_build() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "arch-lint.toml",
+            "[analyzer]\nroot = \"nope\"\n",
+        );
+
+        let err = match Session::discover(tmp.path()).expect("discover").run() {
+            Ok(_) => panic!("a missing root must fail"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, SessionError::Build(_)), "{err}");
+        let source = std::error::Error::source(&err).expect("source preserved");
+        let source = source
+            .downcast_ref::<AnalyzerError>()
+            .expect("an AnalyzerError");
+        match source {
+            AnalyzerError::RootInaccessible { path, .. } => {
+                assert_eq!(path, &tmp.path().join("nope"));
+            }
+            other => panic!("expected RootInaccessible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scope_graph_honours_the_analyzer_root() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_file(
+            root,
+            "arch-lint.toml",
+            r#"
+[analyzer]
+root = "sub"
+
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+[[scopes]]
+name = "app"
+paths = ["src/app/**"]
+
+[[scopes]]
+name = "outside"
+paths = ["sub/src/domain/**"]
+"#,
+        );
+        write_file(root, "sub/src/domain/mod.rs", "use crate::app::helper;\n");
+        write_file(root, "sub/src/app/mod.rs", "pub fn helper() {}\n");
+        write_file(root, "sub/Cargo.toml", PACKAGE_MANIFEST);
+
+        let graph = Session::discover(root)
+            .expect("discover")
+            .scope_graph()
+            .expect("scope graph");
+        assert_eq!(graph.edge_count(), 1, "{graph:#?}");
+    }
+
+    #[test]
+    fn relative_analyzer_root_joins_the_project_dir_not_the_config_dir() {
+        let project = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        write_file(project.path(), "sub/src/lib.rs", "pub fn b() {}\n");
+        write_file(project.path(), "src/lib.rs", UNWRAP_SRC);
+        write_file(config_dir.path(), "src/lib.rs", UNWRAP_SRC);
+        let config = config_dir.path().join("custom.toml");
+        fs::write(&config, "[analyzer]\nroot = \"sub\"\n").unwrap();
+
+        let session = Session::from_config_path(project.path(), &config).expect("config");
+        assert_eq!(session.analysis_root(), project.path().join("sub"));
+        let result = session.run().expect("run");
+        assert_eq!(result.files_checked, 1);
+        assert!(result.violations.iter().all(|v| v.code != "AL001"));
+    }
+
+    #[test]
+    fn analysis_root_defaults_to_the_project_dir() {
+        let session = Session::from_config_str("/some/project", "").expect("defaults");
+        assert_eq!(session.analysis_root(), Path::new("/some/project"));
+    }
+
+    // ── Package-inside-root placement ──
+
+    #[test]
+    fn root_inside_the_source_directory_is_reported() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "Cargo.toml", PACKAGE_MANIFEST);
+        write_file(tmp.path(), "src/lib.rs", "pub fn b() {}\n");
+
+        // `./src` as written in a config: the `.` must not hide the match.
+        assert_eq!(
+            root_placement(tmp.path(), &tmp.path().join("./src")),
+            Some(RootPlacement::InsideSource {
+                package_dir: tmp.path().to_path_buf()
+            })
+        );
+    }
+
+    #[test]
+    fn relative_project_dir_keeps_a_printable_package_dir() {
+        // Tests run in this crate's directory: `./Cargo.toml` is a package.
+        assert_eq!(
+            root_placement(Path::new("."), Path::new("./src")),
+            Some(RootPlacement::InsideSource {
+                package_dir: PathBuf::from(".")
+            })
+        );
+    }
+
+    #[test]
+    fn root_with_its_own_manifest_is_not_reported() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "Cargo.toml", PACKAGE_MANIFEST);
+        write_file(tmp.path(), "sub/Cargo.toml", PACKAGE_MANIFEST);
+
+        assert_eq!(root_placement(tmp.path(), &tmp.path().join("sub")), None);
+    }
+
+    #[test]
+    fn root_equal_to_the_project_dir_is_not_reported() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "Cargo.toml", PACKAGE_MANIFEST);
+
+        assert_eq!(root_placement(tmp.path(), tmp.path()), None);
+        assert_eq!(root_placement(tmp.path(), &tmp.path().join(".")), None);
+    }
+
+    #[test]
+    fn root_outside_the_project_dir_is_not_reported() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("project");
+        write_file(tmp.path(), "Cargo.toml", PACKAGE_MANIFEST);
+        write_file(&project, "x", "");
+        write_file(tmp.path(), "other/x", "");
+
+        assert_eq!(root_placement(&project, &tmp.path().join("other")), None);
+        assert_eq!(root_placement(&project, &project.join("../other")), None);
+    }
+
+    #[test]
+    fn workspace_manifest_is_not_an_enclosing_package() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "Cargo.toml", "[workspace]\nmembers = []\n");
+        write_file(tmp.path(), "sub/x", "");
+
+        assert_eq!(root_placement(tmp.path(), &tmp.path().join("sub")), None);
     }
 }

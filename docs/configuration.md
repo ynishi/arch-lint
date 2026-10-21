@@ -10,7 +10,7 @@ preset = "recommended"
 fail_on = "error"
 
 [analyzer]
-root = "./src"
+# root = "."
 exclude = [
     "**/target/**",
     "**/generated/**",
@@ -114,7 +114,7 @@ message = "Handlers must return Result<_, AppError>."
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `root` | `"."` | Directory to walk. |
+| `root` | `"."` | Directory to walk. A relative path is joined to the project directory, not to the config file. Report paths and globs are relative to it. |
 | `respect_gitignore` | `true` | Skip files git ignores. |
 | `include` | `[]` (all `*.rs`) | Glob patterns; when non-empty, only matching files are analyzed. |
 | `exclude` | `["**/target/**", "**/vendor/**"]` | Glob patterns dropped from the result. |
@@ -126,6 +126,27 @@ per-rule option table (`[rules.<name>]`) are a config error, so a typo such as
 `denyy = [...]` or `allow_in_test = true` cannot silently disable a rule or be
 ignored. Each rule declares its own option keys; `enabled`, `severity` and
 `exclude_files` are accepted next to them for every rule.
+
+`root` is relative to the **project directory**: the `PATH` given to
+`arch-lint check` / `arch-lint graph`, or the workspace root for `check!()`.
+It is not relative to the configuration file (so `--config` makes no
+difference) or to the current working directory, and an absolute value is used
+as-is. A `root` that does not exist or is not a directory is an error (exit
+code 2 from the CLI).
+
+Everything the analysis reports is relative to `root`: violation paths,
+`include` and `exclude`, `exclude_files`, scope globs, and the entries of a
+baseline. The baseline *file* is wherever `--baseline` points, as before; only
+its entries are relative to `root`, so changing `root` makes an existing
+baseline stale until it is rewritten with `--update-baseline`.
+
+`Cargo.toml` discovery is limited to `root` as well. When `root` is inside a
+Cargo package, the package's manifest is not seen: module paths are no longer
+crate-relative, `crate::` / `self::` / `super::` references are not resolved
+to the package's `src/`, and rules that read `Cargo.toml` do not see it. See
+[How scope paths resolve](declarative-rules.md#how-scope-paths-resolve). Such a
+`root` is logged as a warning, which the CLI shows; `check!()` installs no
+tracing subscriber, so it does not.
 
 File discovery runs in this order:
 
