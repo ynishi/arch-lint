@@ -84,7 +84,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arch-lint"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "arch-lint-core",
  "arch-lint-macros",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "arch-lint-cli"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "arch-lint",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "arch-lint-core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "glob",
  "ignore",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "arch-lint-macros"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "arch-lint-rules"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "arch-lint-core",
  "proc-macro2",
@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "arch-lint-ts"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "arch-lint-core",
  "glob",
