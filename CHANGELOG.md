@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-21
+
 ### Added
 
 - **`FileContext::crate_root()` and `FileContext::crate_module()`.**
@@ -868,7 +870,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Allow directives via attributes and inline comments
 - Comprehensive test coverage
 
-[Unreleased]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.9.0...HEAD
+[Unreleased]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.10.0...HEAD
+[0.10.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.9.0...arch-lint-v0.10.0
 [0.9.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.8.0...arch-lint-v0.9.0
 [0.8.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.7.0...arch-lint-v0.8.0
 [0.7.0]: https://github.com/ynishi/arch-lint/compare/arch-lint-v0.6.0...arch-lint-v0.7.0
