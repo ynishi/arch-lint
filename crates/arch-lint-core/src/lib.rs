@@ -30,6 +30,7 @@
 mod analyzer;
 mod config;
 mod context;
+mod crate_roots;
 mod required_crate;
 mod rule;
 mod types;

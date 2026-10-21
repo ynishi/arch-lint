@@ -23,18 +23,25 @@ const SCOPE_DEP_CODE: &str = "ALD003";
 /// For example, if `domain` must not depend on `infra`, then files in
 /// `src/domain/**` must not reference `crate::infra::...`.
 ///
+/// Scope globs are relative to the analyzer root. `crate::`, `self::` and
+/// `super::` paths are resolved against the package the referencing file
+/// belongs to ([`FileContext::crate_root`]), so one config at a workspace root
+/// covers its member crates (`crates/core/src/domain/**`).
+///
 /// Inline path checking can be disabled per rule with `check-inline = false`.
 ///
 /// # Limitations (v1)
 ///
 /// - Resolves `crate::`, `self::` and `super::` paths; bare paths
-///   (`use infra::db;`, edition-2015 style) and `pub use` re-export chasing
-///   are not followed
-/// - Assumes standard `src/` layout for module-to-file mapping
-/// - `self::` / `super::` are resolved only for files under `src/`,
-///   excluding `src/bin/` (each file under `src/bin/`, like `tests/` and
-///   `benches/`, is its own crate root, so there is no single module path
-///   to resolve against); `crate::` paths are unaffected by this
+///   (`use infra::db;`, edition-2015 style), cross-crate paths
+///   (`use other_crate::...`) and `pub use` re-export chasing are not followed
+/// - Assumes standard `<package>/src/` layout for module-to-file mapping;
+///   `[lib] path` / `[[bin]] path` overrides are ignored
+/// - `self::` / `super::` are resolved only for files under the package's
+///   `src/`, excluding `src/bin/` (each file under `src/bin/`, like `tests/`
+///   and `benches/`, is its own crate root, so there is no single module path
+///   to resolve against); `crate::` paths are unaffected by this and still
+///   map to `<package>/src`
 pub struct ScopeDepRule {
     config: Arc<DeclarativeConfig>,
 }
@@ -104,12 +111,6 @@ pub(super) struct ScopeDepVisitor<'a> {
     /// order.
     pub(super) scopes: Suppressions,
     pub(super) violations: Vec<Violation>,
-    /// Module path of `ctx`'s file itself, e.g. `Some(["domain", "service"])`
-    /// for `src/domain/service.rs`; `None` when the file is outside `src/`
-    /// or under `src/bin/` (see [`file_module_segments`]), in which case
-    /// `self::` / `super::` paths never resolve. Computed once; combined
-    /// with `mod_stack` to resolve relative to the current position.
-    file_module: Option<Vec<String>>,
     /// Names of the inline `mod` blocks currently being visited, outermost
     /// first. Empty at the top level of the file.
     mod_stack: Vec<String>,
@@ -125,7 +126,6 @@ impl<'a> ScopeDepVisitor<'a> {
         scopes: Suppressions,
     ) -> Self {
         Self {
-            file_module: file_module_segments(&ctx.relative_path),
             ctx,
             config,
             applicable,
@@ -143,21 +143,34 @@ impl<'a> ScopeDepVisitor<'a> {
     }
 
     /// The module path at the visitor's current position: the file's own
-    /// module path, plus the inline `mod` blocks currently entered. `None`
-    /// when the file itself has no resolvable module path (see
-    /// `file_module`).
+    /// module path ([`FileContext::crate_module`]), plus the inline `mod`
+    /// blocks currently entered. `None` when the file itself has no
+    /// crate-relative module path, in which case `self::` / `super::` paths
+    /// never resolve.
     fn current_module(&self) -> Option<Vec<String>> {
-        let mut module = self.file_module.clone()?;
-        module.extend(self.mod_stack.iter().cloned());
-        Some(module)
+        module_at(self.ctx, &self.mod_stack)
     }
+}
+
+/// The module path inside `ctx`'s file after entering the inline `mod`
+/// blocks `mod_stack` (outermost first): the file's own
+/// [`FileContext::crate_module`] followed by `mod_stack`. `None` when the file
+/// has no crate-relative module path.
+pub(super) fn module_at(ctx: &FileContext<'_>, mod_stack: &[String]) -> Option<Vec<String>> {
+    let mut module = ctx.crate_module()?.to_vec();
+    module.extend(mod_stack.iter().cloned());
+    Some(module)
 }
 
 /// Converts a `crate::x::y::z` module path to candidate file paths
 /// and returns the scopes that any candidate belongs to.
 ///
-/// Tries both `src/x/y/z.rs` and `src/x/y/z/mod.rs` to handle
-/// the two standard Rust module layout conventions.
+/// `crate_root` is the root-relative directory of the package the referencing
+/// file belongs to ([`FileContext::crate_root`]; empty when it is the
+/// analyzer root). Tries both `<crate_root>/src/x/y/z.rs` and
+/// `<crate_root>/src/x/y/z/mod.rs` to handle the two standard Rust module
+/// layout conventions; scope globs are matched against these root-relative
+/// candidates.
 ///
 /// Only handles `crate::` prefixed paths; external crates return an empty
 /// vec. `self::` and `super::` paths are rewritten to a `crate::` path by
@@ -166,6 +179,7 @@ impl<'a> ScopeDepVisitor<'a> {
 /// vec, since it does not have the current module to rewrite against.
 pub(super) fn resolve_target_scopes<'a>(
     config: &'a DeclarativeConfig,
+    crate_root: &std::path::Path,
     use_path: &str,
 ) -> Vec<&'a crate::declarative::model::ScopeName> {
     let Some(rest) = use_path.strip_prefix("crate::") else {
@@ -173,76 +187,29 @@ pub(super) fn resolve_target_scopes<'a>(
     };
 
     let segments: Vec<&str> = rest.split("::").collect();
-    if segments.is_empty() {
+    let Some((last, parents)) = segments.split_last() else {
         return vec![];
-    }
+    };
 
-    let joined = segments.join("/");
+    let mut module_dir = crate_root.join("src");
+    module_dir.extend(parents);
 
     // Try both module layout conventions:
-    //   1. src/x/y/z.rs        (file-per-module)
-    //   2. src/x/y/z/mod.rs    (directory-with-mod)
-    let candidates = [format!("src/{joined}.rs"), format!("src/{joined}/mod.rs")];
+    //   1. <crate_root>/src/x/y/z.rs        (file-per-module)
+    //   2. <crate_root>/src/x/y/z/mod.rs    (directory-with-mod)
+    let candidates = [
+        module_dir.join(format!("{last}.rs")),
+        module_dir.join(last).join("mod.rs"),
+    ];
 
     for candidate in &candidates {
-        let scopes = config.scopes_for_path(std::path::Path::new(candidate));
+        let scopes = config.scopes_for_path(candidate);
         if !scopes.is_empty() {
             return scopes;
         }
     }
 
     vec![]
-}
-
-/// Derives the module path of a source file from its root-relative path,
-/// as segments without the leading `crate`: `src/domain/service.rs` becomes
-/// `["domain", "service"]`, `src/domain/mod.rs` becomes `["domain"]`.
-///
-/// Returns `None` for a file outside `src/` (`tests/`, `benches/`, ...) or
-/// under `src/bin/`: each is its own crate root (there can be several
-/// `src/bin/*.rs` binaries in one package), so there is no single module
-/// path to resolve `self::` / `super::` against from here. `crate::`
-/// resolution ([`resolve_target_scopes`]) is unaffected by this — it always
-/// resolves relative to the one `src/` tree, regardless of where the
-/// reference itself lives.
-///
-/// A trailing `mod` segment is always dropped (`src/a/mod.rs` becomes
-/// `["a"]`: the file names a submodule of its parent directory, not itself).
-/// `lib` or `main` is dropped only when it is the *sole* remaining segment
-/// (`src/lib.rs` / `src/main.rs` become `[]`, the crate root): a nested
-/// `src/foo/lib.rs` or `src/cli/main.rs` is a real submodule that happens to
-/// be named `lib` / `main`, not the crate root, and keeps its segment.
-///
-/// This intentionally differs from `FileContext`'s own (private)
-/// `compute_module_path`, which keeps the `src` segment and does not
-/// special-case `main`: that function's `["crate", "src", ...]` shape is
-/// unrelated to scope resolution, and no rule depends on it today.
-pub(super) fn file_module_segments(relative_path: &std::path::Path) -> Option<Vec<String>> {
-    let mut segments: Vec<String> = relative_path
-        .with_extension("")
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => s.to_str().map(String::from),
-            _ => None,
-        })
-        .collect();
-
-    if segments.first().map(String::as_str) != Some("src") {
-        return None;
-    }
-    segments.remove(0);
-
-    if segments.first().map(String::as_str) == Some("bin") {
-        return None;
-    }
-
-    let drop_last = segments.last().map(String::as_str) == Some("mod")
-        || (segments.len() == 1 && matches!(segments[0].as_str(), "lib" | "main"));
-    if drop_last {
-        segments.pop();
-    }
-
-    Some(segments)
 }
 
 /// Returns `true` for a `self::` / `super::` prefixed path (including the
@@ -254,7 +221,7 @@ pub(super) fn is_relative_path(path: &str) -> bool {
 /// Rewrites a `self::` or `super::` path relative to `current_module` into
 /// the equivalent `crate::`-prefixed path. `current_module` is the module
 /// path of the file (or inline `mod` block) containing the reference, in
-/// the shape [`file_module_segments`] returns.
+/// the shape [`FileContext::crate_module`] returns.
 ///
 /// Returns `None` when a `super::` climbs above the crate root. Paths that
 /// are not `self::` / `super::` prefixed are returned unchanged (so this is
@@ -295,34 +262,36 @@ fn rewrite_relative_path(path: &str, current_module: &[String]) -> Option<String
 }
 
 /// Resolves a `use`/inline path to scopes, following `crate::`, `self::`
-/// and `super::` paths relative to `current_module`.
+/// and `super::` paths relative to `current_module`, inside the package at
+/// `crate_root` ([`FileContext::crate_root`]).
 ///
 /// `self::` and `super::` are rewritten to the equivalent `crate::` path
 /// (see [`rewrite_relative_path`]) and resolved exactly as a `crate::` path
-/// would be; a `super::` that climbs above the crate root, or a `self::` /
-/// `super::` path with no `current_module` (the file itself has none, see
-/// [`file_module_segments`]), resolves to no scope. Bare paths (no
-/// recognized prefix) are left unresolved: following them would require
-/// resolving `pub use` re-export chains, which is out of scope (see
-/// [`ScopeDepRule`] limitations).
+/// would be (see [`resolve_target_scopes`]); a `super::` that climbs above
+/// the crate root, or a `self::` / `super::` path with no `current_module`
+/// (the file itself has none, see [`FileContext::crate_module`]), resolves to
+/// no scope. Bare paths (no recognized prefix) are left unresolved: following
+/// them would require resolving `pub use` re-export chains, which is out of
+/// scope (see [`ScopeDepRule`] limitations).
 ///
 /// Callers should pass `current_module` only when `path` actually needs it
 /// (`is_relative_path(path)`), so a `crate::`/bare/external path never pays
 /// for computing the caller's current module.
 pub(super) fn resolve_relative_target_scopes<'a>(
     config: &'a DeclarativeConfig,
+    crate_root: &std::path::Path,
     current_module: Option<&[String]>,
     path: &str,
 ) -> Vec<&'a crate::declarative::model::ScopeName> {
     if path.starts_with("crate::") {
-        return resolve_target_scopes(config, path);
+        return resolve_target_scopes(config, crate_root, path);
     }
     if is_relative_path(path) {
         let Some(current_module) = current_module else {
             return vec![];
         };
         return match rewrite_relative_path(path, current_module) {
-            Some(rewritten) => resolve_target_scopes(config, &rewritten),
+            Some(rewritten) => resolve_target_scopes(config, crate_root, &rewritten),
             None => vec![],
         };
     }
@@ -366,6 +335,7 @@ impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
                 .flatten();
             let target_scopes = resolve_relative_target_scopes(
                 self.config,
+                self.ctx.crate_root(),
                 current_module.as_deref(),
                 &use_item.path,
             );
@@ -426,8 +396,12 @@ impl<'ast> Visit<'ast> for ScopeDepVisitor<'_> {
             let current_module = is_relative_path(&path)
                 .then(|| self.current_module())
                 .flatten();
-            let target_scopes =
-                resolve_relative_target_scopes(self.config, current_module.as_deref(), &path);
+            let target_scopes = resolve_relative_target_scopes(
+                self.config,
+                self.ctx.crate_root(),
+                current_module.as_deref(),
+                &path,
+            );
 
             for (index, dep) in self.applicable.iter().enumerate() {
                 if !dep.check_inline() {
@@ -485,6 +459,7 @@ mod tests {
     use super::*;
     use crate::declarative::model::*;
     use crate::types::Severity;
+    use std::path::Path;
 
     fn make_scope_dep_config() -> Arc<DeclarativeConfig> {
         let scopes = vec![
@@ -734,84 +709,43 @@ mod tests {
     #[test]
     fn resolve_target_scopes_external_crate_returns_empty() {
         let config = make_scope_dep_config();
-        let scopes = resolve_target_scopes(&config, "sqlx::Pool");
+        let scopes = resolve_target_scopes(&config, Path::new(""), "sqlx::Pool");
         assert!(scopes.is_empty());
     }
 
     #[test]
     fn resolve_target_scopes_self_path_returns_empty() {
         let config = make_scope_dep_config();
-        let scopes = resolve_target_scopes(&config, "self::utils::helper");
+        let scopes = resolve_target_scopes(&config, Path::new(""), "self::utils::helper");
         assert!(scopes.is_empty());
     }
 
-    // ── file_module_segments ──
-
-    fn segs(parts: &[&str]) -> Vec<String> {
-        parts.iter().map(|s| (*s).to_string()).collect()
-    }
-
+    /// The candidates are built under the crate root, so the same path
+    /// resolves to a different scope (or none) per package.
     #[test]
-    fn file_module_segments_file_per_module() {
-        assert_eq!(
-            file_module_segments(std::path::Path::new("src/domain/service.rs")),
-            Some(segs(&["domain", "service"]))
-        );
-    }
+    fn resolve_target_scopes_is_relative_to_the_crate_root() {
+        let scopes = vec![
+            Scope::new(
+                ScopeName::new("a-infra").unwrap(),
+                vec![GlobPattern::new("crates/a/src/infra/**").unwrap()],
+            ),
+            Scope::new(
+                ScopeName::new("b-infra").unwrap(),
+                vec![GlobPattern::new("crates/b/src/infra/**").unwrap()],
+            ),
+        ];
+        let config = DeclarativeConfig::new(scopes, vec![], vec![], vec![]).unwrap();
+        let names = |crate_root: &str| -> Vec<String> {
+            resolve_target_scopes(&config, Path::new(crate_root), "crate::infra::db::Pool")
+                .iter()
+                .map(|s| s.as_str().to_string())
+                .collect()
+        };
 
-    #[test]
-    fn file_module_segments_mod_rs_drops_mod_segment() {
-        assert_eq!(
-            file_module_segments(std::path::Path::new("src/domain/mod.rs")),
-            Some(segs(&["domain"]))
-        );
-        assert_eq!(
-            file_module_segments(std::path::Path::new("src/a/mod.rs")),
-            Some(segs(&["a"]))
-        );
-    }
-
-    #[test]
-    fn file_module_segments_crate_root_files_are_empty() {
-        assert_eq!(
-            file_module_segments(std::path::Path::new("src/lib.rs")),
-            Some(vec![])
-        );
-        assert_eq!(
-            file_module_segments(std::path::Path::new("src/main.rs")),
-            Some(vec![])
-        );
-    }
-
-    /// `lib` / `main` are only the crate root when they are the *only*
-    /// segment; a nested file genuinely named `lib.rs` / `main.rs` is a
-    /// submodule, not the crate root, and keeps its segment. A `super::`
-    /// from such a file must climb only one level, not two.
-    #[test]
-    fn file_module_segments_nested_lib_and_main_keep_their_segment() {
-        assert_eq!(
-            file_module_segments(std::path::Path::new("src/foo/lib.rs")),
-            Some(segs(&["foo", "lib"]))
-        );
-        assert_eq!(
-            file_module_segments(std::path::Path::new("src/cli/main.rs")),
-            Some(segs(&["cli", "main"]))
-        );
-    }
-
-    #[test]
-    fn file_module_segments_outside_src_is_none() {
-        // `tests/` and `benches/` are separate crate roots (integration
-        // tests, each `#[bench]` file), not part of the `src/` module tree.
-        assert!(file_module_segments(std::path::Path::new("tests/x.rs")).is_none());
-        assert!(file_module_segments(std::path::Path::new("benches/b.rs")).is_none());
-    }
-
-    #[test]
-    fn file_module_segments_src_bin_is_none() {
-        // Each `src/bin/*.rs` is its own crate root (a separate binary).
-        assert!(file_module_segments(std::path::Path::new("src/bin/foo.rs")).is_none());
-        assert!(file_module_segments(std::path::Path::new("src/bin/foo/main.rs")).is_none());
+        assert_eq!(names("crates/a"), vec!["a-infra"]);
+        assert_eq!(names("crates/b"), vec!["b-infra"]);
+        assert!(names("").is_empty());
+        assert!(names("crates/c").is_empty());
     }
 
     // ── rewrite_relative_path ──
@@ -850,8 +784,12 @@ mod tests {
     fn resolve_relative_target_scopes_single_super_resolves_to_domain() {
         let config = make_scope_dep_config();
         let current_module = vec!["domain".to_string(), "service".to_string()];
-        let scopes =
-            resolve_relative_target_scopes(&config, Some(&current_module), "super::entity::User");
+        let scopes = resolve_relative_target_scopes(
+            &config,
+            Path::new(""),
+            Some(&current_module),
+            "super::entity::User",
+        );
         let names: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
         assert_eq!(names, vec!["domain"]);
     }
@@ -860,7 +798,8 @@ mod tests {
     fn resolve_relative_target_scopes_none_current_module_is_unresolved() {
         let config = make_scope_dep_config();
         assert!(
-            resolve_relative_target_scopes(&config, None, "self::helpers::f").is_empty(),
+            resolve_relative_target_scopes(&config, Path::new(""), None, "self::helpers::f")
+                .is_empty(),
             "a self::/super:: path with no current module (file outside src/, or src/bin/) \
              must not resolve"
         );

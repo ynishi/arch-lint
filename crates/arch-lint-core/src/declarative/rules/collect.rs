@@ -8,10 +8,12 @@
 //! Path resolution is the one [`ScopeDepRule`](super::ScopeDepRule) (`ALD003`)
 //! uses: `crate::`, `self::` and `super::` paths (the latter two rewritten
 //! relative to the file's module, inline `mod` blocks included, exactly as
-//! `ScopeDepVisitor` does), resolved against `src/x/y.rs` and
-//! `src/x/y/mod.rs` candidates. Bare paths and `pub use` re-exports are not
-//! followed. Unlike `ALD003`, the graph records every reference regardless
-//! of `check_inline` — rules built on the graph decide what to filter.
+//! `ScopeDepVisitor` does), resolved against the `src/x/y.rs` and
+//! `src/x/y/mod.rs` candidates of the package the file belongs to
+//! ([`FileContext::crate_root`]). Bare paths, cross-crate paths and
+//! `pub use` re-exports are not followed. Unlike `ALD003`, the graph records
+//! every reference regardless of `check_inline` — rules built on the graph
+//! decide what to filter.
 //!
 //! `allow` directives are still recorded, not acted on, and the collector is
 //! rule-agnostic about it: every `// arch-lint: allow(...)` comment on a
@@ -34,7 +36,7 @@
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
-use super::scope_dep::{file_module_segments, is_relative_path, resolve_relative_target_scopes};
+use super::scope_dep::{is_relative_path, module_at, resolve_relative_target_scopes};
 use super::{expand_use_tree, inline_path_to_string};
 use crate::context::FileContext;
 use crate::declarative::graph::{DirectiveSource, EdgeKind, EdgeSite, ScopeGraph};
@@ -49,10 +51,6 @@ pub(crate) struct ScopeEdgeCollector<'a> {
     config: &'a DeclarativeConfig,
     file_scopes: Vec<&'a ScopeName>,
     graph: &'a mut ScopeGraph,
-    /// Module path of the file itself; see
-    /// [`ScopeDepVisitor`](super::scope_dep::ScopeDepVisitor)'s field of the
-    /// same name (`None` outside `src/`, or under `src/bin/`).
-    file_module: Option<Vec<String>>,
     /// Names of the inline `mod` blocks currently being visited.
     mod_stack: Vec<String>,
     /// `#[arch_lint::allow(...)]` directives of every enclosing `mod` (with a
@@ -78,7 +76,6 @@ impl<'a> ScopeEdgeCollector<'a> {
         }
 
         let mut collector = Self {
-            file_module: file_module_segments(&ctx.relative_path),
             ctx,
             config,
             file_scopes,
@@ -90,12 +87,11 @@ impl<'a> ScopeEdgeCollector<'a> {
     }
 
     /// The module path at the visitor's current position: the file's own
-    /// module path, plus the inline `mod` blocks currently entered. `None`
-    /// when the file itself has no resolvable module path.
+    /// module path ([`FileContext::crate_module`]), plus the inline `mod`
+    /// blocks currently entered. `None` when the file itself has no
+    /// crate-relative module path.
     fn current_module(&self) -> Option<Vec<String>> {
-        let mut module = self.file_module.clone()?;
-        module.extend(self.mod_stack.iter().cloned());
-        Some(module)
+        module_at(self.ctx, &self.mod_stack)
     }
 
     /// Pushes one enclosing scope's `#[arch_lint::allow(...)]` directives
@@ -155,7 +151,12 @@ impl<'a> ScopeEdgeCollector<'a> {
         let current_module = is_relative_path(path)
             .then(|| self.current_module())
             .flatten();
-        let targets = resolve_relative_target_scopes(self.config, current_module.as_deref(), path);
+        let targets = resolve_relative_target_scopes(
+            self.config,
+            self.ctx.crate_root(),
+            current_module.as_deref(),
+            path,
+        );
         if targets.is_empty() {
             return;
         }
