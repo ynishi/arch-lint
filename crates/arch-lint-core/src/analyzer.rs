@@ -2,6 +2,7 @@
 
 use crate::config::{Config, RuleConfig};
 use crate::context::{FileContext, ProjectContext};
+use crate::crate_roots::{manifest_declares_package, CrateRoots};
 use crate::declarative::graph::ScopeGraph;
 use crate::declarative::model::DeclarativeConfig;
 use crate::declarative::rules::ScopeEdgeCollector;
@@ -284,13 +285,15 @@ impl Analyzer {
 
         let mut result = LintResult::new();
         let files = self.discover_files()?;
+        let cargo_files = self.discover_cargo_files()?;
+        let roots = self.crate_roots(&cargo_files);
 
         info!("Found {} files to analyze", files.len());
 
         // Run per-file rules; the scope graph is collected on the same pass.
         let mut graph = self.empty_graph();
         for file_path in &files {
-            match self.analyze_file(file_path, &mut graph) {
+            match self.analyze_file(file_path, &roots, &mut graph) {
                 Ok(violations) => {
                     result.violations.extend(violations);
                     result.files_checked += 1;
@@ -308,7 +311,7 @@ impl Analyzer {
         // Run project-wide rules
         let project_ctx = ProjectContext::new(&self.root)
             .with_source_files(files.clone())
-            .with_cargo_files(self.discover_cargo_files()?)
+            .with_cargo_files(cargo_files)
             .with_scope_graph(graph);
 
         for rule in &self.project_rules {
@@ -357,10 +360,11 @@ impl Analyzer {
             return Ok(graph);
         };
 
+        let roots = self.crate_roots(&self.discover_cargo_files()?);
         for path in &self.discover_files()? {
             match Self::read_and_parse(path) {
                 Ok((content, ast)) => {
-                    let ctx = FileContext::new(path, &content, &self.root);
+                    let ctx = FileContext::new(path, &content, &self.root).with_crate_roots(&roots);
                     ScopeEdgeCollector::collect(declarative, &ctx, &ast, &mut graph);
                 }
                 Err(AnalyzerError::Parse { path, message }) => {
@@ -394,17 +398,47 @@ impl Analyzer {
         Ok((content, ast))
     }
 
+    /// Finds the packages among `cargo_files`: the manifests that have a
+    /// `[package]` table, each as its root-relative directory.
+    ///
+    /// A virtual manifest (`[workspace]` only) is not a package. A manifest
+    /// that cannot be read or parsed is skipped with a warning, and its files
+    /// fall back to the enclosing package (or the analyzer root), as they do
+    /// when the manifest is excluded from discovery.
+    fn crate_roots(&self, cargo_files: &[PathBuf]) -> CrateRoots {
+        let mut dirs = Vec::new();
+        for manifest in cargo_files {
+            let content = match std::fs::read_to_string(manifest) {
+                Ok(content) => content,
+                Err(e) => {
+                    warn!("Failed to read {}: {}", manifest.display(), e);
+                    continue;
+                }
+            };
+            match manifest_declares_package(&content) {
+                Ok(true) => {
+                    let dir = manifest.parent().unwrap_or(manifest);
+                    dirs.push(self.relative_to_root(dir).to_path_buf());
+                }
+                Ok(false) => debug!("Not a package manifest: {}", manifest.display()),
+                Err(e) => warn!("Failed to parse {}: {}", manifest.display(), e),
+            }
+        }
+        CrateRoots::new(dirs)
+    }
+
     /// Analyzes a single file and returns violations, recording its
     /// scope-crossing references into `graph`.
     fn analyze_file(
         &self,
         path: &Path,
+        roots: &CrateRoots,
         graph: &mut ScopeGraph,
     ) -> Result<Vec<Violation>, AnalyzerError> {
         debug!("Analyzing: {}", path.display());
 
         let (content, ast) = Self::read_and_parse(path)?;
-        let ctx = FileContext::new(path, &content, &self.root);
+        let ctx = FileContext::new(path, &content, &self.root).with_crate_roots(roots);
 
         if let Some(declarative) = &self.declarative {
             ScopeEdgeCollector::collect(declarative, &ctx, &ast, graph);

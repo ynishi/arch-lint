@@ -17,18 +17,18 @@
 use crate::context::FileContext;
 use crate::rule::Rule;
 use crate::types::Violation;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Builds a [`FileContext`] for `content` at `path` with no module path.
+/// Builds a [`FileContext`] for `content` at `path`, taken as relative to the
+/// project root (which is also the crate root), so `src/foo.rs` has the module
+/// path `["crate", "foo"]`.
+///
+/// `is_test` is used as given, not detected from `path`.
 #[must_use]
 pub fn file_ctx<'a>(path: &'a str, content: &'a str, is_test: bool) -> FileContext<'a> {
-    FileContext {
-        path: Path::new(path),
-        content,
-        is_test,
-        module_path: vec![],
-        relative_path: PathBuf::from(path),
-    }
+    let mut ctx = FileContext::new(Path::new(path), content, Path::new(""));
+    ctx.is_test = is_test;
+    ctx
 }
 
 /// Parses `code` and runs `rule` over it as the non-test file `test.rs`.

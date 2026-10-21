@@ -277,6 +277,60 @@ attribute on the `use` item itself or on an enclosing
 in-scope edge is an offence, so the missing-reason warning does not depend
 on the site lying on a cycle.
 
+## How scope paths resolve
+
+The rules that follow references between scopes — `[[deny-scope-dep]]`,
+`[[layering]]` and the graph rules `[[acyclic]]`, `[[independent]]` and
+`[[allow-dep]]` — map a `crate::a::b`, `self::a` or `super::a` path to the
+file it names (`src/a/b.rs` or `src/a/b/mod.rs`) and look up the scope that
+file belongs to.
+
+- **Scope globs** (`paths`, `exclude`) are relative to the analyzer root,
+  whatever the layout.
+- **`crate::`, `self::` and `super::`** resolve against the `src/` of the
+  package the *referencing* file belongs to: the nearest ancestor directory,
+  within the analyzer root, whose `Cargo.toml` has a `[package]` table. A
+  virtual manifest (`[workspace]` only) is not a package. A file under no
+  package resolves against the analyzer root.
+
+So one config at a workspace root covers its member crates, with scopes
+written as paths from that root:
+
+```toml
+# arch-lint.toml at the workspace root; members live under crates/
+[[scopes]]
+name = "domain"
+paths = ["crates/app-core/src/domain/**"]
+
+[[scopes]]
+name = "infra"
+paths = ["crates/app-core/src/infra/**"]
+
+[[deny-scope-dep]]
+from = "domain"
+to = ["infra"]
+message = "Domain must not depend on infra."
+```
+
+`crate::infra::db::connect()` in `crates/app-core/src/domain/mod.rs` resolves
+to `crates/app-core/src/infra/db.rs` (or `.../db/mod.rs`) and is reported.
+
+Limitations:
+
+- `[lib] path` and `[[bin]] path` overrides are ignored: the source root is
+  always `<package>/src`.
+- `crate::` in a file under `tests/`, `examples/`, `benches/` or
+  `src/bin/*.rs` — each its own crate — still maps to `<package>/src`;
+  `self::` and `super::` are not resolved there.
+- Cross-crate references (`use other_crate::...`) and bare paths are not
+  followed; neither are `pub use` re-export chains.
+- When the analyzer root is inside a package (say `crates/app-core/src`), no
+  manifest is seen and paths resolve against the analyzer root.
+- A package whose `Cargo.toml` is excluded from the analysis (but whose
+  sources are not) is not seen: its files are attributed to the enclosing
+  package. A manifest that cannot be parsed is skipped the same way, with a
+  warning.
+
 ## Real-World Example: Review Feedback to Rule
 
 **Before** — a reviewer has to say this every time:

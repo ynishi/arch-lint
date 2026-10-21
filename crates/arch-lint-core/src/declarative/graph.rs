@@ -172,7 +172,10 @@ impl EdgeSite {
 /// order).
 ///
 /// Limitation (v1): `crate::`, `self::` and `super::` paths are resolved to
-/// a scope; bare paths and `pub use` re-export chains are not followed.
+/// a scope, against the package the referencing file belongs to (the nearest
+/// `Cargo.toml` with a `[package]` table; see
+/// [`FileContext::crate_root`](crate::FileContext::crate_root)); bare paths,
+/// cross-crate paths and `pub use` re-export chains are not followed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScopeGraph {
     nodes: BTreeSet<ScopeName>,

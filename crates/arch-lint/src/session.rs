@@ -1072,4 +1072,64 @@ message = "m"
 
         assert_eq!(Session::find_workspace_root(&dir), dir);
     }
+
+    // ── Package-relative scope resolution ──
+
+    /// A config at a workspace root, with scopes under a member crate, sees
+    /// the member's `crate::` references: a domain → app reference in the
+    /// member is an ALD004 violation and a `domain → app` graph edge.
+    #[test]
+    fn layering_applies_to_a_workspace_member_through_the_session() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let write = |relative: &str, content: &str| {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        };
+        write("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n");
+        write(
+            "crates/a-core/Cargo.toml",
+            "[package]\nname = \"a-core\"\nversion = \"0.1.0\"\n",
+        );
+        write(
+            "crates/a-core/src/domain/mod.rs",
+            "use crate::app::helper;\n",
+        );
+        write("crates/a-core/src/app/mod.rs", "pub fn helper() {}\n");
+        write(
+            "arch-lint.toml",
+            r#"
+[[scopes]]
+name = "domain"
+paths = ["crates/a-core/src/domain/**"]
+
+[[scopes]]
+name = "app"
+paths = ["crates/a-core/src/app/**"]
+
+[[layering]]
+name = "layers"
+order = ["app", "domain"]
+message = "Layers only depend downward."
+severity = "error"
+"#,
+        );
+
+        let session = Session::discover(root).expect("discover");
+        let graph = session.scope_graph().expect("scope graph");
+        assert_eq!(graph.edge_count(), 1, "{graph:#?}");
+
+        let result = session.run().expect("run");
+        let layering: Vec<_> = result
+            .violations
+            .iter()
+            .filter(|v| v.code == "ALD004")
+            .collect();
+        assert_eq!(layering.len(), 1, "{:#?}", result.violations);
+        assert_eq!(
+            layering[0].location.file,
+            PathBuf::from("crates/a-core/src/domain/mod.rs")
+        );
+    }
 }

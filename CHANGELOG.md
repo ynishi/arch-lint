@@ -7,7 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`FileContext::crate_root()` and `FileContext::crate_module()`.**
+  `crate_root()` is the root-relative directory of the package the file
+  belongs to (empty for the analyzer root); `crate_module()` is
+  `module_path` without the leading `crate`, or `None` when the file has no
+  crate-relative module path.
+
+### Changed
+
+- **`FileContext` is now `#[non_exhaustive]`, and `FileContext::module_path`
+  is crate-relative, as its doc always said.** Construct a `FileContext` with
+  `FileContext::new`, not a struct literal. `src/foo/bar.rs` used to give
+  `["crate", "src", "foo", "bar"]` and now gives `["crate", "foo", "bar"]`;
+  `src/lib.rs` and `src/main.rs` give `["crate"]`. A file outside `src/` or
+  under `src/bin/`, `test.rs` included, now gives `[]` (each of those is its
+  own crate root).
+
 ### Fixed
+
+- **ALD003, ALD004 and the scope graph now resolve `crate::`, `self::` and
+  `super::` against the package the referencing file belongs to, so they
+  work for workspace members.** The scope graph feeds ALD009, ALD010, ALD011
+  and `arch-lint graph`. A path was mapped to `src/...` relative to the
+  analyzer root, so in a Cargo workspace analyzed from its root, with scopes
+  such as `crates/foo/src/domain/**`, `crate::app::helper()` in a member
+  resolved to no scope and nothing was reported. The package is the nearest
+  ancestor directory, within the analyzer root, whose `Cargo.toml` has a
+  `[package]` table (a virtual manifest is not one); scope globs stay
+  relative to the analyzer root. A file under no package resolves against the
+  analyzer root as before. See "How scope paths resolve" in
+  `docs/declarative-rules.md`.
 
 - **`self-check.yml`'s `plain` job no longer asserts a composite action
   output that GitHub does not expose on failure.** The job's action step
