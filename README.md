@@ -33,7 +33,7 @@ Kotlin first) for cross-language layering.
   [Releases page](https://github.com/ynishi/arch-lint/releases), one archive
   per platform containing both `arch-lint` and `cargo-arch-lint`, each with
   its own `.sha256` checksum file.
-- **GitHub Action**: `uses: ynishi/arch-lint@arch-lint-v0.9.0` — installs
+- **GitHub Action**: `uses: ynishi/arch-lint@arch-lint-v0.10.0` — installs
   the CLI and uploads SARIF to code scanning in one step (pin a release tag,
   for example `arch-lint-v0.9.0` — the first to ship the action and the
   hook; see [docs/cli.md](docs/cli.md#github-actions)).

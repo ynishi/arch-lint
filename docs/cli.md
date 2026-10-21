@@ -202,7 +202,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ynishi/arch-lint@arch-lint-v0.9.0
+      - uses: ynishi/arch-lint@arch-lint-v0.10.0
 ```
 
 Pin a release tag, for example `arch-lint-v0.9.0` — the first to ship
@@ -301,7 +301,7 @@ cargo install --locked arch-lint-cli   # or: cargo binstall arch-lint-cli
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ynishi/arch-lint
-    rev: arch-lint-v0.9.0
+    rev: arch-lint-v0.10.0
     hooks:
       - id: arch-lint
 ```

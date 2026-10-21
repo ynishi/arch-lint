@@ -8,7 +8,7 @@
 //!
 //! ```toml
 //! [dev-dependencies]
-//! arch-lint = "0.9"
+//! arch-lint = "0.10"
 //! ```
 //!
 //! ```rust,ignore
