@@ -8,6 +8,8 @@
 //! Converts domain model rules into [`Rule`](crate::rule::Rule) trait
 //! implementations that analyze `syn` ASTs. One submodule per rule kind; this
 //! module holds the re-exports and the helpers shared by two or more of them.
+//! Analysis parts a rule is built on live beside them: `use_bindings` resolves
+//! the names a file's `use` declarations bring into scope.
 
 use quote::ToTokens;
 use syn::spanned::Spanned;
@@ -30,6 +32,7 @@ mod require_use;
 mod restrict_use;
 mod scope_dep;
 mod suppress;
+mod use_bindings;
 
 pub(crate) use collect::ScopeEdgeCollector;
 pub(crate) use suppress::{missing_reason_violation, Decision, Suppressions};
@@ -56,12 +59,28 @@ pub(crate) struct ResolvedUse {
     pub(crate) path: String,
     /// Span of the leaf node for error reporting.
     pub(crate) span: proc_macro2::Span,
+    /// The name this leaf brings into scope, if any (see [`UseBinding`]).
+    pub(crate) binding: Option<UseBinding>,
+}
+
+/// A name a `use` leaf brings into scope: `use a::B as C;` binds `C` to `a::B`.
+pub(crate) struct UseBinding {
+    /// The name in scope.
+    pub(crate) name: String,
+    /// The path it stands for, as written in the `use`.
+    pub(crate) target: String,
 }
 
 /// Recursively expands a [`syn::UseTree`] into flat `::` separated paths.
 ///
 /// For example, `use std::collections::{HashMap, BTreeMap};` expands to
 /// `["std::collections::HashMap", "std::collections::BTreeMap"]`.
+///
+/// Each leaf also carries the name it binds. A name binds itself
+/// (`B` → `a::B`), a rename its alias (`C` → `a::B`, none for `as _`), and
+/// `self` in a group the group's parent (`use a::{self}` binds `a` → `a`,
+/// `{self as x}` binds `x` → `a`). A glob binds nothing. `path` is not
+/// affected: `use a::{self}` is still `a::self`.
 pub(crate) fn expand_use_tree(tree: &syn::UseTree, prefix: &str) -> Vec<ResolvedUse> {
     match tree {
         syn::UseTree::Path(p) => {
@@ -78,9 +97,18 @@ pub(crate) fn expand_use_tree(tree: &syn::UseTree, prefix: &str) -> Vec<Resolved
             } else {
                 format!("{prefix}::{}", n.ident)
             };
+            let binding = if n.ident == "self" {
+                group_self_binding(prefix, None)
+            } else {
+                Some(UseBinding {
+                    name: n.ident.to_string(),
+                    target: path.clone(),
+                })
+            };
             vec![ResolvedUse {
                 path,
                 span: n.ident.span(),
+                binding,
             }]
         }
         syn::UseTree::Rename(r) => {
@@ -89,9 +117,20 @@ pub(crate) fn expand_use_tree(tree: &syn::UseTree, prefix: &str) -> Vec<Resolved
             } else {
                 format!("{prefix}::{}", r.ident)
             };
+            let binding = if r.rename == "_" {
+                None
+            } else if r.ident == "self" {
+                group_self_binding(prefix, Some(r.rename.to_string()))
+            } else {
+                Some(UseBinding {
+                    name: r.rename.to_string(),
+                    target: path.clone(),
+                })
+            };
             vec![ResolvedUse {
                 path,
                 span: r.ident.span(),
+                binding,
             }]
         }
         syn::UseTree::Glob(g) => {
@@ -103,6 +142,7 @@ pub(crate) fn expand_use_tree(tree: &syn::UseTree, prefix: &str) -> Vec<Resolved
             vec![ResolvedUse {
                 path,
                 span: g.span(),
+                binding: None,
             }]
         }
         syn::UseTree::Group(g) => g
@@ -111,6 +151,19 @@ pub(crate) fn expand_use_tree(tree: &syn::UseTree, prefix: &str) -> Vec<Resolved
             .flat_map(|item| expand_use_tree(item, prefix))
             .collect(),
     }
+}
+
+/// The binding made by `self` inside a group: `use a::b::{self}` binds the
+/// last segment of the parent (`b`) to the parent (`a::b`), or `alias` to it.
+fn group_self_binding(parent: &str, alias: Option<String>) -> Option<UseBinding> {
+    let name = alias.or_else(|| parent.rsplit("::").next().map(str::to_string))?;
+    if parent.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some(UseBinding {
+        name,
+        target: parent.to_string(),
+    })
 }
 
 /// Converts an inline qualified path (expression, type, trait bound, or
@@ -125,6 +178,10 @@ pub(crate) fn expand_use_tree(tree: &syn::UseTree, prefix: &str) -> Vec<Resolved
 /// `scope_dep::resolve_relative_target_scopes`. Generic arguments are
 /// dropped, so `crate::infra::Db::<T>` becomes `crate::infra::Db`; paths
 /// nested inside generic arguments are visited separately by syn.
+///
+/// The string is the path as written. Resolving the name it starts with
+/// through the file's `use` declarations, for restrict-use, is done by
+/// `use_bindings::UseBindings`.
 pub(crate) fn inline_path_to_string(path: &syn::Path) -> Option<String> {
     if path.segments.len() < 2 {
         return None;
@@ -556,6 +613,14 @@ mod tests {
         let paths = expand_use_tree(&item.tree, "");
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].path, "serde");
+    }
+
+    #[test]
+    fn expand_self_in_group_keeps_the_written_path() {
+        let item = extract_use_tree("use a::{self, B};");
+        let paths = expand_use_tree(&item.tree, "");
+        let strs: Vec<&str> = paths.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(strs, ["a::self", "a::B"]);
     }
 
     // ── inline_path_to_string ──

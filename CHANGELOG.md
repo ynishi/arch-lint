@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`[[restrict-use]]` (ALD001) now resolves the names a `use` binds, so
+  `use uuid::Uuid;` followed by `Uuid::new_v7()` matches a deny of
+  `uuid::Uuid::new_v7`.** Inline paths were matched only as written, and a
+  function of a type cannot be imported, so such a deny never matched the
+  import line or the short form. Renames (`as U`) and `self` in a group
+  (`use chrono::{self, Utc};`) are followed too. The number of existing
+  violations does not change; the only new ones are uses of a deeper path
+  whose import line the rule did not match. See `docs/declarative-rules.md`
+  for what is not resolved.
+
 ## [0.11.0] - 2026-10-21
 
 ### Added

@@ -16,6 +16,10 @@ fn patterns_fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/declarative_patterns")
 }
 
+fn bindings_fixture_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/declarative_bindings")
+}
+
 fn suppression_fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/declarative_suppression")
 }
@@ -463,6 +467,56 @@ fn detects_every_predefined_pattern() {
     );
 
     assert_eq!(result.violations.len(), 5, "{summary:#?}");
+}
+
+/// `[[restrict-use]]` resolves the names a `use` binds: a deny on a function
+/// of a type (which `use` cannot import) is caught through the imported name,
+/// through its rename and through `self` in a group, once per path, while a
+/// denied or excepted import is left to its own `use` line.
+#[test]
+fn restrict_use_resolves_names_bound_by_use() {
+    let root = bindings_fixture_root();
+    let toml_content = std::fs::read_to_string(root.join("arch-lint.toml")).unwrap();
+    let (config, rules) = load_config_and_rules(&toml_content);
+
+    let mut builder = Analyzer::builder().root(&root).config(config);
+    for rule in rules {
+        builder = builder.rule_box(rule);
+    }
+    let result = builder.build().unwrap().analyze().unwrap();
+
+    let mut found: Vec<(String, String, usize)> = result
+        .violations
+        .iter()
+        .map(|v| {
+            (
+                v.rule.clone(),
+                v.location.file.to_string_lossy().replace('\\', "/"),
+                v.location.line,
+            )
+        })
+        .collect();
+    found.sort();
+
+    let expected = [
+        // The name, the rename and `{self, Utc}` are new; the two paths
+        // written in full were found before and are still one each.
+        ("no-ids-or-clock-in-domain", "src/domain/ids.rs", 5),
+        ("no-ids-or-clock-in-domain", "src/domain/ids.rs", 6),
+        ("no-ids-or-clock-in-domain", "src/domain/ids.rs", 7),
+        ("no-ids-or-clock-in-domain", "src/domain/ids.rs", 8),
+        ("no-ids-or-clock-in-domain", "src/domain/ids.rs", 9),
+        // Only the `use` line: `Pool::connect()` after it adds nothing.
+        ("no-sqlx-in-domain", "src/domain/db.rs", 1),
+        // `except = ["uuid::Uuid"]` accepts `Uuid::nil()` through the import
+        // but not the path written in full.
+        ("uuid-type-only", "src/domain/asymmetry.rs", 4),
+    ];
+    let expected: Vec<(String, String, usize)> = expected
+        .iter()
+        .map(|(rule, file, line)| ((*rule).to_string(), (*file).to_string(), *line))
+        .collect();
+    assert_eq!(found, expected, "{:#?}", result.violations);
 }
 
 #[test]

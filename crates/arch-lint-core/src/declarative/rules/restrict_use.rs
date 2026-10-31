@@ -11,6 +11,8 @@ use crate::declarative::model::{DeclarativeConfig, RestrictUse};
 use crate::rule::Rule;
 use crate::types::{Location, Violation};
 
+use super::suppress::ScopeMark;
+use super::use_bindings::{Mark, Resolution, UseBindings};
 use super::{expand_use_tree, inline_path_to_string, Decision, Suppressions};
 
 const RESTRICT_USE_NAME: &str = "restrict-use";
@@ -21,6 +23,30 @@ const RESTRICT_USE_CODE: &str = "ALD001";
 /// For each file, determines which restrict-use rules apply based on
 /// scope membership, then checks every `use` import — and, unless
 /// `check-inline = false`, every inline qualified path — against the deny list.
+///
+/// An inline path is matched as written, and also as the `use` declarations of
+/// the file resolve it: with `use uuid::Uuid;` in scope, `Uuid::new_v7()` is
+/// matched as `uuid::Uuid::new_v7` too (see `UseBindings` for what is
+/// resolved). A path is reported once, as written if that is denied. The
+/// resolved path is tried only when the import it goes through (`uuid::Uuid`)
+/// is neither denied nor excepted by the rule: the `use` line has already
+/// decided that, so `deny = ["sqlx::**"]` reports `use sqlx::Pool;` and not
+/// every `Pool::connect()` after it, and an allow on the `use` line is not
+/// undone where the name is used.
+///
+/// Three limits follow from these rules:
+///
+/// - Asymmetry of `except`: with `deny = ["uuid::**"]` and
+///   `except = ["uuid::Uuid"]`, `use uuid::Uuid;` makes `Uuid::new_v7()`
+///   acceptable, while a written `uuid::Uuid::new_v7()` is reported. To forbid
+///   the function, deny it by name (`uuid::Uuid::new_v7`) rather than excepting
+///   the type.
+/// - A name that resolves to an item of the same file (`mod uuid { .. }`) is
+///   matched as written only, so it can still hit a deny for an external
+///   crate of that name. That is how paths were matched before.
+/// - A glob import in an inner block can hide a named import of the outer
+///   scope, but globs are not resolved, so the outer import is used and the
+///   path may be reported wrongly. Suppress it with an allow.
 pub struct RestrictUseRule {
     config: Arc<DeclarativeConfig>,
 }
@@ -73,6 +99,7 @@ impl Rule for RestrictUseRule {
             ctx,
             applicable,
             scopes,
+            bindings: UseBindings::default(),
             violations: Vec::new(),
         };
         visitor.visit_file(ast);
@@ -80,30 +107,149 @@ impl Rule for RestrictUseRule {
     }
 }
 
+/// Opens a suppression scope for the attributes of the node being entered.
+type EnterScope = fn(&mut Suppressions, &[syn::Attribute]) -> ScopeMark;
+
 struct RestrictUseVisitor<'a> {
     ctx: &'a FileContext<'a>,
     applicable: Vec<&'a RestrictUse>,
     scopes: Suppressions,
+    bindings: UseBindings,
     violations: Vec<Violation>,
 }
 
+impl RestrictUseVisitor<'_> {
+    /// Runs `body` inside the suppression scope (when there is one) and the
+    /// name-binding frame that `frame` opens, and leaves both afterwards, so
+    /// the two stacks cannot drift apart.
+    fn scoped(
+        &mut self,
+        suppress: Option<(&[syn::Attribute], EnterScope)>,
+        frame: impl FnOnce(&mut UseBindings) -> Mark,
+        body: impl FnOnce(&mut Self),
+    ) {
+        let scope_mark = suppress.map(|(attrs, enter)| enter(&mut self.scopes, attrs));
+        let frame_mark = frame(&mut self.bindings);
+        body(self);
+        self.bindings.exit(frame_mark);
+        if let Some(mark) = scope_mark {
+            self.scopes.exit(mark);
+        }
+    }
+
+    /// Opens only the frame for the type parameters of `generics`.
+    fn with_generics(&mut self, generics: &syn::Generics, body: impl FnOnce(&mut Self)) {
+        self.scoped(None, |bindings| bindings.enter_generics(generics), body);
+    }
+
+    /// Opens the frame for the type parameters of a struct, enum, union or
+    /// trait, where `Self` is the item itself and not an enclosing `impl`.
+    fn with_own_self(&mut self, generics: &syn::Generics, body: impl FnOnce(&mut Self)) {
+        self.scoped(
+            None,
+            |bindings| {
+                let mark = bindings.enter_generics(generics);
+                bindings.hide_self();
+                mark
+            },
+            body,
+        );
+    }
+}
+
 impl<'ast> Visit<'ast> for RestrictUseVisitor<'_> {
+    fn visit_file(&mut self, node: &'ast syn::File) {
+        self.scoped(
+            None,
+            |bindings| bindings.enter_module(&node.items),
+            |v| syn::visit::visit_file(v, node),
+        );
+    }
+
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-        let mark = self.scopes.enter_item_mod(&node.attrs);
-        syn::visit::visit_item_mod(self, node);
-        self.scopes.exit(mark);
+        self.scoped(
+            Some((&node.attrs, Suppressions::enter_item_mod)),
+            |bindings| match &node.content {
+                Some((_, items)) => bindings.enter_module(items),
+                // `mod foo;` has no body to scope: open nothing.
+                None => bindings.enter_block(&[]),
+            },
+            |v| syn::visit::visit_item_mod(v, node),
+        );
+    }
+
+    fn visit_block(&mut self, node: &'ast syn::Block) {
+        self.scoped(
+            None,
+            |bindings| bindings.enter_block(&node.stmts),
+            |v| syn::visit::visit_block(v, node),
+        );
     }
 
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        let mark = self.scopes.enter_item_fn(&node.attrs);
-        syn::visit::visit_item_fn(self, node);
-        self.scopes.exit(mark);
+        self.scoped(
+            Some((&node.attrs, Suppressions::enter_item_fn)),
+            |bindings| bindings.enter_generics(&node.sig.generics),
+            |v| syn::visit::visit_item_fn(v, node),
+        );
     }
 
     fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
-        let mark = self.scopes.enter_block(&node.attrs);
-        syn::visit::visit_item_impl(self, node);
-        self.scopes.exit(mark);
+        self.scoped(
+            Some((&node.attrs, Suppressions::enter_block)),
+            |bindings| {
+                // `Self` is bound inside the generics, so a type parameter
+                // as the self type is seen; `exit` leaves both frames.
+                let mark = bindings.enter_generics(&node.generics);
+                bindings.enter_self(&node.self_ty);
+                mark
+            },
+            |v| syn::visit::visit_item_impl(v, node),
+        );
+    }
+
+    fn visit_item_trait(&mut self, node: &'ast syn::ItemTrait) {
+        self.with_own_self(&node.generics, |v| syn::visit::visit_item_trait(v, node));
+    }
+
+    fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
+        self.with_own_self(&node.generics, |v| syn::visit::visit_item_struct(v, node));
+    }
+
+    fn visit_item_enum(&mut self, node: &'ast syn::ItemEnum) {
+        self.with_own_self(&node.generics, |v| syn::visit::visit_item_enum(v, node));
+    }
+
+    fn visit_item_union(&mut self, node: &'ast syn::ItemUnion) {
+        self.with_own_self(&node.generics, |v| syn::visit::visit_item_union(v, node));
+    }
+
+    fn visit_item_type(&mut self, node: &'ast syn::ItemType) {
+        self.with_generics(&node.generics, |v| syn::visit::visit_item_type(v, node));
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        self.with_generics(&node.sig.generics, |v| {
+            syn::visit::visit_impl_item_fn(v, node);
+        });
+    }
+
+    fn visit_impl_item_type(&mut self, node: &'ast syn::ImplItemType) {
+        self.with_generics(&node.generics, |v| {
+            syn::visit::visit_impl_item_type(v, node);
+        });
+    }
+
+    fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
+        self.with_generics(&node.sig.generics, |v| {
+            syn::visit::visit_trait_item_fn(v, node);
+        });
+    }
+
+    fn visit_trait_item_type(&mut self, node: &'ast syn::TraitItemType) {
+        self.with_generics(&node.generics, |v| {
+            syn::visit::visit_trait_item_type(v, node);
+        });
     }
 
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
@@ -154,11 +300,35 @@ impl<'ast> Visit<'ast> for RestrictUseVisitor<'_> {
     fn visit_path(&mut self, node: &'ast syn::Path) {
         // `use` statements contain `UseTree` nodes, not `syn::Path`,
         // so this never double-reports an import already flagged above.
-        if let Some(path) = inline_path_to_string(node) {
+        if let Some(spelled) = inline_path_to_string(node) {
+            // Resolved on first need: most paths are denied by no rule.
+            let mut imported: Option<Option<(Option<String>, String)>> = None;
             for (index, rule) in self.applicable.iter().enumerate() {
-                if !rule.check_inline() || !rule.is_denied(&path) {
+                if !rule.check_inline() {
                     continue;
                 }
+                // The path as written wins. Only when it is not denied is
+                // the path through the import tried, and only if the rule
+                // has no opinion on the import itself: the `use` line has
+                // already decided that, and deciding again here would
+                // report it twice or break its suppression.
+                let shown = if rule.is_denied(&spelled) {
+                    format!("`{spelled}`")
+                } else if let Some((_, full)) = imported
+                    .get_or_insert_with(|| match self.bindings.resolve(node) {
+                        Resolution::Imported { decided, full } => Some((decided, full)),
+                        Resolution::Local | Resolution::Unbound => None,
+                    })
+                    .as_ref()
+                    .filter(|(decided, full)| {
+                        !decided.as_deref().is_some_and(|d| rule.mentions(d))
+                            && rule.is_denied(full)
+                    })
+                {
+                    format!("`{spelled}` (resolves to `{full}`)")
+                } else {
+                    continue;
+                };
                 match self
                     .scopes
                     .decide(index, self.ctx, RESTRICT_USE_CODE, node.span(), None)
@@ -178,7 +348,7 @@ impl<'ast> Visit<'ast> for RestrictUseVisitor<'_> {
                             rule.name(),
                             rule.severity(),
                             location,
-                            format!("{}: `{}`", rule.message(), path),
+                            format!("{}: {shown}", rule.message()),
                         );
                         if let Some(doc) = rule.doc_ref() {
                             violation = violation.with_doc_ref(doc);
@@ -626,6 +796,246 @@ mod tests {
 
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("sqlx::Pool"));
+    }
+
+    // ── names bound by `use` ──
+
+    /// Runs one rule over `src/domain/service.rs` with the given patterns.
+    fn check_names(deny: &[&str], except: &[&str], code: &str) -> Vec<Violation> {
+        let scopes = vec![Scope::new(
+            ScopeName::new("domain").unwrap(),
+            vec![GlobPattern::new("src/domain/**").unwrap()],
+        )];
+        let pattern = |p: &&str| UsePattern::new(p).unwrap();
+        let restrict = vec![RestrictUse::new(
+            "no-id-gen".to_string(),
+            ScopeRef::Named(ScopeName::new("domain").unwrap()),
+            deny.iter().map(pattern).collect(),
+            "No id generation in domain.".to_string(),
+            None,
+            Severity::Error,
+        )
+        .with_except(except.iter().map(pattern).collect())];
+        let config = Arc::new(DeclarativeConfig::new(scopes, restrict, vec![], vec![]).unwrap());
+        let rule = RestrictUseRule::new(config);
+        let ctx = make_ctx("src/domain/service.rs", code);
+        let ast = parse_file(code);
+        rule.check(&ctx, &ast)
+    }
+
+    const NEW_V7: &[&str] = &["uuid::Uuid::new_v7"];
+
+    #[test]
+    fn name_bound_by_use_is_matched_as_the_imported_path() {
+        let code = "use uuid::Uuid;\nfn f() { let _ = Uuid::new_v7(); }";
+        let violations = check_names(NEW_V7, &[], code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].location.line, 2);
+    }
+
+    #[test]
+    fn renamed_import_is_matched_as_the_original_path() {
+        let code = "use uuid::Uuid as U;\nfn f() { let _ = U::new_v7(); }";
+        assert_eq!(check_names(NEW_V7, &[], code).len(), 1);
+    }
+
+    #[test]
+    fn self_in_a_group_binds_the_parent_name() {
+        let deny = ["chrono::Utc::now"];
+        let code =
+            "use chrono::{self, Utc};\nfn f() { let _ = Utc::now(); let _ = chrono::Utc::now(); }";
+        let violations = check_names(&deny, &[], code);
+
+        assert_eq!(violations.len(), 2, "{violations:#?}");
+        assert!(violations[0].message.contains("(resolves to"));
+        assert!(!violations[1].message.contains("(resolves to"));
+    }
+
+    #[test]
+    fn use_inside_a_fn_body_binds_until_the_body_ends() {
+        let code = "fn f() { use uuid::Uuid; let _ = Uuid::new_v7(); }\nfn g() { let _ = Uuid::new_v7(); }";
+        let violations = check_names(NEW_V7, &[], code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].location.line, 1);
+    }
+
+    #[test]
+    fn nested_mod_does_not_see_the_outer_import() {
+        let outer = "use uuid::Uuid;\nmod inner { fn f() { let _ = Uuid::new_v7(); } }";
+        assert!(check_names(NEW_V7, &[], outer).is_empty());
+
+        let own = "mod inner { use uuid::Uuid; fn f() { let _ = Uuid::new_v7(); } }";
+        assert_eq!(check_names(NEW_V7, &[], own).len(), 1);
+    }
+
+    #[test]
+    fn struct_in_a_block_hides_the_outer_import() {
+        let code = "use uuid::Uuid;\nfn f() { struct Uuid; let _ = Uuid::new_v7(); }";
+        assert!(check_names(NEW_V7, &[], code).is_empty());
+    }
+
+    #[test]
+    fn const_and_fn_in_a_block_do_not_hide_the_outer_import() {
+        let code = "use uuid::Uuid;\nfn a() { const Uuid: u8 = 0; let _ = Uuid::new_v7(); }\nfn b() { fn Uuid() {} let _ = Uuid::new_v7(); }";
+        assert_eq!(check_names(NEW_V7, &[], code).len(), 2);
+    }
+
+    #[test]
+    fn glob_import_is_not_resolved() {
+        let code = "use uuid::*;\nfn f() { let _ = Uuid::new_v7(); }";
+        assert!(check_names(NEW_V7, &[], code).is_empty());
+    }
+
+    #[test]
+    fn type_parameter_hides_the_outer_import() {
+        let code = "use uuid::Uuid;\nfn f<Uuid: Tr>() { let _ = Uuid::new_v7(); }\nstruct S<Uuid: Tr>(Uuid::Out);";
+        assert!(check_names(&["uuid::Uuid::*"], &[], code).is_empty());
+    }
+
+    #[test]
+    fn self_in_an_impl_follows_the_self_type() {
+        let code = "use uuid::Uuid;\nstruct W;\nimpl Tr for Uuid { fn f() { let _ = Self::new_v7(); } }\nimpl Tr for W { fn f() { let _ = Self::new_v7(); } }";
+        let violations = check_names(NEW_V7, &[], code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].location.line, 3);
+        assert!(violations[0]
+            .message
+            .contains("`Self::new_v7` (resolves to `uuid::Uuid::new_v7`)"));
+    }
+
+    #[test]
+    fn extern_crate_rename_is_matched_as_the_crate() {
+        let code = "extern crate uuid as id;\nfn f() { let _ = id::Uuid::new_v7(); }";
+        assert_eq!(check_names(NEW_V7, &[], code).len(), 1);
+    }
+
+    #[test]
+    fn extern_crate_is_resolved_even_when_the_rule_names_the_crate() {
+        // No `extern crate` line is checked, so nothing has decided yet.
+        let code = "extern crate uuid as id;\nfn f() { let _ = id::Uuid::new_v7(); }";
+        assert_eq!(check_names(&["uuid::**"], &[], code).len(), 1);
+    }
+
+    #[test]
+    fn denied_group_self_is_not_reported_again_through_its_alias() {
+        // `chrono::*` denies the `use` leaf `chrono::self`, not `chrono`.
+        let code = "use chrono::{self as c};\nfn f() { let _ = c::Utc; }";
+        let violations = check_names(&["chrono::*"], &[], code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].location.line, 1);
+    }
+
+    #[test]
+    fn item_in_an_impl_method_has_its_own_self() {
+        let code = "use uuid::Uuid;\nimpl Tr for Uuid { fn f() { trait L { fn g() { let _ = Self::new_v7(); } } } }";
+        assert!(check_names(NEW_V7, &[], code).is_empty());
+    }
+
+    #[test]
+    fn except_applies_to_the_resolved_path() {
+        let code = "use uuid::Uuid;\nfn f() { let _ = Uuid::new_v7(); let _ = Uuid::nil(); }";
+        let violations = check_names(&["uuid::Uuid::*"], &["uuid::Uuid::nil"], code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(violations[0].message.contains("uuid::Uuid::new_v7"));
+    }
+
+    #[test]
+    fn short_deny_pattern_still_matches_the_path_as_written() {
+        let code = "use uuid::Uuid;\nfn f() { let _ = Uuid::new_v7(); }";
+        let violations = check_names(&["Uuid::new_v7"], &[], code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert!(!violations[0].message.contains("resolves to"));
+    }
+
+    #[test]
+    fn denied_import_is_not_reported_again_where_the_name_is_used() {
+        let code = "use sqlx::Pool;\nfn f() { let _ = Pool::connect(); }";
+        let violations = check_names(&["sqlx::**"], &[], code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].location.line, 1);
+    }
+
+    #[test]
+    fn allowed_import_does_not_turn_red_where_the_name_is_used() {
+        let code = "// arch-lint: allow(no-id-gen) reason=\"legacy\"\nuse sqlx::Pool;\nfn f() { let _ = Pool::connect(); }";
+        assert!(check_names(&["sqlx::**"], &[], code).is_empty());
+    }
+
+    #[test]
+    fn excepted_import_does_not_turn_red_where_the_name_is_used() {
+        let code = "use sqlx::types::Json;\nfn f() { let _ = Json::from(1); }";
+        let violations = check_names(&["sqlx::**"], &["sqlx::types::*"], code);
+
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    #[test]
+    fn resolved_violation_is_suppressed_at_the_use_site() {
+        let by_comment = "use uuid::Uuid;\nfn f() {\n    // arch-lint: allow(no-id-gen) reason=\"legacy\"\n    let _ = Uuid::new_v7();\n}";
+        assert!(check_names(NEW_V7, &[], by_comment).is_empty());
+
+        let by_attribute = "use uuid::Uuid;\n#[arch_lint::allow(no_id_gen, reason = \"legacy\")]\nfn f() { let _ = Uuid::new_v7(); }";
+        assert!(check_names(NEW_V7, &[], by_attribute).is_empty());
+    }
+
+    #[test]
+    fn message_names_the_resolved_path_only_when_it_is_what_matched() {
+        let code = "use uuid::Uuid;\nfn f() { let _ = Uuid::new_v7(); }";
+        let resolved = check_names(NEW_V7, &[], code);
+        assert_eq!(
+            resolved[0].message,
+            "No id generation in domain.: `Uuid::new_v7` (resolves to `uuid::Uuid::new_v7`)"
+        );
+
+        // Both the written and the resolved path are denied: one report, in
+        // the written form.
+        let both = check_names(&["Uuid::new_v7", "uuid::Uuid::new_v7"], &[], code);
+        assert_eq!(both.len(), 1, "{both:#?}");
+        assert_eq!(
+            both[0].message,
+            "No id generation in domain.: `Uuid::new_v7`"
+        );
+    }
+
+    #[test]
+    fn except_on_the_import_also_accepts_deeper_paths_through_it() {
+        let code = "use uuid::Uuid;\nfn f() {\n    let _ = Uuid::new_v7();\n    let _ = uuid::Uuid::new_v7();\n}";
+        let violations = check_names(&["uuid::**"], &["uuid::Uuid"], code);
+
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].location.line, 4);
+        assert!(!violations[0].message.contains("resolves to"));
+    }
+
+    #[test]
+    fn type_parameters_hide_the_import_in_every_kind_of_item() {
+        let templates = [
+            "struct S<{P}: Tr> { f: Uuid::Out }",
+            "enum E<{P}: Tr> { A(Uuid::Out) }",
+            "union U<{P}: Tr> { f: Uuid::Out }",
+            "type A<{P}: Tr> = Uuid::Out;",
+            "trait T<{P}: Tr> { fn f() -> Uuid::Out; }",
+            "struct S; impl S { fn f<{P}: Tr>() -> Uuid::Out { loop {} } }",
+            "trait T { fn f<{P}: Tr>() -> Uuid::Out; }",
+            "trait T { type A<{P}> = Uuid::Out; }",
+            "struct S; impl Tr for S { type A<{P}> = Uuid::Out; }",
+        ];
+        for template in templates {
+            let code = |param: &str| format!("use uuid::Uuid;\n{}", template.replace("{P}", param));
+            // Control: another parameter name leaves the import visible.
+            let visible = check_names(&["uuid::Uuid::Out"], &[], &code("T"));
+            assert_eq!(visible.len(), 1, "{template}: {visible:#?}");
+
+            let hidden = check_names(&["uuid::Uuid::Out"], &[], &code("Uuid"));
+            assert!(hidden.is_empty(), "{template}: {hidden:#?}");
+        }
     }
 
     #[test]

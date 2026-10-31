@@ -1,0 +1,30 @@
+[[scopes]]
+name = "domain"
+paths = ["src/domain/**"]
+
+# The deny names functions of a type, which `use` cannot import: the `use`
+# line passes, so only the path through the imported name can be caught.
+[[restrict-use]]
+name = "no-ids-or-clock-in-domain"
+scope = "domain"
+deny = ["uuid::Uuid::new_v7", "chrono::Utc::now"]
+message = "Domain takes ids and time as arguments."
+severity = "error"
+
+# The `use` line is already denied, so the names it binds are not reported
+# again where they are used.
+[[restrict-use]]
+name = "no-sqlx-in-domain"
+scope = "domain"
+deny = ["sqlx::**"]
+message = "Domain must be DB-agnostic."
+severity = "error"
+
+# `except` accepts the type, and with it what is reached through the name.
+[[restrict-use]]
+name = "uuid-type-only"
+files = ["src/domain/asymmetry.rs"]
+deny = ["uuid::**"]
+except = ["uuid::Uuid"]
+message = "Only the Uuid type is allowed."
+severity = "error"
