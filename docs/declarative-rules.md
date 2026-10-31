@@ -37,6 +37,40 @@ inline qualified paths (e.g. `sqlx::query(...)` or `crate::infra::Db::new()`
 written without a `use`). To restrict a rule to `use` statements only, set
 `check-inline = false` on that rule.
 
+`[[restrict-use]]` also resolves the names a `use` brings into scope, so a deny
+that points deeper than `use` can import still catches the short form. With
+`deny = ["uuid::Uuid::new_v7"]`, `use uuid::Uuid;` followed by
+`Uuid::new_v7()` is reported (as `` `Uuid::new_v7` (resolves to
+`uuid::Uuid::new_v7`) ``), and so are `use uuid::Uuid as U;` with `U::new_v7()`
+and `use chrono::{self, Utc};` with `Utc::now()` against `chrono::Utc::now`.
+Names are looked up the way Rust does it: a `mod` does not see the imports of
+the enclosing module, a block sees them and its own `struct` / `enum` /
+`trait` / `type` / `mod` (or a type parameter) hides one of the same name,
+and `Self` in an `impl` stands for the self type.
+
+A path is matched as written first, then through the import. The path through
+the import is tried only when the import itself (`uuid::Uuid`) is matched by
+neither `deny` nor `except` of that rule: the `use` line has already decided
+it. So with `deny = ["sqlx::**"]`, `use sqlx::Pool;` is the one report and
+`Pool::connect()` after it adds none, and an allow on the `use` line still
+covers the places the name is used. A path is reported once.
+
+What follows from that, and what is not followed:
+
+- `except` is asymmetric. With `deny = ["uuid::**"]` and
+  `except = ["uuid::Uuid"]`, `use uuid::Uuid;` makes `Uuid::new_v7()`
+  acceptable, while `uuid::Uuid::new_v7()` written in full is reported. To
+  forbid a function of a type, deny it by name rather than excepting the type.
+- A name that resolves to an item of the same file (`mod uuid { .. }`) is
+  matched as written only, so it can hit a deny for an external crate of the
+  same name, as before.
+- Glob imports (`use uuid::*;`, `use super::*;` in a nested `mod`), chains of
+  `use super::X` / `use crate::X`, `pub use` re-exports, type aliases,
+  qualified self types (`<Uuid>::new_v7()`), method call syntax and the inside
+  of macros are not resolved. A glob in an inner block can hide a named import
+  of the outer scope without being noticed; suppress such a report with an
+  allow.
+
 `[[restrict-use]]` accepts an `except` list — a path that matches it is never
 reported, even when it matches `deny`. `[[scopes]]` accepts an `exclude` list —
 a file matching it is not part of the scope even when it matches `paths`, and

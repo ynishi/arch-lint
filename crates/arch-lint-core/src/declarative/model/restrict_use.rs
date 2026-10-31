@@ -114,6 +114,19 @@ impl RestrictUse {
         self.deny.iter().any(|p| p.matches(use_path))
             && !self.except.iter().any(|p| p.matches(use_path))
     }
+
+    /// Tests whether a path is named by this rule at all: it matches one of
+    /// the `deny` patterns or one of the `except` patterns.
+    ///
+    /// [`Self::is_denied`] answers whether to report a path; this answers
+    /// whether the rule has already taken a position on it, either way.
+    #[must_use]
+    pub fn mentions(&self, path: &str) -> bool {
+        self.deny
+            .iter()
+            .chain(self.except.iter())
+            .any(|p| p.matches(path))
+    }
 }
 
 #[cfg(test)]
@@ -154,5 +167,25 @@ mod tests {
         assert!(rule.is_denied("sqlx::Pool"));
         assert!(!rule.is_denied("sqlx::types::Json"));
         assert_eq!(rule.except().len(), 1);
+    }
+
+    #[test]
+    fn restrict_use_mentions_deny_and_except() {
+        let rule = RestrictUse::new(
+            "no-sqlx-in-domain".to_string(),
+            ScopeRef::Named(ScopeName::new("domain").unwrap()),
+            vec![UsePattern::new("sqlx::**").unwrap()],
+            "Domain must be DB-agnostic.".to_string(),
+            None,
+            Severity::Error,
+        )
+        .with_except(vec![UsePattern::new("uuid::Uuid").unwrap()]);
+
+        assert!(rule.mentions("sqlx::Pool"));
+        assert!(rule.mentions("uuid::Uuid"));
+        assert!(!rule.mentions("uuid::Uuid::new_v7"));
+        assert!(!rule.mentions("serde::Serialize"));
+        // Unlike `is_denied`, an excepted path is still mentioned.
+        assert!(!rule.is_denied("uuid::Uuid"));
     }
 }
